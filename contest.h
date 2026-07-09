@@ -64,7 +64,7 @@ void contest_definition_init_defaults(ContestDefinition *out);
  * Supported examples:
  * NAME=CQ-WW-CW
  * CABRILLO_NAME=CQ-WW-CW
- * EXCHANGE_SENT=001
+ * EXCHANGE_SENT=#
  * FIELD=SERIAL,Serial Number,required
  */
 int contest_definition_load(const char *path, ContestDefinition *out,

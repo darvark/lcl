@@ -278,9 +278,14 @@ MODE=CW
 CATEGORY_OPERATOR=SINGLE-OP
 CATEGORY_BAND=ALL
 CATEGORY_POWER=LOW
-EXCHANGE_SENT=001
+EXCHANGE_SENT=#
 FIELD=SERIAL,Serial Number,required
 ```
+
+Serial TX exchange rule:
+
+- Use `EXCHANGE_SENT=#` for incrementing serial numbers.
+- Any other `EXCHANGE_SENT` value is treated as a static TX exchange.
 
 Bundled contest presets (DxLog-style key/value files):
 

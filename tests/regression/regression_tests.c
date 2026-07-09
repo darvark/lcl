@@ -323,7 +323,7 @@ static void test_contest_definition_and_cabrillo(const char *tmp_dir) {
       "CATEGORY_OPERATOR=SINGLE-OP\n"
       "CATEGORY_BAND=ALL\n"
       "CATEGORY_POWER=LOW\n"
-      "EXCHANGE_SENT=001\n"
+      "EXCHANGE_SENT=#\n"
       "FIELD=SERIAL,Serial Number,required\n";
 
   expect_int_eq(write_text_file(contest_path, contest_text), 0,

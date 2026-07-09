@@ -561,6 +561,15 @@ static const char *resolve_qso_mode(char *mode_out, size_t mode_out_size) {
   if (!mode_out || mode_out_size < 2)
     return NULL;
 
+  if (contest_definition_loaded && active_contest_def.mode[0] &&
+      strcmp(active_contest_def.mode, "MIXED") != 0) {
+    if (strcmp(active_contest_def.mode, "PHONE") == 0)
+      snprintf(mode_out, mode_out_size, "%s", "SSB");
+    else
+      snprintf(mode_out, mode_out_size, "%s", active_contest_def.mode);
+    return mode_out;
+  }
+
   const int radio_idx = radio_index_from_nr(active_radio_nr);
   const int slot = cat_slot_for_radio(radio_idx);
 
@@ -586,24 +595,13 @@ static void build_exchange_sent(char *out, size_t out_size) {
   out[0] = 0;
   const char *tpl = active_contest_def.exchange_sent_template;
   if (!tpl || !tpl[0]) {
-    snprintf(out, out_size, "%03d", qso_count + 1);
+    snprintf(out, out_size, "%d", qso_count + 1);
     return;
   }
 
-  int all_digits = 1;
-  for (size_t i = 0; tpl[i]; i++) {
-    if (!isdigit((unsigned char)tpl[i])) {
-      all_digits = 0;
-      break;
-    }
-  }
-
-  if (strcmp(tpl, "SERIAL") == 0 || strcmp(tpl, "NR") == 0 || all_digits) {
-    const int width = all_digits ? (int)strlen(tpl) : 3;
-    if (width > 1)
-      snprintf(out, out_size, "%0*d", width, qso_count + 1);
-    else
-      snprintf(out, out_size, "%d", qso_count + 1);
+  // Contest rule: only '#' means serial; all other templates are static.
+  if (strcmp(tpl, "#") == 0) {
+    snprintf(out, out_size, "%d", qso_count + 1);
     return;
   }
 
@@ -831,7 +829,13 @@ int app_controller_get_radio_state(int radio_nr, int *out_freq_khz,
   if (out_mode && out_mode_size >= 2) {
     out_mode[0] = 0;
 
-    if (cat_is_connected_slot(slot) && config.cat_mode_from_rig) {
+    if (contest_definition_loaded && active_contest_def.mode[0] &&
+        strcmp(active_contest_def.mode, "MIXED") != 0) {
+      if (strcmp(active_contest_def.mode, "PHONE") == 0)
+        snprintf(out_mode, out_mode_size, "%s", "SSB");
+      else
+        snprintf(out_mode, out_mode_size, "%s", active_contest_def.mode);
+    } else if (cat_is_connected_slot(slot) && config.cat_mode_from_rig) {
       if (cat_get_mode_label_slot(slot, out_mode, out_mode_size) != 0 ||
           !out_mode[0]) {
         detect_mode(freq_khz, out_mode);

@@ -97,6 +97,7 @@ static char *read_whole_file(const char *path) {
 }
 
 static void send_controller_chars(const char *text);
+static void send_controller_text(const char *text);
 
 static int make_temp_dir(char *out, size_t out_size) {
   const char *tmp_base = getenv("TMPDIR");
@@ -269,6 +270,118 @@ static void test_controller_static_tx_exchange_override(const char *tmp_dir) {
   app_controller_shutdown();
   expect_int_eq(chdir(old_cwd), 0,
                 "restore cwd after static tx exchange test");
+}
+
+static void test_controller_numeric_static_exchange_template(const char *tmp_dir) {
+  char case_dir[512];
+  snprintf(case_dir, sizeof(case_dir), "%s/numeric_static_case", tmp_dir);
+  expect_int_eq(mkdir(case_dir, 0777), 0,
+                "create isolated directory for numeric static exchange test");
+
+  char contest_path[512];
+  snprintf(contest_path, sizeof(contest_path), "%s/contest.conf", case_dir);
+
+  const char *contest_text =
+      "NAME=IARU-LIKE\n"
+      "CABRILLO_NAME=IARU-LIKE\n"
+      "MODE=MIXED\n"
+      "EXCHANGE_SENT=28\n"
+      "FIELD=ITU_ZONE,ITU Zone,required\n";
+  expect_int_eq(write_text_file(contest_path, contest_text), 0,
+                "write numeric static exchange contest definition");
+
+  char conf_path[512];
+  snprintf(conf_path, sizeof(conf_path), "%s/logger.conf", case_dir);
+  const char *conf_text =
+      "CONTEST_DEF_FILE=contest.conf\n";
+  expect_int_eq(write_text_file(conf_path, conf_text), 0,
+                "write logger.conf for numeric static exchange test");
+
+  char old_cwd[512];
+  expect_true(getcwd(old_cwd, sizeof(old_cwd)) != NULL,
+              "getcwd before numeric static exchange test");
+  expect_int_eq(chdir(case_dir), 0,
+                "chdir to numeric static exchange test directory");
+
+  app_controller_init();
+  const int base_qso_count = qso_count;
+  AppRenderState state;
+  app_controller_get_render_state(&state);
+
+  expect_true(state.contest_entry_mode,
+              "contest mode should be active in numeric static exchange test");
+  expect_true(state.contest_exchange_sent != NULL,
+              "contest tx exchange should be present in numeric static exchange test");
+  if (state.contest_exchange_sent)
+    expect_str_eq(state.contest_exchange_sent, "28",
+                  "numeric static EXCHANGE_SENT should stay literal");
+
+  send_controller_chars("SP9NSE");
+  app_controller_handle_key(APP_KEY_SPACE);
+  send_controller_chars("27");
+  app_controller_handle_key(APP_KEY_ENTER);
+
+  expect_int_eq(qso_count, base_qso_count + 1,
+                "one QSO should be saved in numeric static exchange test");
+  expect_str_eq(logbook[base_qso_count].exchange_sent, "28",
+                "saved QSO should keep numeric static TX exchange");
+  expect_str_eq(logbook[base_qso_count].exchange_recv, "27",
+                "saved QSO should store entered received exchange");
+
+  app_controller_shutdown();
+  expect_int_eq(chdir(old_cwd), 0,
+                "restore cwd after numeric static exchange test");
+}
+
+static void test_controller_contest_mode_overrides_detected_mode(const char *tmp_dir) {
+  char case_dir[512];
+  snprintf(case_dir, sizeof(case_dir), "%s/mode_override_case", tmp_dir);
+  expect_int_eq(mkdir(case_dir, 0777), 0,
+                "create isolated directory for contest mode override test");
+
+  char contest_path[512];
+  snprintf(contest_path, sizeof(contest_path), "%s/contest.conf", case_dir);
+
+  const char *contest_text =
+      "NAME=MODE-OVERRIDE\n"
+      "CABRILLO_NAME=MODE-OVERRIDE\n"
+      "MODE=CW\n"
+      "EXCHANGE_SENT=#\n"
+      "FIELD=SERIAL,Serial Number,required\n";
+  expect_int_eq(write_text_file(contest_path, contest_text), 0,
+                "write mode override contest definition");
+
+  char conf_path[512];
+  snprintf(conf_path, sizeof(conf_path), "%s/logger.conf", case_dir);
+  const char *conf_text =
+      "CONTEST_DEF_FILE=contest.conf\n"
+      "CAT_MODE_FROM_RIG=1\n";
+  expect_int_eq(write_text_file(conf_path, conf_text), 0,
+                "write logger.conf for mode override test");
+
+  char old_cwd[512];
+  expect_true(getcwd(old_cwd, sizeof(old_cwd)) != NULL,
+              "getcwd before mode override test");
+  expect_int_eq(chdir(case_dir), 0,
+                "chdir to mode override test directory");
+
+  app_controller_init();
+  const int base_qso_count = qso_count;
+
+  send_controller_text("14150");
+  send_controller_chars("SP9MOD");
+  app_controller_handle_key(APP_KEY_SPACE);
+  send_controller_chars("001");
+  app_controller_handle_key(APP_KEY_ENTER);
+
+  expect_int_eq(qso_count, base_qso_count + 1,
+                "one QSO should be saved in mode override test");
+  expect_str_eq(logbook[base_qso_count].mode, "CW",
+                "contest MODE should override detected mode and CAT mode setting");
+
+  app_controller_shutdown();
+  expect_int_eq(chdir(old_cwd), 0,
+                "restore cwd after mode override test");
 }
 
 static void test_cty_load_and_lookup(const char *tmp_dir) {
@@ -511,7 +624,7 @@ static void test_contest_definition_and_cabrillo(const char *tmp_dir) {
       "POINTS_SAME_DXCC=1\n"
       "POINTS_NEW_BAND_DXCC=6\n"
       "POINTS_SAME_BAND_DXCC=2\n"
-      "EXCHANGE_SENT=001\n"
+      "EXCHANGE_SENT=#\n"
       "FIELD=SERIAL,Serial Number,required\n";
 
   expect_int_eq(write_text_file(contest_path, contest_text), 0,
@@ -787,9 +900,9 @@ static void test_controller_contest_mode_points(const char *tmp_dir) {
   char expected_tx_after_first[16];
   char expected_status_after_first[64];
 
-  snprintf(expected_tx_before, sizeof(expected_tx_before), "%03d",
+  snprintf(expected_tx_before, sizeof(expected_tx_before), "%d",
            base_qso_count + 1);
-  snprintf(expected_tx_after_first, sizeof(expected_tx_after_first), "%03d",
+  snprintf(expected_tx_after_first, sizeof(expected_tx_after_first), "%d",
            base_qso_count + 2);
   snprintf(expected_status_after_first, sizeof(expected_status_after_first),
            "QSO OK TX:%s RX:599", expected_tx_before);
@@ -961,6 +1074,8 @@ int main(void) {
   test_app_controller_key_flow();
   test_controller_contest_mode_points(tmp_dir);
   test_controller_static_tx_exchange_override(tmp_dir);
+  test_controller_numeric_static_exchange_template(tmp_dir);
+  test_controller_contest_mode_overrides_detected_mode(tmp_dir);
   test_manual_frequency_entry_from_call_field();
   test_named_log_commands();
 

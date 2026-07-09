@@ -58,7 +58,7 @@ void contest_definition_init_defaults(ContestDefinition *out) {
   snprintf(out->station_location, sizeof(out->station_location), "%s", "DX");
   snprintf(out->operators, sizeof(out->operators), "%s", "");
   snprintf(out->exchange_sent_template, sizeof(out->exchange_sent_template),
-           "%s", "001");
+           "%s", "#");
   out->points_per_qso = 1;
   out->points_cw = 0;
   out->points_phone = 0;
