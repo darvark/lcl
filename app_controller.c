@@ -607,6 +607,11 @@ static void build_exchange_sent(char *out, size_t out_size) {
     return;
   }
 
+  if (config.contest_tx_exchange[0]) {
+    snprintf(out, out_size, "%s", config.contest_tx_exchange);
+    return;
+  }
+
   snprintf(out, out_size, "%s", tpl);
 }
 
@@ -1100,6 +1105,42 @@ static int load_contest_definition_file(const char *path) {
 }
 
 /*
+ * Load contest definition path from config with fallback relative locations.
+ */
+static int load_configured_contest_definition(void) {
+  if (!config.contest_definition_path[0])
+    return 0;
+
+  if (access(config.contest_definition_path, R_OK) == 0)
+    return load_contest_definition_file(config.contest_definition_path);
+
+  if (config.contest_definition_path[0] == '/') {
+    return -1;
+  }
+
+  const char *prefixes[] = {"../", "../../"};
+  char candidate[512];
+
+  for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); i++) {
+    snprintf(candidate, sizeof(candidate), "%s%s", prefixes[i],
+             config.contest_definition_path);
+    if (access(candidate, R_OK) == 0)
+      return load_contest_definition_file(candidate);
+  }
+
+  if (!strchr(config.contest_definition_path, '/')) {
+    for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); i++) {
+      snprintf(candidate, sizeof(candidate), "%scontest_defs/%s", prefixes[i],
+               config.contest_definition_path);
+      if (access(candidate, R_OK) == 0)
+        return load_contest_definition_file(candidate);
+    }
+  }
+
+  return -1;
+}
+
+/*
  * Parse an export command and choose the ADIF destination filename.
  *
  * @param cmd Raw command line.
@@ -1405,9 +1446,7 @@ int app_controller_init(void) {
   if (config_load("logger.conf") != 0)
     fprintf(stderr, "Cannot load logger.conf\n");
 
-  if (config.contest_definition_path[0] &&
-      access(config.contest_definition_path, R_OK) == 0)
-    load_contest_definition_file(config.contest_definition_path);
+  load_configured_contest_definition();
 
   stats_set_contest_definition(&active_contest_def);
 

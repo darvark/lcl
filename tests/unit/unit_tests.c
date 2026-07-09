@@ -96,6 +96,8 @@ static char *read_whole_file(const char *path) {
   return buf;
 }
 
+static void send_controller_chars(const char *text);
+
 static int make_temp_dir(char *out, size_t out_size) {
   const char *tmp_base = getenv("TMPDIR");
 
@@ -126,6 +128,7 @@ static void test_config_load(const char *tmp_dir) {
       "DXC_PORT = 9000\n"
       "DXC_CALL = SP9XYZ\n"
       "CAT_MODE_FROM_RIG = 1\n"
+      "CONTEST_TX_EXCHANGE = 28\n"
       "CONTEST_TECHNIQUE = SO2R\n";
 
   expect_int_eq(write_text_file(conf_path, conf_text), 0,
@@ -142,6 +145,8 @@ static void test_config_load(const char *tmp_dir) {
                 "config CAT mode-from-rig parsed");
   expect_int_eq((int)config.contest_technique, (int)CONTEST_TECH_SO2R,
                 "contest technique parsed");
+  expect_str_eq(config.contest_tx_exchange, "28",
+                "contest tx exchange override parsed");
 
   expect_int_eq(config_load("/definitely/missing/logger.conf"), -1,
                 "missing config should return -1");
@@ -173,6 +178,8 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
   snprintf(config.cat_parity, sizeof(config.cat_parity), "%s", "Even");
   snprintf(config.cat_handshake, sizeof(config.cat_handshake), "%s", "RTSCTS");
   config.cat_mode_from_rig = 1;
+  snprintf(config.contest_tx_exchange, sizeof(config.contest_tx_exchange),
+           "%s", "28");
 
   expect_int_eq(config_save(conf_path), 0, "config_save should succeed");
 
@@ -184,6 +191,7 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
   config.cat_parity[0] = 0;
   config.cat_handshake[0] = 0;
   config.cat_mode_from_rig = 0;
+  config.contest_tx_exchange[0] = 0;
 
   expect_int_eq(config_load(conf_path), 0,
                 "config_load should read saved config");
@@ -197,6 +205,70 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
                 "saved CAT handshake restored");
   expect_int_eq(config.cat_mode_from_rig, 1,
                 "saved CAT mode-from-rig restored");
+  expect_str_eq(config.contest_tx_exchange, "28",
+                "saved contest tx exchange restored");
+}
+
+static void test_controller_static_tx_exchange_override(const char *tmp_dir) {
+  char case_dir[512];
+  snprintf(case_dir, sizeof(case_dir), "%s/static_tx_case", tmp_dir);
+  expect_int_eq(mkdir(case_dir, 0777), 0,
+                "create isolated directory for static tx exchange test");
+
+  char contest_path[512];
+  snprintf(contest_path, sizeof(contest_path), "%s/contest.conf", case_dir);
+
+  const char *contest_text =
+      "NAME=IARU-LIKE\n"
+      "CABRILLO_NAME=IARU-LIKE\n"
+      "MODE=MIXED\n"
+      "EXCHANGE_SENT=ITU\n"
+      "FIELD=ITU_ZONE,ITU Zone,required\n";
+  expect_int_eq(write_text_file(contest_path, contest_text), 0,
+                "write static exchange contest definition");
+
+  char conf_path[512];
+  snprintf(conf_path, sizeof(conf_path), "%s/logger.conf", case_dir);
+  const char *conf_text =
+      "CONTEST_DEF_FILE=contest.conf\n"
+      "CONTEST_TX_EXCHANGE=28\n";
+  expect_int_eq(write_text_file(conf_path, conf_text), 0,
+                "write logger.conf with static tx exchange override");
+
+  char old_cwd[512];
+  expect_true(getcwd(old_cwd, sizeof(old_cwd)) != NULL,
+              "getcwd before static tx exchange test");
+  expect_int_eq(chdir(case_dir), 0,
+                "chdir to static tx exchange test directory");
+
+  app_controller_init();
+  const int base_qso_count = qso_count;
+  AppRenderState state;
+  app_controller_get_render_state(&state);
+
+  expect_true(state.contest_entry_mode,
+              "contest mode should be active in static tx exchange test");
+  expect_true(state.contest_exchange_sent != NULL,
+              "contest tx exchange should be present in render state");
+  if (state.contest_exchange_sent)
+    expect_str_eq(state.contest_exchange_sent, "28",
+                  "static tx exchange should use config override");
+
+  send_controller_chars("SP9AAA");
+  app_controller_handle_key(APP_KEY_SPACE);
+  send_controller_chars("28");
+  app_controller_handle_key(APP_KEY_ENTER);
+
+  expect_int_eq(qso_count, base_qso_count + 1,
+                "one QSO should be saved in static tx exchange test");
+  expect_str_eq(logbook[base_qso_count].exchange_sent, "28",
+                "saved QSO should use configured static tx exchange");
+  expect_str_eq(logbook[base_qso_count].exchange_recv, "28",
+                "saved QSO should store entered received exchange");
+
+  app_controller_shutdown();
+  expect_int_eq(chdir(old_cwd), 0,
+                "restore cwd after static tx exchange test");
 }
 
 static void test_cty_load_and_lookup(const char *tmp_dir) {
@@ -711,6 +783,25 @@ static void test_controller_contest_mode_points(const char *tmp_dir) {
   app_controller_init();
   const int base_qso_count = qso_count;
   AppRenderState state;
+  char expected_tx_before[16];
+  char expected_tx_after_first[16];
+  char expected_status_after_first[64];
+
+  snprintf(expected_tx_before, sizeof(expected_tx_before), "%03d",
+           base_qso_count + 1);
+  snprintf(expected_tx_after_first, sizeof(expected_tx_after_first), "%03d",
+           base_qso_count + 2);
+  snprintf(expected_status_after_first, sizeof(expected_status_after_first),
+           "QSO OK TX:%s RX:599", expected_tx_before);
+
+  app_controller_get_render_state(&state);
+  expect_true(state.contest_entry_mode,
+              "contest mode should be active when contest definition is loaded");
+  expect_true(state.contest_exchange_sent != NULL,
+              "contest sent exchange should be available in render state");
+  if (state.contest_exchange_sent)
+    expect_str_eq(state.contest_exchange_sent, expected_tx_before,
+                  "contest TX exchange should be live before first saved QSO");
 
   send_controller_chars("SP9BAD");
   app_controller_handle_key(APP_KEY_SPACE);
@@ -730,6 +821,17 @@ static void test_controller_contest_mode_points(const char *tmp_dir) {
   app_controller_handle_key(APP_KEY_SPACE);
   send_controller_chars("599");
   app_controller_handle_key(APP_KEY_ENTER);
+
+  app_controller_get_render_state(&state);
+  expect_true(state.status != NULL, "contest save status should exist");
+  if (state.status)
+    expect_true(strstr(state.status, expected_status_after_first) != NULL,
+                "contest status should display sent and received exchange");
+  expect_true(state.contest_exchange_sent != NULL,
+              "next contest TX exchange should stay visible");
+  if (state.contest_exchange_sent)
+    expect_str_eq(state.contest_exchange_sent, expected_tx_after_first,
+                  "contest TX exchange should update live after first saved QSO");
 
   send_controller_text("14074");
   send_controller_chars("SP9BBB");
@@ -858,6 +960,7 @@ int main(void) {
   test_call_suggestions();
   test_app_controller_key_flow();
   test_controller_contest_mode_points(tmp_dir);
+  test_controller_static_tx_exchange_override(tmp_dir);
   test_manual_frequency_entry_from_call_field();
   test_named_log_commands();
 

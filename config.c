@@ -64,6 +64,7 @@ static void set_defaults(void) {
   strcpy(config.station_call, "N0CALL");
   strcpy(config.operator_name, "");
   strcpy(config.contest_definition_path, "contest.conf");
+  strcpy(config.contest_tx_exchange, "");
   config.contest_technique = CONTEST_TECH_SO1R;
 }
 
@@ -179,6 +180,11 @@ int config_load(const char *filename) {
 
       config.contest_definition_path[sizeof(config.contest_definition_path) -
                                      1] = 0;
+    } else if (strcmp(key, "CONTEST_TX_EXCHANGE") == 0) {
+      strncpy(config.contest_tx_exchange, value,
+              sizeof(config.contest_tx_exchange));
+
+      config.contest_tx_exchange[sizeof(config.contest_tx_exchange) - 1] = 0;
     } else if (strcmp(key, "CONTEST_TECHNIQUE") == 0) {
       config.contest_technique = contest_technique_from_text(value);
     }
@@ -230,6 +236,7 @@ int config_save(const char *filename) {
   fprintf(f, "STATION_CALL=%s\n", config.station_call);
   fprintf(f, "OPERATOR_NAME=%s\n", config.operator_name);
   fprintf(f, "CONTEST_DEF_FILE=%s\n", config.contest_definition_path);
+  fprintf(f, "CONTEST_TX_EXCHANGE=%s\n", config.contest_tx_exchange);
   fprintf(f, "CONTEST_TECHNIQUE=%s\n",
           contest_technique_to_text(config.contest_technique));
 

@@ -119,7 +119,8 @@ static void test_config_loading(const char *tmp_dir) {
       "DXC_HOST = dx.example.net\n"
       "DXC_PORT = 9000\n"
       "DXC_CALL = SP9XYZ\n"
-      "CAT_MODE_FROM_RIG = 1\n";
+      "CAT_MODE_FROM_RIG = 1\n"
+      "CONTEST_TX_EXCHANGE = 28\n";
 
   expect_int_eq(write_text_file(conf_path, conf_text), 0,
                 "write test logger.conf");
@@ -133,6 +134,8 @@ static void test_config_loading(const char *tmp_dir) {
   expect_str_eq(config.dxc_call, "SP9XYZ", "config call parsed");
   expect_int_eq(config.cat_mode_from_rig, 1,
                 "config CAT mode-from-rig parsed");
+  expect_str_eq(config.contest_tx_exchange, "28",
+                "config contest tx exchange parsed");
 
   expect_int_eq(config_load("/definitely/missing/logger.conf"), -1,
                 "missing config should return -1");
@@ -156,6 +159,8 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
   snprintf(config.cat_parity, sizeof(config.cat_parity), "%s", "Odd");
   snprintf(config.cat_handshake, sizeof(config.cat_handshake), "%s", "XONXOFF");
   config.cat_mode_from_rig = 1;
+  snprintf(config.contest_tx_exchange, sizeof(config.contest_tx_exchange),
+           "%s", "28");
 
   expect_int_eq(config_save(conf_path), 0, "config_save should succeed");
 
@@ -167,6 +172,7 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
   config.cat_parity[0] = 0;
   config.cat_handshake[0] = 0;
   config.cat_mode_from_rig = 0;
+  config.contest_tx_exchange[0] = 0;
 
   expect_int_eq(config_load(conf_path), 0,
                 "config_load should read saved config");
@@ -180,6 +186,8 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
                 "saved CAT handshake restored");
   expect_int_eq(config.cat_mode_from_rig, 1,
                 "saved CAT mode-from-rig restored");
+  expect_str_eq(config.contest_tx_exchange, "28",
+                "saved contest tx exchange restored");
 }
 
 static void test_cty_loading_and_lookup(const char *tmp_dir) {

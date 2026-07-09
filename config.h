@@ -34,6 +34,7 @@ typedef struct {
   char station_call[32];
   char operator_name[64];
   char contest_definition_path[256];
+  char contest_tx_exchange[32];
   ContestTechnique contest_technique;
 
 } Config;

@@ -1,6 +1,0 @@
-/home/marcin/Programowanie/contest_logger/build/CMakeFiles/logger.dir
-/home/marcin/Programowanie/contest_logger/build/CMakeFiles/regression_tests.dir
-/home/marcin/Programowanie/contest_logger/build/CMakeFiles/unit_tests.dir
-/home/marcin/Programowanie/contest_logger/build/CMakeFiles/test.dir
-/home/marcin/Programowanie/contest_logger/build/CMakeFiles/edit_cache.dir
-/home/marcin/Programowanie/contest_logger/build/CMakeFiles/rebuild_cache.dir

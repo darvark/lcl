@@ -265,6 +265,7 @@ DXC_CALL=AAXAAA
 - STATION_CALL: station callsign used in contest exports
 - OPERATOR_NAME: operator name used for metadata
 - CONTEST_DEF_FILE: contest definition file (DXLog-like key/value format)
+- CONTEST_TX_EXCHANGE: override TX exchange for contests with static EXCHANGE_SENT templates (for example ITU=28)
 - CONTEST_TECHNIQUE: one of SO1R, SO2V, SO2R
 - CAT2_MODEL/CAT2_DEVICE/CAT2_BAUD/...: second radio CAT profile for SO2R
 

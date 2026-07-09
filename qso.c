@@ -422,7 +422,9 @@ int qso_add_contest_fields(const char *call, int freq_khz, const char *rst,
                                q->operator_mode, q->contest_id, q->radio_nr,
                                q->points);
 
-  snprintf(status, status_size, "QSO OK");
+  snprintf(status, status_size, "QSO OK TX:%s RX:%s",
+           q->exchange_sent[0] ? q->exchange_sent : "-",
+           q->exchange_recv[0] ? q->exchange_recv : "-");
   return idx;
 }
 

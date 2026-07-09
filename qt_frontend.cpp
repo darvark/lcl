@@ -321,6 +321,15 @@ public:
         op_layout->addWidget(radio1_label_, 1, 0, 1, 2);
         op_layout->addWidget(radio2_label_, 2, 0, 1, 2);
 
+        op_layout->addWidget(new QLabel("TX Exchange:", op_panel_), 2, 2);
+        contest_tx_exchange_edit_ = new QLineEdit(op_panel_);
+        contest_tx_exchange_edit_->setText(
+          QString::fromLatin1(config.contest_tx_exchange));
+        contest_tx_exchange_edit_->setPlaceholderText("auto (from EXCHANGE_SENT)");
+        contest_tx_exchange_edit_->setToolTip(
+          "Overrides TX exchange for static contest templates like ITU or CQZONE.");
+        op_layout->addWidget(contest_tx_exchange_edit_, 2, 3, 1, 3);
+
         connect(technique_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
           this, [this](int) { on_technique_changed(); });
         connect(radio1_focus_button_, &QPushButton::clicked, this,
@@ -333,6 +342,8 @@ public:
           [this]() { on_toggle_run(1); });
         connect(run2_toggle_button_, &QPushButton::clicked, this,
           [this]() { on_toggle_run(2); });
+        connect(contest_tx_exchange_edit_, &QLineEdit::editingFinished, this,
+          [this]() { on_contest_tx_exchange_changed(); });
         left_layout->addWidget(op_panel_);
 
     gap_panel_ = new QFrame(central);
@@ -843,7 +854,7 @@ private:
     cluster_table_->verticalHeader()->setDefaultSectionSize(row_h);
     cluster_table_->horizontalHeader()->setFixedHeight(header_h);
 
-    const int log_col_chars[9] = {3, 9, 5, 15, 6, 5, 5, 8, 22};
+    const int log_col_chars[9] = {3, 9, 5, 15, 6, 5, 5, 14, 22};
     for (int i = 0; i < 9; i++) {
       if (i == 3 || i == 8)
         continue;
@@ -909,8 +920,9 @@ private:
 
       auto set_item = [&](int col, const QString &text) {
         auto *cell = new QTableWidgetItem(text);
-          const int hard_cols[9] = {3, 8, 4, 14, 5, 4, 4, 11, 24};
+          const int hard_cols[9] = {3, 8, 4, 14, 5, 4, 4, 18, 24};
           cell->setText(clip_to_cols(cell->text(), hard_cols[col]));
+          cell->setToolTip(text);
           cell->setTextAlignment(Qt::AlignCenter | Qt::AlignVCenter);
 
         if (q.invalid) {
@@ -1220,6 +1232,22 @@ private:
     refresh_ui();
   }
 
+  void on_contest_tx_exchange_changed() {
+    if (!contest_tx_exchange_edit_)
+      return;
+
+    const QString trimmed = contest_tx_exchange_edit_->text().trimmed();
+    std::snprintf(config.contest_tx_exchange, sizeof(config.contest_tx_exchange),
+                  "%s", trimmed.toLatin1().constData());
+
+    if (config_save("logger.conf") != 0) {
+      QMessageBox::warning(this, "Config",
+                           "Failed to save logger.conf. TX exchange override will not persist.");
+    }
+
+    refresh_ui();
+  }
+
   /*
    * Pull the latest controller state into the Qt widgets.
    *
@@ -1307,7 +1335,12 @@ private:
 
       const QString contest_exchange_label =
         QString::fromLatin1(state.contest_exchange_label ? state.contest_exchange_label : "Exchange");
-      const QString exchange_label = contest_entry_mode ? contest_exchange_label : "Exchange";
+      const QString contest_exchange_sent =
+        QString::fromLatin1(state.contest_exchange_sent ? state.contest_exchange_sent : "");
+      const QString exchange_label = contest_entry_mode
+        ? QString("%1 (TX %2)").arg(contest_exchange_label,
+                                     contest_exchange_sent.isEmpty() ? "-" : contest_exchange_sent)
+        : "RST";
       input_rst_r1_label_->setText(exchange_label);
       input_rst_r2_label_->setText(exchange_label);
 
@@ -1412,6 +1445,7 @@ private:
   QPushButton *run2_toggle_button_ = nullptr;
   QLabel *radio1_label_ = nullptr;
   QLabel *radio2_label_ = nullptr;
+  QLineEdit *contest_tx_exchange_edit_ = nullptr;
 
   QFrame *gap_panel_ = nullptr;
 
