@@ -1,0 +1,218 @@
+[
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/g++ -DHAVE_HAMLIB=1 -DQT_CORE_LIB -DQT_GUI_LIB -DQT_WIDGETS_LIB -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -I/usr/include/libusb-1.0 -isystem /usr/include/x86_64-linux-gnu/qt6/QtWidgets -isystem /usr/include/x86_64-linux-gnu/qt6 -isystem /usr/include/x86_64-linux-gnu/qt6/QtCore -isystem /usr/lib/x86_64-linux-gnu/qt6/mkspecs/linux-g++ -isystem /usr/include/x86_64-linux-gnu/qt6/QtGui -g -std=gnu++17 -fPIC -o CMakeFiles/logger.dir/qt_frontend.cpp.o -c /home/marcin/Programowanie/contest_logger/qt_frontend.cpp",
+  "file": "/home/marcin/Programowanie/contest_logger/qt_frontend.cpp",
+  "output": "CMakeFiles/logger.dir/qt_frontend.cpp.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -DHAVE_HAMLIB=1 -DQT_CORE_LIB -DQT_GUI_LIB -DQT_WIDGETS_LIB -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -I/usr/include/libusb-1.0 -isystem /usr/include/x86_64-linux-gnu/qt6/QtWidgets -isystem /usr/include/x86_64-linux-gnu/qt6 -isystem /usr/include/x86_64-linux-gnu/qt6/QtCore -isystem /usr/lib/x86_64-linux-gnu/qt6/mkspecs/linux-g++ -isystem /usr/include/x86_64-linux-gnu/qt6/QtGui -g -std=gnu11 -fPIC -o CMakeFiles/logger.dir/app_controller.c.o -c /home/marcin/Programowanie/contest_logger/app_controller.c",
+  "file": "/home/marcin/Programowanie/contest_logger/app_controller.c",
+  "output": "CMakeFiles/logger.dir/app_controller.c.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -DHAVE_HAMLIB=1 -DQT_CORE_LIB -DQT_GUI_LIB -DQT_WIDGETS_LIB -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -I/usr/include/libusb-1.0 -isystem /usr/include/x86_64-linux-gnu/qt6/QtWidgets -isystem /usr/include/x86_64-linux-gnu/qt6 -isystem /usr/include/x86_64-linux-gnu/qt6/QtCore -isystem /usr/lib/x86_64-linux-gnu/qt6/mkspecs/linux-g++ -isystem /usr/include/x86_64-linux-gnu/qt6/QtGui -g -std=gnu11 -fPIC -o CMakeFiles/logger.dir/db.c.o -c /home/marcin/Programowanie/contest_logger/db.c",
+  "file": "/home/marcin/Programowanie/contest_logger/db.c",
+  "output": "CMakeFiles/logger.dir/db.c.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -DHAVE_HAMLIB=1 -DQT_CORE_LIB -DQT_GUI_LIB -DQT_WIDGETS_LIB -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -I/usr/include/libusb-1.0 -isystem /usr/include/x86_64-linux-gnu/qt6/QtWidgets -isystem /usr/include/x86_64-linux-gnu/qt6 -isystem /usr/include/x86_64-linux-gnu/qt6/QtCore -isystem /usr/lib/x86_64-linux-gnu/qt6/mkspecs/linux-g++ -isystem /usr/include/x86_64-linux-gnu/qt6/QtGui -g -std=gnu11 -fPIC -o CMakeFiles/logger.dir/suggestion.c.o -c /home/marcin/Programowanie/contest_logger/suggestion.c",
+  "file": "/home/marcin/Programowanie/contest_logger/suggestion.c",
+  "output": "CMakeFiles/logger.dir/suggestion.c.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -DHAVE_HAMLIB=1 -DQT_CORE_LIB -DQT_GUI_LIB -DQT_WIDGETS_LIB -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -I/usr/include/libusb-1.0 -isystem /usr/include/x86_64-linux-gnu/qt6/QtWidgets -isystem /usr/include/x86_64-linux-gnu/qt6 -isystem /usr/include/x86_64-linux-gnu/qt6/QtCore -isystem /usr/lib/x86_64-linux-gnu/qt6/mkspecs/linux-g++ -isystem /usr/include/x86_64-linux-gnu/qt6/QtGui -g -std=gnu11 -fPIC -o CMakeFiles/logger.dir/qso.c.o -c /home/marcin/Programowanie/contest_logger/qso.c",
+  "file": "/home/marcin/Programowanie/contest_logger/qso.c",
+  "output": "CMakeFiles/logger.dir/qso.c.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -DHAVE_HAMLIB=1 -DQT_CORE_LIB -DQT_GUI_LIB -DQT_WIDGETS_LIB -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -I/usr/include/libusb-1.0 -isystem /usr/include/x86_64-linux-gnu/qt6/QtWidgets -isystem /usr/include/x86_64-linux-gnu/qt6 -isystem /usr/include/x86_64-linux-gnu/qt6/QtCore -isystem /usr/lib/x86_64-linux-gnu/qt6/mkspecs/linux-g++ -isystem /usr/include/x86_64-linux-gnu/qt6/QtGui -g -std=gnu11 -fPIC -o CMakeFiles/logger.dir/config.c.o -c /home/marcin/Programowanie/contest_logger/config.c",
+  "file": "/home/marcin/Programowanie/contest_logger/config.c",
+  "output": "CMakeFiles/logger.dir/config.c.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -DHAVE_HAMLIB=1 -DQT_CORE_LIB -DQT_GUI_LIB -DQT_WIDGETS_LIB -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -I/usr/include/libusb-1.0 -isystem /usr/include/x86_64-linux-gnu/qt6/QtWidgets -isystem /usr/include/x86_64-linux-gnu/qt6 -isystem /usr/include/x86_64-linux-gnu/qt6/QtCore -isystem /usr/lib/x86_64-linux-gnu/qt6/mkspecs/linux-g++ -isystem /usr/include/x86_64-linux-gnu/qt6/QtGui -g -std=gnu11 -fPIC -o CMakeFiles/logger.dir/cty.c.o -c /home/marcin/Programowanie/contest_logger/cty.c",
+  "file": "/home/marcin/Programowanie/contest_logger/cty.c",
+  "output": "CMakeFiles/logger.dir/cty.c.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -DHAVE_HAMLIB=1 -DQT_CORE_LIB -DQT_GUI_LIB -DQT_WIDGETS_LIB -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -I/usr/include/libusb-1.0 -isystem /usr/include/x86_64-linux-gnu/qt6/QtWidgets -isystem /usr/include/x86_64-linux-gnu/qt6 -isystem /usr/include/x86_64-linux-gnu/qt6/QtCore -isystem /usr/lib/x86_64-linux-gnu/qt6/mkspecs/linux-g++ -isystem /usr/include/x86_64-linux-gnu/qt6/QtGui -g -std=gnu11 -fPIC -o CMakeFiles/logger.dir/contest.c.o -c /home/marcin/Programowanie/contest_logger/contest.c",
+  "file": "/home/marcin/Programowanie/contest_logger/contest.c",
+  "output": "CMakeFiles/logger.dir/contest.c.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -DHAVE_HAMLIB=1 -DQT_CORE_LIB -DQT_GUI_LIB -DQT_WIDGETS_LIB -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -I/usr/include/libusb-1.0 -isystem /usr/include/x86_64-linux-gnu/qt6/QtWidgets -isystem /usr/include/x86_64-linux-gnu/qt6 -isystem /usr/include/x86_64-linux-gnu/qt6/QtCore -isystem /usr/lib/x86_64-linux-gnu/qt6/mkspecs/linux-g++ -isystem /usr/include/x86_64-linux-gnu/qt6/QtGui -g -std=gnu11 -fPIC -o CMakeFiles/logger.dir/cat.c.o -c /home/marcin/Programowanie/contest_logger/cat.c",
+  "file": "/home/marcin/Programowanie/contest_logger/cat.c",
+  "output": "CMakeFiles/logger.dir/cat.c.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -DHAVE_HAMLIB=1 -DQT_CORE_LIB -DQT_GUI_LIB -DQT_WIDGETS_LIB -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -I/usr/include/libusb-1.0 -isystem /usr/include/x86_64-linux-gnu/qt6/QtWidgets -isystem /usr/include/x86_64-linux-gnu/qt6 -isystem /usr/include/x86_64-linux-gnu/qt6/QtCore -isystem /usr/lib/x86_64-linux-gnu/qt6/mkspecs/linux-g++ -isystem /usr/include/x86_64-linux-gnu/qt6/QtGui -g -std=gnu11 -fPIC -o CMakeFiles/logger.dir/dxcluster.c.o -c /home/marcin/Programowanie/contest_logger/dxcluster.c",
+  "file": "/home/marcin/Programowanie/contest_logger/dxcluster.c",
+  "output": "CMakeFiles/logger.dir/dxcluster.c.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -DHAVE_HAMLIB=1 -DQT_CORE_LIB -DQT_GUI_LIB -DQT_WIDGETS_LIB -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -I/usr/include/libusb-1.0 -isystem /usr/include/x86_64-linux-gnu/qt6/QtWidgets -isystem /usr/include/x86_64-linux-gnu/qt6 -isystem /usr/include/x86_64-linux-gnu/qt6/QtCore -isystem /usr/lib/x86_64-linux-gnu/qt6/mkspecs/linux-g++ -isystem /usr/include/x86_64-linux-gnu/qt6/QtGui -g -std=gnu11 -fPIC -o CMakeFiles/logger.dir/export.c.o -c /home/marcin/Programowanie/contest_logger/export.c",
+  "file": "/home/marcin/Programowanie/contest_logger/export.c",
+  "output": "CMakeFiles/logger.dir/export.c.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -DHAVE_HAMLIB=1 -DQT_CORE_LIB -DQT_GUI_LIB -DQT_WIDGETS_LIB -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -I/usr/include/libusb-1.0 -isystem /usr/include/x86_64-linux-gnu/qt6/QtWidgets -isystem /usr/include/x86_64-linux-gnu/qt6 -isystem /usr/include/x86_64-linux-gnu/qt6/QtCore -isystem /usr/lib/x86_64-linux-gnu/qt6/mkspecs/linux-g++ -isystem /usr/include/x86_64-linux-gnu/qt6/QtGui -g -std=gnu11 -fPIC -o CMakeFiles/logger.dir/stats.c.o -c /home/marcin/Programowanie/contest_logger/stats.c",
+  "file": "/home/marcin/Programowanie/contest_logger/stats.c",
+  "output": "CMakeFiles/logger.dir/stats.c.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -DHAVE_HAMLIB=1 -DQT_CORE_LIB -DQT_GUI_LIB -DQT_WIDGETS_LIB -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -I/usr/include/libusb-1.0 -isystem /usr/include/x86_64-linux-gnu/qt6/QtWidgets -isystem /usr/include/x86_64-linux-gnu/qt6 -isystem /usr/include/x86_64-linux-gnu/qt6/QtCore -isystem /usr/lib/x86_64-linux-gnu/qt6/mkspecs/linux-g++ -isystem /usr/include/x86_64-linux-gnu/qt6/QtGui -g -std=gnu11 -fPIC -o CMakeFiles/logger.dir/maidenhead.c.o -c /home/marcin/Programowanie/contest_logger/maidenhead.c",
+  "file": "/home/marcin/Programowanie/contest_logger/maidenhead.c",
+  "output": "CMakeFiles/logger.dir/maidenhead.c.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -g -std=gnu11 -o CMakeFiles/regression_tests.dir/tests/regression/regression_tests.c.o -c /home/marcin/Programowanie/contest_logger/tests/regression/regression_tests.c",
+  "file": "/home/marcin/Programowanie/contest_logger/tests/regression/regression_tests.c",
+  "output": "CMakeFiles/regression_tests.dir/tests/regression/regression_tests.c.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -g -std=gnu11 -o CMakeFiles/regression_tests.dir/suggestion.c.o -c /home/marcin/Programowanie/contest_logger/suggestion.c",
+  "file": "/home/marcin/Programowanie/contest_logger/suggestion.c",
+  "output": "CMakeFiles/regression_tests.dir/suggestion.c.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -g -std=gnu11 -o CMakeFiles/regression_tests.dir/config.c.o -c /home/marcin/Programowanie/contest_logger/config.c",
+  "file": "/home/marcin/Programowanie/contest_logger/config.c",
+  "output": "CMakeFiles/regression_tests.dir/config.c.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -g -std=gnu11 -o CMakeFiles/regression_tests.dir/cty.c.o -c /home/marcin/Programowanie/contest_logger/cty.c",
+  "file": "/home/marcin/Programowanie/contest_logger/cty.c",
+  "output": "CMakeFiles/regression_tests.dir/cty.c.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -g -std=gnu11 -o CMakeFiles/regression_tests.dir/contest.c.o -c /home/marcin/Programowanie/contest_logger/contest.c",
+  "file": "/home/marcin/Programowanie/contest_logger/contest.c",
+  "output": "CMakeFiles/regression_tests.dir/contest.c.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -g -std=gnu11 -o CMakeFiles/regression_tests.dir/qso.c.o -c /home/marcin/Programowanie/contest_logger/qso.c",
+  "file": "/home/marcin/Programowanie/contest_logger/qso.c",
+  "output": "CMakeFiles/regression_tests.dir/qso.c.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -g -std=gnu11 -o CMakeFiles/regression_tests.dir/db.c.o -c /home/marcin/Programowanie/contest_logger/db.c",
+  "file": "/home/marcin/Programowanie/contest_logger/db.c",
+  "output": "CMakeFiles/regression_tests.dir/db.c.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -g -std=gnu11 -o CMakeFiles/regression_tests.dir/export.c.o -c /home/marcin/Programowanie/contest_logger/export.c",
+  "file": "/home/marcin/Programowanie/contest_logger/export.c",
+  "output": "CMakeFiles/regression_tests.dir/export.c.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -g -std=gnu11 -o CMakeFiles/regression_tests.dir/stats.c.o -c /home/marcin/Programowanie/contest_logger/stats.c",
+  "file": "/home/marcin/Programowanie/contest_logger/stats.c",
+  "output": "CMakeFiles/regression_tests.dir/stats.c.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -g -std=gnu11 -o CMakeFiles/regression_tests.dir/maidenhead.c.o -c /home/marcin/Programowanie/contest_logger/maidenhead.c",
+  "file": "/home/marcin/Programowanie/contest_logger/maidenhead.c",
+  "output": "CMakeFiles/regression_tests.dir/maidenhead.c.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -g -std=gnu11 -o CMakeFiles/unit_tests.dir/tests/unit/unit_tests.c.o -c /home/marcin/Programowanie/contest_logger/tests/unit/unit_tests.c",
+  "file": "/home/marcin/Programowanie/contest_logger/tests/unit/unit_tests.c",
+  "output": "CMakeFiles/unit_tests.dir/tests/unit/unit_tests.c.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -g -std=gnu11 -o CMakeFiles/unit_tests.dir/app_controller.c.o -c /home/marcin/Programowanie/contest_logger/app_controller.c",
+  "file": "/home/marcin/Programowanie/contest_logger/app_controller.c",
+  "output": "CMakeFiles/unit_tests.dir/app_controller.c.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -g -std=gnu11 -o CMakeFiles/unit_tests.dir/cat.c.o -c /home/marcin/Programowanie/contest_logger/cat.c",
+  "file": "/home/marcin/Programowanie/contest_logger/cat.c",
+  "output": "CMakeFiles/unit_tests.dir/cat.c.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -g -std=gnu11 -o CMakeFiles/unit_tests.dir/db.c.o -c /home/marcin/Programowanie/contest_logger/db.c",
+  "file": "/home/marcin/Programowanie/contest_logger/db.c",
+  "output": "CMakeFiles/unit_tests.dir/db.c.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -g -std=gnu11 -o CMakeFiles/unit_tests.dir/suggestion.c.o -c /home/marcin/Programowanie/contest_logger/suggestion.c",
+  "file": "/home/marcin/Programowanie/contest_logger/suggestion.c",
+  "output": "CMakeFiles/unit_tests.dir/suggestion.c.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -g -std=gnu11 -o CMakeFiles/unit_tests.dir/config.c.o -c /home/marcin/Programowanie/contest_logger/config.c",
+  "file": "/home/marcin/Programowanie/contest_logger/config.c",
+  "output": "CMakeFiles/unit_tests.dir/config.c.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -g -std=gnu11 -o CMakeFiles/unit_tests.dir/contest.c.o -c /home/marcin/Programowanie/contest_logger/contest.c",
+  "file": "/home/marcin/Programowanie/contest_logger/contest.c",
+  "output": "CMakeFiles/unit_tests.dir/contest.c.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -g -std=gnu11 -o CMakeFiles/unit_tests.dir/cty.c.o -c /home/marcin/Programowanie/contest_logger/cty.c",
+  "file": "/home/marcin/Programowanie/contest_logger/cty.c",
+  "output": "CMakeFiles/unit_tests.dir/cty.c.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -g -std=gnu11 -o CMakeFiles/unit_tests.dir/qso.c.o -c /home/marcin/Programowanie/contest_logger/qso.c",
+  "file": "/home/marcin/Programowanie/contest_logger/qso.c",
+  "output": "CMakeFiles/unit_tests.dir/qso.c.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -g -std=gnu11 -o CMakeFiles/unit_tests.dir/export.c.o -c /home/marcin/Programowanie/contest_logger/export.c",
+  "file": "/home/marcin/Programowanie/contest_logger/export.c",
+  "output": "CMakeFiles/unit_tests.dir/export.c.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -g -std=gnu11 -o CMakeFiles/unit_tests.dir/stats.c.o -c /home/marcin/Programowanie/contest_logger/stats.c",
+  "file": "/home/marcin/Programowanie/contest_logger/stats.c",
+  "output": "CMakeFiles/unit_tests.dir/stats.c.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -g -std=gnu11 -o CMakeFiles/unit_tests.dir/maidenhead.c.o -c /home/marcin/Programowanie/contest_logger/maidenhead.c",
+  "file": "/home/marcin/Programowanie/contest_logger/maidenhead.c",
+  "output": "CMakeFiles/unit_tests.dir/maidenhead.c.o"
+},
+{
+  "directory": "/home/marcin/Programowanie/contest_logger/build",
+  "command": "/usr/bin/gcc -I/home/marcin/Programowanie/contest_logger/src -I/home/marcin/Programowanie/contest_logger -g -std=gnu11 -o CMakeFiles/unit_tests.dir/dxcluster.c.o -c /home/marcin/Programowanie/contest_logger/dxcluster.c",
+  "file": "/home/marcin/Programowanie/contest_logger/dxcluster.c",
+  "output": "CMakeFiles/unit_tests.dir/dxcluster.c.o"
+}
+]
