@@ -48,6 +48,8 @@ flowchart LR
 	subgraph External[External Inputs]
 		Conf[logger.conf]
 		ContestDefs[contest_defs/*.conf or custom contest file]
+		DXLogRaw[raw DXLog definition file]
+		ImportedDef[normalized contest .conf file]
 		CTYFile[wl_cty.dat]
 		SQLite[(logger.db)]
 		Cluster[(DXCluster server)]
@@ -73,6 +75,8 @@ flowchart LR
 	Export --> DB
 	Config --> Conf
 	Contest --> ContestDefs
+	Contest --> ImportedDef
+	DXLogRaw --> Contest
 	CTY --> CTYFile
 	DB --> SQLite
 	DXC --> Cluster
@@ -255,6 +259,9 @@ Most important operational rules:
 - `Space` moves between visible input fields, it does not insert a literal space into the entry line
 - in contest mode you enter `Call` and received `Exchange`, while sent exchange is generated from the contest definition
 - callsign suggestions are shown only while editing the first field and can be accepted with `Tab` or `Space`
+- `contest import <dxlog_file> [output_conf]` imports a raw DXLog definition into a normalized local contest config (default output: `contest.conf`) and loads it immediately
+- `contest import-only <dxlog_file> [output_conf]` imports and writes the normalized file without loading it and without changing active `CONTEST_DEF_FILE`
+- after import, warning details about ignored DXLog-only rules are shown in the info line
 
 ## Data files
 

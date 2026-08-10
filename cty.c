@@ -147,7 +147,8 @@ static int match_prefix(const char *call, const char *prefix) {
  * @return Nothing.
  */
 static void add_country_entry(const char *country, const char *prefix, int cq,
-                              int itu, double lat, double lon) {
+                              int itu, double lat, double lon,
+                              const char *continent) {
   if (!country || !prefix || !prefix[0])
     return;
 
@@ -171,6 +172,8 @@ static void add_country_entry(const char *country, const char *prefix, int cq,
 
   strncpy(e->prefix, prefix, sizeof(e->prefix) - 1);
   strncpy(e->country, country, sizeof(e->country) - 1);
+  if (continent && continent[0])
+    strncpy(e->continent, continent, sizeof(e->continent) - 1);
   e->cq_zone = cq;
   e->itu_zone = itu;
   e->lat = lat;
@@ -212,6 +215,7 @@ int cty_load(const char *filename) {
 
   char line[512];
   char country[64] = {0};
+  char continent[4] = {0};
   int cq_zone = 0;
   int itu_zone = 0;
   double lat = 0.0;
@@ -241,6 +245,10 @@ int cty_load(const char *filename) {
       snprintf(country, sizeof(country), "%s", tokens[0]);
       cq_zone = atoi(tokens[1]);
       itu_zone = atoi(tokens[2]);
+      if (count >= 4)
+        snprintf(continent, sizeof(continent), "%s", tokens[3]);
+      else
+        continent[0] = 0;
 
       if (count >= 6) {
         lat = strtod(tokens[4], NULL);
@@ -252,7 +260,7 @@ int cty_load(const char *filename) {
 
       if (count >= 8) {
         add_country_entry(country, tokens[count - 1], cq_zone, itu_zone, lat,
-                          lon);
+                          lon, continent);
       }
 
       continue;
@@ -266,7 +274,8 @@ int cty_load(const char *filename) {
          tok = strtok_r(NULL, ",; \t\r\n", &prefix_save)) {
       trim(tok);
       if (tok[0])
-        add_country_entry(country, tok, cq_zone, itu_zone, lat, lon);
+        add_country_entry(country, tok, cq_zone, itu_zone, lat, lon,
+                          continent);
     }
   }
 

@@ -6,6 +6,7 @@
 typedef struct {
   char prefix[16];
   char country[64];
+  char continent[4];
 
   int cq_zone;
   int itu_zone;

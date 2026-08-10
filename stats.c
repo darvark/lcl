@@ -1,5 +1,8 @@
 #include "stats.h"
 
+#include "config.h"
+
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -58,22 +61,132 @@ static int mult_exists(const char *key) {
   return 0;
 }
 
+static int is_sp_callsign(const char *call) {
+  const CtyEntry *cty = cty_lookup(call);
+  if (!cty || !cty->country[0])
+    return 0;
+  return strcmp(cty->country, "Poland") == 0;
+}
+
+static int build_callsign_prefix(const char *call, char *out,
+                                 size_t out_size) {
+  if (!out || out_size < 2)
+    return 0;
+
+  out[0] = 0;
+  if (!call || !call[0])
+    return 0;
+
+  char clean[32] = {0};
+  size_t clean_len = 0;
+  for (size_t i = 0; call[i] && clean_len < sizeof(clean) - 1; i++) {
+    unsigned char ch = (unsigned char)call[i];
+    if (isalnum(ch))
+      clean[clean_len++] = (char)toupper(ch);
+  }
+
+  if (clean_len == 0)
+    return 0;
+
+  size_t end = 0;
+  for (size_t i = 0; i < clean_len; i++) {
+    end = i + 1;
+    if (isdigit((unsigned char)clean[i]))
+      break;
+  }
+
+  if (end == 0)
+    return 0;
+
+  if (end >= out_size)
+    end = out_size - 1;
+
+  memcpy(out, clean, end);
+  out[end] = 0;
+  return out[0] != 0;
+}
+
 static void maybe_add_multiplier(const QSO *q) {
-  if (!q || !q->country[0] || strcmp(q->country, "UNKNOWN") == 0)
+  if (!q)
     return;
 
   char key[96] = {0};
   switch (scoring_def.multiplier_type) {
   case CONTEST_MULT_NONE:
     return;
-  case CONTEST_MULT_BAND_DXCC:
+  case CONTEST_MULT_DXCC_PER_BAND:
+    if (!q->country[0] || strcmp(q->country, "UNKNOWN") == 0)
+      return;
     snprintf(key, sizeof(key), "%s|%s", q->band, q->country);
     break;
+  case CONTEST_MULT_ZONE_PER_BAND:
+    if (q->cq_zone <= 0)
+      return;
+    snprintf(key, sizeof(key), "%s|%d", q->band, q->cq_zone);
+    break;
+  case CONTEST_MULT_ZONE:
+    if (q->cq_zone <= 0)
+      return;
+    snprintf(key, sizeof(key), "%d", q->cq_zone);
+    break;
+  case CONTEST_MULT_PREFIX: {
+    char prefix[32] = {0};
+    if (!build_callsign_prefix(q->call, prefix, sizeof(prefix)))
+      return;
+    snprintf(key, sizeof(key), "%s", prefix);
+    break;
+  }
+  case CONTEST_MULT_PREFIX_PER_BAND: {
+    char prefix[32] = {0};
+    if (!build_callsign_prefix(q->call, prefix, sizeof(prefix)))
+      return;
+    snprintf(key, sizeof(key), "%s|%s", q->band, prefix);
+    break;
+  }
   case CONTEST_MULT_MODE_DXCC:
+    if (!q->country[0] || strcmp(q->country, "UNKNOWN") == 0)
+      return;
     snprintf(key, sizeof(key), "%s|%s", q->mode, q->country);
     break;
+  case CONTEST_MULT_DXCC_PLUS_ZONE_PER_BAND:
+    if (!q->country[0] || strcmp(q->country, "UNKNOWN") == 0)
+      return;
+    if (mult_count < MAX_QSO) {
+      snprintf(key, sizeof(key), "D|%s|%s", q->band, q->country);
+      if (!mult_exists(key))
+        snprintf(mult_list[mult_count++], sizeof(mult_list[0]), "%s", key);
+    }
+    if (q->cq_zone > 0 && mult_count < MAX_QSO) {
+      snprintf(key, sizeof(key), "Z|%s|%d", q->band, q->cq_zone);
+      if (!mult_exists(key))
+        snprintf(mult_list[mult_count++], sizeof(mult_list[0]), "%s", key);
+    }
+    return;
+  case CONTEST_MULT_SPDX: {
+    const int own_is_sp = is_sp_callsign(config.station_call);
+    const int qso_is_sp = strcmp(q->country, "Poland") == 0;
+
+    if (own_is_sp) {
+      if (qso_is_sp || !q->country[0] || strcmp(q->country, "UNKNOWN") == 0)
+        return;
+      snprintf(key, sizeof(key), "D|%s|%s", q->band, q->country);
+    } else {
+      if (!qso_is_sp || !q->exchange_recv[0])
+        return;
+
+      char exch[32] = {0};
+      snprintf(exch, sizeof(exch), "%s", q->exchange_recv);
+      for (size_t i = 0; exch[i]; i++)
+        exch[i] = (char)toupper((unsigned char)exch[i]);
+
+      snprintf(key, sizeof(key), "V|%s|%s", q->band, exch);
+    }
+    break;
+  }
   case CONTEST_MULT_DXCC:
   default:
+    if (!q->country[0] || strcmp(q->country, "UNKNOWN") == 0)
+      return;
     snprintf(key, sizeof(key), "%s", q->country);
     break;
   }

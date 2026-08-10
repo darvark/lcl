@@ -96,6 +96,30 @@ static char *read_whole_file(const char *path) {
   return buf;
 }
 
+static void join_path(char *out, size_t out_size,
+                      const char *base, const char *leaf) {
+  if (!out || out_size == 0)
+    return;
+
+  out[0] = 0;
+
+  if (!base)
+    base = "";
+  if (!leaf)
+    leaf = "";
+
+  strncpy(out, base, out_size - 1);
+  out[out_size - 1] = 0;
+
+  if (out[0]) {
+    size_t len = strlen(out);
+    if (len > 0 && out[len - 1] != '/')
+      strncat(out, "/", out_size - strlen(out) - 1);
+  }
+
+  strncat(out, leaf, out_size - strlen(out) - 1);
+}
+
 static void send_controller_chars(const char *text);
 static void send_controller_text(const char *text);
 
@@ -217,7 +241,7 @@ static void test_controller_static_tx_exchange_override(const char *tmp_dir) {
                 "create isolated directory for static tx exchange test");
 
   char contest_path[512];
-  snprintf(contest_path, sizeof(contest_path), "%s/contest.conf", case_dir);
+  join_path(contest_path, sizeof(contest_path), case_dir, "contest.conf");
 
   const char *contest_text =
       "NAME=IARU-LIKE\n"
@@ -229,7 +253,7 @@ static void test_controller_static_tx_exchange_override(const char *tmp_dir) {
                 "write static exchange contest definition");
 
   char conf_path[512];
-  snprintf(conf_path, sizeof(conf_path), "%s/logger.conf", case_dir);
+  join_path(conf_path, sizeof(conf_path), case_dir, "logger.conf");
   const char *conf_text =
       "CONTEST_DEF_FILE=contest.conf\n"
       "CONTEST_TX_EXCHANGE=28\n";
@@ -279,7 +303,7 @@ static void test_controller_numeric_static_exchange_template(const char *tmp_dir
                 "create isolated directory for numeric static exchange test");
 
   char contest_path[512];
-  snprintf(contest_path, sizeof(contest_path), "%s/contest.conf", case_dir);
+  join_path(contest_path, sizeof(contest_path), case_dir, "contest.conf");
 
   const char *contest_text =
       "NAME=IARU-LIKE\n"
@@ -291,7 +315,7 @@ static void test_controller_numeric_static_exchange_template(const char *tmp_dir
                 "write numeric static exchange contest definition");
 
   char conf_path[512];
-  snprintf(conf_path, sizeof(conf_path), "%s/logger.conf", case_dir);
+  join_path(conf_path, sizeof(conf_path), case_dir, "logger.conf");
   const char *conf_text =
       "CONTEST_DEF_FILE=contest.conf\n";
   expect_int_eq(write_text_file(conf_path, conf_text), 0,
@@ -340,7 +364,7 @@ static void test_controller_incremental_exchange_generation(const char *tmp_dir)
                 "create isolated directory for incremental exchange test");
 
   char contest_path[512];
-  snprintf(contest_path, sizeof(contest_path), "%s/contest.conf", case_dir);
+  join_path(contest_path, sizeof(contest_path), case_dir, "contest.conf");
 
   const char *contest_text =
       "NAME=SERIAL-TEST\n"
@@ -352,7 +376,7 @@ static void test_controller_incremental_exchange_generation(const char *tmp_dir)
                 "write incremental exchange contest definition");
 
   char conf_path[512];
-  snprintf(conf_path, sizeof(conf_path), "%s/logger.conf", case_dir);
+  join_path(conf_path, sizeof(conf_path), case_dir, "logger.conf");
   const char *conf_text =
       "CONTEST_DEF_FILE=contest.conf\n"
       "CONTEST_TX_EXCHANGE=28\n";
@@ -438,7 +462,7 @@ static void test_controller_contest_mode_overrides_detected_mode(const char *tmp
                 "create isolated directory for contest mode override test");
 
   char contest_path[512];
-  snprintf(contest_path, sizeof(contest_path), "%s/contest.conf", case_dir);
+  join_path(contest_path, sizeof(contest_path), case_dir, "contest.conf");
 
   const char *contest_text =
       "NAME=MODE-OVERRIDE\n"
@@ -450,7 +474,7 @@ static void test_controller_contest_mode_overrides_detected_mode(const char *tmp
                 "write mode override contest definition");
 
   char conf_path[512];
-  snprintf(conf_path, sizeof(conf_path), "%s/logger.conf", case_dir);
+  join_path(conf_path, sizeof(conf_path), case_dir, "logger.conf");
   const char *conf_text =
       "CONTEST_DEF_FILE=contest.conf\n"
       "CAT_MODE_FROM_RIG=1\n";
@@ -748,6 +772,25 @@ static void test_contest_definition_and_cabrillo(const char *tmp_dir) {
   expect_int_eq(def.points_same_band_dxcc, 2,
                 "POINTS_SAME_BAND_DXCC parsed");
 
+  expect_int_eq((int)contest_multiplier_from_text("DXCC"),
+                (int)CONTEST_MULT_DXCC,
+                "MULTIPLIER DXCC parsed");
+  expect_int_eq((int)contest_multiplier_from_text("DXCC_PER_BAND"),
+                (int)CONTEST_MULT_DXCC_PER_BAND,
+                "MULTIPLIER DXCC_PER_BAND parsed");
+  expect_int_eq((int)contest_multiplier_from_text("ZONE_PER_BAND"),
+                (int)CONTEST_MULT_ZONE_PER_BAND,
+                "MULTIPLIER ZONE_PER_BAND parsed");
+  expect_int_eq((int)contest_multiplier_from_text("ZONE"),
+                (int)CONTEST_MULT_ZONE,
+                "MULTIPLIER ZONE parsed");
+  expect_int_eq((int)contest_multiplier_from_text("PREFIX"),
+                (int)CONTEST_MULT_PREFIX,
+                "MULTIPLIER PREFIX parsed");
+  expect_int_eq((int)contest_multiplier_from_text("PREFIX_PER_BAND"),
+                (int)CONTEST_MULT_PREFIX_PER_BAND,
+                "MULTIPLIER PREFIX_PER_BAND parsed");
+
   const int base_qso_count = qso_count;
   snprintf(expected_serial_1, sizeof(expected_serial_1), "%d",
            base_qso_count + 1);
@@ -789,6 +832,106 @@ static void test_contest_definition_and_cabrillo(const char *tmp_dir) {
   }
 
   free(cbr);
+}
+
+static void test_dxlog_definition_compatibility(const char *tmp_dir) {
+  char path_wpx[512];
+  char path_ww[512];
+  char path_spdx[512];
+  char err[128] = {0};
+  ContestDefinition def;
+
+  snprintf(path_wpx, sizeof(path_wpx), "%s/dxlog_cqwpx.txt", tmp_dir);
+  snprintf(path_ww, sizeof(path_ww), "%s/dxlog_cqww.txt", tmp_dir);
+  snprintf(path_spdx, sizeof(path_spdx), "%s/dxlog_spdx.txt", tmp_dir);
+
+  expect_int_eq(write_text_file(path_wpx,
+      "CONTESTNAME=CQ WPX Contest\n"
+      "MODES=CW;SSB\n"
+      "MULT1_TYPE=WPX\n"
+      "MULT1_COUNT=ALL\n"
+      "FIELD_RCVD_TYPE=NR\n"),
+      0, "write DXLog CQWPX sample");
+  expect_int_eq(contest_definition_load(path_wpx, &def, err, sizeof(err)), 0,
+                "load DXLog CQWPX sample");
+  expect_str_eq(def.exchange_sent_template, "#",
+                "DXLog CQWPX should map to serial TX exchange");
+  expect_int_eq((int)def.multiplier_type, (int)CONTEST_MULT_PREFIX,
+                "DXLog CQWPX should map WPX multiplier to PREFIX");
+
+  expect_int_eq(write_text_file(path_ww,
+      "CONTESTNAME=CQ World Wide\n"
+      "MODES=CW;SSB\n"
+      "MULT1_TYPE=DXCC\n"
+      "MULT1_COUNT=PER_BAND\n"
+      "MULT2_TYPE=CQZONE\n"
+      "MULT2_COUNT=PER_BAND\n"
+      "FIELD_RCVD_TYPE=CQZONE\n"),
+      0, "write DXLog CQWW sample");
+  expect_int_eq(contest_definition_load(path_ww, &def, err, sizeof(err)), 0,
+                "load DXLog CQWW sample");
+  expect_str_eq(def.exchange_sent_template, "CQZONE",
+                "DXLog CQWW should map TX exchange to CQZONE");
+  expect_int_eq((int)def.multiplier_type,
+                (int)CONTEST_MULT_DXCC_PLUS_ZONE_PER_BAND,
+                "DXLog CQWW should map to combined DXCC+ZONE per band multiplier");
+
+  expect_int_eq(write_text_file(path_spdx,
+      "CONTESTNAME=SP DX Contest\n"
+      "MODES=CW;SSB\n"
+      "MULT1_TYPE=CUSTOM\n"
+      "MULT1_COUNT=PER_BAND\n"
+      "MULT2_TYPE=DXCC\n"
+      "MULT2_COUNT=PER_BAND\n"
+      "FIELD_RCVD_TYPE=DXCC:SP=MULT;!DXCC:SP=NR\n"),
+      0, "write DXLog SPDX sample");
+  expect_int_eq(contest_definition_load(path_spdx, &def, err, sizeof(err)), 0,
+                "load DXLog SPDX sample");
+  expect_int_eq((int)def.multiplier_type, (int)CONTEST_MULT_SPDX,
+                "DXLog SPDX should map to dedicated SPDX multiplier mode");
+}
+
+static void test_dxlog_importer_generates_local_conf(const char *tmp_dir) {
+  char src_path[512];
+  char dst_path[512];
+  char err[128] = {0};
+  char warn[256] = {0};
+
+  snprintf(src_path, sizeof(src_path), "%s/raw_dxlog_cqww.txt", tmp_dir);
+  snprintf(dst_path, sizeof(dst_path), "%s/contest_imported.conf", tmp_dir);
+
+  expect_int_eq(write_text_file(src_path,
+      "CONTESTNAME=CQ World Wide\n"
+      "MODES=CW;SSB\n"
+      "MULT1_TYPE=DXCC\n"
+      "MULT1_COUNT=PER_BAND\n"
+      "MULT2_TYPE=CQZONE\n"
+      "MULT2_COUNT=PER_BAND\n"
+      "FIELD_RCVD_TYPE=CQZONE\n"
+      "POINTS_FIELD_BAND_MODE=ALL;ALL;ALL;ALL;3\n"
+      "SCORE_TOTAL_FX=$FIELDVALUE.Points*$FIELDVALUE.Mult1\n"),
+      0, "write raw DXLog source for importer");
+
+    expect_int_eq(contest_definition_import_dxlog(src_path, dst_path, err,
+                          sizeof(err), warn,
+                          sizeof(warn)),
+                0, "DXLog importer should create normalized file");
+    expect_true(strstr(warn, "Ignored DXLog rules") != NULL,
+          "importer should report ignored DXLog rules");
+    expect_true(strstr(warn, "POINTS_FIELD_BAND_MODE") != NULL,
+          "importer warning should include POINTS_FIELD_BAND_MODE");
+
+  char *imported = read_whole_file(dst_path);
+  expect_true(imported != NULL, "imported contest.conf should be readable");
+  if (imported) {
+    expect_true(strstr(imported, "NAME=CQ World Wide") != NULL,
+                "imported config should keep contest name");
+    expect_true(strstr(imported, "MULTIPLIER=DXCC_PLUS_ZONE_PER_BAND") != NULL,
+                "imported config should normalize combined CQWW multipliers");
+    expect_true(strstr(imported, "FIELD=CQZONE,CQ Zone,required") != NULL,
+                "imported config should include normalized exchange field");
+  }
+  free(imported);
 }
 
 static void test_maidenhead(void) {
@@ -1236,6 +1379,89 @@ static void test_contest_preset_from_build_dir_uses_defined_settings(void) {
                 "restore cwd after contest preset path test");
 }
 
+static void test_contest_import_only_does_not_autoload_or_set_active_path(
+    const char *tmp_dir) {
+  char case_dir[512];
+  snprintf(case_dir, sizeof(case_dir), "%s/import_only_case", tmp_dir);
+  expect_int_eq(mkdir(case_dir, 0777), 0,
+                "create isolated directory for import-only command test");
+
+  char src_path[512];
+  char out_path[512];
+  char conf_path[512];
+  strncpy(src_path, case_dir, sizeof(src_path) - 1);
+  src_path[sizeof(src_path) - 1] = '\0';
+  strncat(src_path, "/raw_dxlog_import_only.txt",
+    sizeof(src_path) - strlen(src_path) - 1);
+
+  strncpy(out_path, case_dir, sizeof(out_path) - 1);
+  out_path[sizeof(out_path) - 1] = '\0';
+  strncat(out_path, "/import_only.conf",
+    sizeof(out_path) - strlen(out_path) - 1);
+
+  strncpy(conf_path, case_dir, sizeof(conf_path) - 1);
+  conf_path[sizeof(conf_path) - 1] = '\0';
+  strncat(conf_path, "/logger.conf",
+    sizeof(conf_path) - strlen(conf_path) - 1);
+
+  const char *raw_dxlog_text =
+      "CONTESTNAME=IMPORT-ONLY-CHECK\n"
+      "MODES=CW;SSB\n"
+      "MULT1_TYPE=DXCC\n"
+      "MULT1_COUNT=PER_BAND\n"
+      "FIELD_RCVD_TYPE=NR\n"
+      "POINTS_FIELD_BAND_MODE=ALL;ALL;ALL;ALL;3\n";
+
+  expect_int_eq(write_text_file(src_path, raw_dxlog_text), 0,
+                "write raw DXLog for import-only command test");
+  expect_int_eq(write_text_file(conf_path, "CONTEST_DEF_FILE=\n"), 0,
+                "write empty logger.conf for import-only command test");
+
+  char old_cwd[512];
+  expect_true(getcwd(old_cwd, sizeof(old_cwd)) != NULL,
+              "getcwd before import-only command test");
+  expect_int_eq(chdir(case_dir), 0,
+                "chdir to import-only command test directory");
+
+  app_controller_init();
+
+  char original_path[sizeof(config.contest_definition_path)];
+  snprintf(original_path, sizeof(original_path), "%s",
+           config.contest_definition_path);
+
+  AppRenderState state;
+  app_controller_get_render_state(&state);
+  expect_true(!state.contest_entry_mode,
+              "startup without contest definition should keep contest mode off");
+
+  app_controller_submit_command_text(
+      "contest import-only raw_dxlog_import_only.txt import_only.conf");
+
+  app_controller_get_render_state(&state);
+
+  expect_true(state.status != NULL, "import-only status should exist");
+  if (state.status)
+    expect_true(strstr(state.status, "Contest imported (not loaded)") != NULL,
+                "import-only should report imported but not loaded status");
+
+  expect_true(!state.contest_entry_mode,
+              "import-only should not auto-load contest entry mode");
+  expect_str_eq(config.contest_definition_path, original_path,
+                "import-only should not change active contest definition path");
+
+  char *imported = read_whole_file(out_path);
+  expect_true(imported != NULL,
+              "import-only command should generate output contest file");
+  if (imported)
+    expect_true(strstr(imported, "NAME=IMPORT-ONLY-CHECK") != NULL,
+                "import-only output should contain normalized contest name");
+  free(imported);
+
+  app_controller_shutdown();
+  expect_int_eq(chdir(old_cwd), 0,
+                "restore cwd after import-only command test");
+}
+
 int main(void) {
   char tmp_dir[256];
   if (make_temp_dir(tmp_dir, sizeof(tmp_dir)) != 0) {
@@ -1255,6 +1481,8 @@ int main(void) {
   test_qso_add_mark_and_stats();
   test_export_csv_adif(tmp_dir);
   test_contest_definition_and_cabrillo(tmp_dir);
+  test_dxlog_definition_compatibility(tmp_dir);
+  test_dxlog_importer_generates_local_conf(tmp_dir);
   test_maidenhead();
   test_dxcluster_set_status();
   test_dxcluster_start_stop();
@@ -1269,6 +1497,7 @@ int main(void) {
   test_manual_frequency_entry_from_call_field();
   test_named_log_commands();
   test_contest_preset_from_build_dir_uses_defined_settings();
+  test_contest_import_only_does_not_autoload_or_set_active_path(tmp_dir);
 
   if (g_failures == 0) {
     printf("All unit tests passed.\n");

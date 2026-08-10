@@ -192,6 +192,14 @@ static void clear_active_entry_fields(void) {
   update_composed_input_line();
 }
 
+static void clear_active_call_exchange_fields(void) {
+  const int radio_idx = active_radio_index();
+  entry_call_by_radio[radio_idx][0] = 0;
+  entry_rst_by_radio[radio_idx][0] = 0;
+  active_entry_field_by_radio[radio_idx] = ENTRY_FIELD_CALL;
+  update_composed_input_line();
+}
+
 /*
  * Build a display-only composed input line from split entry fields.
  *
@@ -703,9 +711,91 @@ static int was_band_dxcc_worked(const char *band, const char *country,
   return 0;
 }
 
+static int is_low_band(const char *band) {
+  return band && (strcmp(band, "160") == 0 || strcmp(band, "80") == 0 ||
+                  strcmp(band, "40") == 0);
+}
+
+static int call_is_maritime_mobile(const char *call) {
+  if (!call || !call[0])
+    return 0;
+  const size_t len = strlen(call);
+  return (len >= 3 && strcmp(call + len - 3, "/MM") == 0) ||
+         (len >= 3 && strcmp(call + len - 3, "/AM") == 0);
+}
+
+static int contest_name_contains(const char *needle) {
+  if (!needle || !needle[0])
+    return 0;
+
+  char up_name[96] = {0};
+  char up_cab[96] = {0};
+  char up_needle[48] = {0};
+  snprintf(up_name, sizeof(up_name), "%s", active_contest_def.name);
+  snprintf(up_cab, sizeof(up_cab), "%s", active_contest_def.cabrillo_name);
+  snprintf(up_needle, sizeof(up_needle), "%s", needle);
+  for (size_t i = 0; up_name[i]; i++)
+    up_name[i] = (char)toupper((unsigned char)up_name[i]);
+  for (size_t i = 0; up_cab[i]; i++)
+    up_cab[i] = (char)toupper((unsigned char)up_cab[i]);
+  for (size_t i = 0; up_needle[i]; i++)
+    up_needle[i] = (char)toupper((unsigned char)up_needle[i]);
+
+  return strstr(up_name, up_needle) != NULL || strstr(up_cab, up_needle) != NULL;
+}
+
 static int resolve_contest_points(const char *mode, const char *band,
                                   const char *country,
+                                  const char *call,
                                   const char *contest_id) {
+  const CtyEntry *src_cty = cty_lookup(config.station_call);
+  const CtyEntry *dst_cty = cty_lookup(call);
+  const char *src_country = src_cty ? src_cty->country : "";
+  const char *dst_country = dst_cty ? dst_cty->country : country;
+  const char *src_cont = src_cty ? src_cty->continent : "";
+  const char *dst_cont = dst_cty ? dst_cty->continent : "";
+  const int same_country = src_country[0] && dst_country &&
+                           strcmp(src_country, dst_country) == 0;
+  const int same_cont = src_cont[0] && dst_cont[0] && strcmp(src_cont, dst_cont) == 0;
+
+  if (contest_name_contains("CQ WPX")) {
+    if (same_country)
+      return 1;
+
+    if (same_cont) {
+      if (strcmp(src_cont, "NA") == 0 && strcmp(dst_cont, "NA") == 0)
+        return is_low_band(band) ? 4 : 2;
+      return is_low_band(band) ? 2 : 1;
+    }
+
+    return is_low_band(band) ? 6 : 3;
+  }
+
+  if (contest_name_contains("CQ WW") || contest_name_contains("CQ WORLD WIDE")) {
+    if (same_country)
+      return 0;
+    if (call_is_maritime_mobile(call))
+      return 0;
+    if (same_cont) {
+      if (strcmp(src_cont, "NA") == 0 && strcmp(dst_cont, "NA") == 0)
+        return 2;
+      return 1;
+    }
+    return 3;
+  }
+
+  if (contest_name_contains("SP DX")) {
+    const int src_is_sp = src_country[0] && strcmp(src_country, "Poland") == 0;
+    const int dst_is_sp = dst_country && strcmp(dst_country, "Poland") == 0;
+    if (src_is_sp && dst_is_sp)
+      return 0;
+    if (!src_is_sp && !dst_is_sp)
+      return 0;
+    if (!src_is_sp && dst_is_sp)
+      return 3;
+    return same_cont ? 1 : 3;
+  }
+
   const int base_points =
       active_contest_def.points_per_qso > 0 ? active_contest_def.points_per_qso
                                             : 1;
@@ -1293,6 +1383,73 @@ static int process_command(const char *cmd) {
   if (strcmp(command, "contest") == 0) {
     if (!arg[0]) {
       snprintf(status_text, sizeof(status_text), "Usage: contest <file>");
+    } else if ((strncmp(arg, "import", 6) == 0 &&
+                (arg[6] == 0 || isspace((unsigned char)arg[6]))) ||
+               (strncmp(arg, "import-only", 11) == 0 &&
+                (arg[11] == 0 || isspace((unsigned char)arg[11])))) {
+      char source[256] = {0};
+      char dest[256] = "contest.conf";
+      const int import_only = strncmp(arg, "import-only", 11) == 0;
+      const char *pimp = arg + (import_only ? 11 : 6);
+      while (*pimp && isspace((unsigned char)*pimp))
+        pimp++;
+
+      if (!*pimp) {
+        snprintf(status_text, sizeof(status_text),
+                 import_only
+                   ? "Usage: contest import-only <dxlog_file> [output_conf]"
+                   : "Usage: contest import <dxlog_file> [output_conf]");
+        return 1;
+      }
+
+      int n = sscanf(pimp, "%255s %255s", source, dest);
+      if (n < 1 || !source[0]) {
+        snprintf(status_text, sizeof(status_text),
+                 import_only
+                   ? "Usage: contest import-only <dxlog_file> [output_conf]"
+                   : "Usage: contest import <dxlog_file> [output_conf]");
+        return 1;
+      }
+
+      char resolved_source[512] = {0};
+      const char *src_path = source;
+      if (resolve_contest_definition_path(source, resolved_source,
+                                          sizeof(resolved_source)) == 0)
+        src_path = resolved_source;
+
+      char err[128] = {0};
+      char warn[256] = {0};
+      if (contest_definition_import_dxlog(src_path, dest, err, sizeof(err),
+                                          warn, sizeof(warn)) != 0) {
+        snprintf(status_text, sizeof(status_text), "Contest import failed: %.96s",
+                 err[0] ? err : "unknown");
+        info_text[0] = 0;
+        return 1;
+      }
+
+      if (warn[0])
+        snprintf(info_text, sizeof(info_text), "%.127s", warn);
+      else
+        info_text[0] = 0;
+
+      if (import_only) {
+        snprintf(status_text, sizeof(status_text),
+                 "Contest imported (not loaded)");
+        return 1;
+      }
+
+      snprintf(config.contest_definition_path,
+               sizeof(config.contest_definition_path), "%s", dest);
+      config_save("logger.conf");
+
+      if (load_contest_definition_file(dest) == 0) {
+        if (warn[0])
+          snprintf(status_text, sizeof(status_text),
+                   "Contest imported and loaded (with warnings)");
+        else
+          snprintf(status_text, sizeof(status_text),
+                   "Contest imported and loaded");
+      }
     } else if (strcmp(arg, "none") == 0 || strcmp(arg, "off") == 0 ||
                strcmp(arg, "clear") == 0) {
       contest_definition_loaded = 0;
@@ -1622,13 +1779,8 @@ AppControllerEvent app_controller_submit_command_text(const char *command_text) 
   return APP_CTRL_EVENT_NONE;
 }
 
-/*
- * Download and reload the latest CTY database.
- *
- * @return Nothing.
- */
-void app_controller_perform_cty_update(void) {
-  if (cty_download_latest("wl_cty.dat") == 0) {
+void app_controller_complete_cty_update(int download_ok) {
+  if (download_ok) {
     int loaded = cty_load("wl_cty.dat");
     if (loaded >= 0)
       snprintf(status_text, sizeof(status_text), "CTY updated (%d entries)",
@@ -1640,6 +1792,16 @@ void app_controller_perform_cty_update(void) {
   }
 
   cty_update_in_progress = 0;
+}
+
+/*
+ * Download and reload the latest CTY database.
+ *
+ * @return Nothing.
+ */
+void app_controller_perform_cty_update(void) {
+  const int download_ok = cty_download_latest("wl_cty.dat") == 0;
+  app_controller_complete_cty_update(download_ok);
 }
 
 /*
@@ -1691,6 +1853,14 @@ AppControllerEvent app_controller_handle_key(int key) {
     clear_entry_fields();
     clear_callsign_suggestion();
     dxcc_text[0] = 0;
+    return APP_CTRL_EVENT_NONE;
+  }
+
+  if (!export_prompt_mode && key == APP_KEY_ALT_W) {
+    clear_active_call_exchange_fields();
+    clear_callsign_suggestion();
+    dxcc_text[0] = 0;
+    snprintf(status_text, sizeof(status_text), "CALL and Exchange cleared");
     return APP_CTRL_EVENT_NONE;
   }
 
@@ -1885,7 +2055,7 @@ AppControllerEvent app_controller_handle_key(int key) {
           char exchange_sent[32] = {0};
           build_exchange_sent(exchange_sent, sizeof(exchange_sent));
           const int qso_points = resolve_contest_points(
-            mode, qso_band, country, active_contest_def.cabrillo_name);
+            mode, qso_band, country, entry_call, active_contest_def.cabrillo_name);
 
           const char *qso_rst = contest_definition_loaded
                                     ? (strcmp(mode, "CW") == 0 ? "599" : "59")

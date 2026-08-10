@@ -31,6 +31,7 @@ enum {
   APP_KEY_ESC = -19,
   APP_KEY_LEFT = -20,
   APP_KEY_RIGHT = -21,
+  APP_KEY_ALT_W = -22,
   APP_KEY_SPACE = ' '
 };
 
@@ -118,6 +119,14 @@ AppControllerEvent app_controller_handle_key(int key);
  * @return Nothing.
  */
 void app_controller_perform_cty_update(void);
+
+/*
+ * Finalize CTY update state after an external download attempt.
+ *
+ * @param download_ok Nonzero if wl_cty.dat was downloaded successfully.
+ * @return Nothing.
+ */
+void app_controller_complete_cty_update(int download_ok);
 
 /*
  * Get current operating frequency in kHz used for split-entry QSOs.

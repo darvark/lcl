@@ -14,6 +14,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMainWindow>
+#include <QMetaObject>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QStringList>
@@ -27,13 +28,16 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
+#include <thread>
 #include <vector>
 
 extern "C" {
 #include "app_controller.h"
 #include "cat.h"
 #include "config.h"
+#include "cty.h"
 #include "cw_keys.h"
 #include "db.h"
 #include "dxcluster.h"
@@ -141,6 +145,57 @@ constexpr std::array<ContestPreset, 5> kContestPresets = {{
     {"CQ WPX SSB", "contest_defs/cq_wpx_ssb.conf"},
     {"CQ WPX CW", "contest_defs/cq_wpx_cw.conf"},
 }};
+
+void set_text_if_changed(QLabel *label, const QString &text) {
+  if (label && label->text() != text)
+    label->setText(text);
+}
+
+void set_text_if_changed(QLineEdit *edit, const QString &text) {
+  if (edit && edit->text() != text)
+    edit->setText(text);
+}
+
+void set_text_if_changed(QPushButton *button, const QString &text) {
+  if (button && button->text() != text)
+    button->setText(text);
+}
+
+void set_title_if_changed(QGroupBox *group, const QString &title) {
+  if (group && group->title() != title)
+    group->setTitle(title);
+}
+
+void set_stylesheet_if_changed(QWidget *widget, const QString &style) {
+  if (widget && widget->styleSheet() != style)
+    widget->setStyleSheet(style);
+}
+
+void set_visible_if_changed(QWidget *widget, bool visible) {
+  if (widget && widget->isVisible() != visible)
+    widget->setVisible(visible);
+}
+
+std::uint64_t hash_mix(std::uint64_t hash, std::uint64_t value) {
+  hash ^= value + 0x9e3779b97f4a7c15ULL + (hash << 6U) + (hash >> 2U);
+  return hash;
+}
+
+std::uint64_t hash_cstr(std::uint64_t hash, const char *text) {
+  if (!text)
+    return hash_mix(hash, 0ULL);
+
+  while (*text) {
+    hash ^= (unsigned char)*text;
+    hash *= 1099511628211ULL;
+    ++text;
+  }
+  return hash;
+}
+
+std::uint64_t hash_qstring(std::uint64_t hash, const QString &text) {
+  return hash_mix(hash, (std::uint64_t)qHash(text));
+}
 } // namespace
 
 class CwKeyerDialog : public QWidget {
@@ -437,11 +492,11 @@ public:
 
         op_layout->addWidget(new QLabel("TX Exchange:", op_panel_), 2, 2);
         contest_tx_exchange_edit_ = new QLineEdit(op_panel_);
-        contest_tx_exchange_edit_->setText(
-          QString::fromLatin1(config.contest_tx_exchange));
+        contest_tx_exchange_edit_->clear();
         contest_tx_exchange_edit_->setPlaceholderText("auto (from EXCHANGE_SENT)");
         contest_tx_exchange_edit_->setToolTip(
-          "Overrides TX exchange for static contest templates like ITU or CQZONE.");
+          "Read-only preview of current TX exchange generated from contest definition.");
+        contest_tx_exchange_edit_->setReadOnly(true);
         op_layout->addWidget(contest_tx_exchange_edit_, 2, 3, 1, 3);
 
         connect(technique_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -456,8 +511,6 @@ public:
           [this]() { on_toggle_run(1); });
         connect(run2_toggle_button_, &QPushButton::clicked, this,
           [this]() { on_toggle_run(2); });
-        connect(contest_tx_exchange_edit_, &QLineEdit::editingFinished, this,
-          [this]() { on_contest_tx_exchange_changed(); });
         left_layout->addWidget(op_panel_);
 
     gap_panel_ = new QFrame(central);
@@ -778,9 +831,8 @@ protected:
 
     AppControllerEvent ctrl_event = app_controller_handle_key(key);
     if (ctrl_event == APP_CTRL_EVENT_REQUEST_CTY_UPDATE) {
+      start_cty_update_worker();
       refresh_ui();
-      qApp->processEvents();
-      app_controller_perform_cty_update();
     }
 
     if (ctrl_event == APP_CTRL_EVENT_EXIT)
@@ -791,6 +843,24 @@ protected:
   }
 
 private:
+  void start_cty_update_worker() {
+    if (cty_update_worker_running_)
+      return;
+
+    cty_update_worker_running_ = true;
+    std::thread([this]() {
+      const int download_ok = cty_download_latest("wl_cty.dat") == 0 ? 1 : 0;
+      QMetaObject::invokeMethod(
+          this,
+          [this, download_ok]() {
+            app_controller_complete_cty_update(download_ok);
+            cty_update_worker_running_ = false;
+            refresh_ui();
+          },
+          Qt::QueuedConnection);
+    }).detach();
+  }
+
   void submit_command_text(const QString &command_text) {
     const QByteArray bytes = command_text.toUtf8();
     AppControllerEvent ctrl_event =
@@ -902,6 +972,7 @@ private:
 
   static int translate_key(QKeyEvent *event) {
     const bool ctrl = (event->modifiers() & Qt::ControlModifier) != 0;
+    const bool alt = (event->modifiers() & Qt::AltModifier) != 0;
     switch (event->key()) {
     case Qt::Key_F1:
       return ctrl ? APP_KEY_F1 : APP_KEY_NONE;
@@ -942,6 +1013,8 @@ private:
       return APP_KEY_ESC;
     case Qt::Key_Space:
       return APP_KEY_SPACE;
+    case Qt::Key_W:
+      return alt ? APP_KEY_ALT_W : APP_KEY_NONE;
     default:
       break;
     }
@@ -1112,21 +1185,49 @@ private:
   }
 
   void refresh_log_table() {
-    log_table_->setHorizontalHeaderLabels(
-      {"Nr", "Date", "UTC", "Call", "Freq", "Band", "Mode", "Exch S/R", "Run/Pts"});
+    std::uint64_t signature = 1469598103934665603ULL;
+    signature = hash_mix(signature, (std::uint64_t)qso_count);
 
     if (qso_count <= 0) {
+      signature = hash_mix(signature, 0xA51EU);
+      if (signature == last_log_table_signature_)
+        return;
+
       log_table_->setRowCount(1);
       auto *item = new QTableWidgetItem("No QSOs");
       item->setTextAlignment(Qt::AlignCenter);
       log_table_->setSpan(0, 0, 1, log_table_->columnCount());
       log_table_->setItem(0, 0, item);
+      last_log_table_signature_ = signature;
       return;
     }
 
     const int max_rows = 200;
     const int start = std::max(0, qso_count - max_rows);
     const int rows = qso_count - start;
+    signature = hash_mix(signature, (std::uint64_t)start);
+    signature = hash_mix(signature, (std::uint64_t)rows);
+
+    for (int row = 0; row < rows; row++) {
+      const int idx = start + row;
+      const QSO &q = logbook[idx];
+      signature = hash_mix(signature, (std::uint64_t)idx);
+      signature = hash_cstr(signature, q.date);
+      signature = hash_cstr(signature, q.utc);
+      signature = hash_cstr(signature, q.call);
+      signature = hash_mix(signature, (std::uint64_t)q.freq);
+      signature = hash_cstr(signature, q.band);
+      signature = hash_cstr(signature, q.mode);
+      signature = hash_cstr(signature, q.exchange_sent);
+      signature = hash_cstr(signature, q.exchange_recv);
+      signature = hash_cstr(signature, q.operator_mode);
+      signature = hash_mix(signature, (std::uint64_t)q.points);
+      signature = hash_mix(signature, (std::uint64_t)q.invalid);
+    }
+
+    if (signature == last_log_table_signature_)
+      return;
+
     log_table_->clearSpans();
     log_table_->setRowCount(rows);
 
@@ -1164,6 +1265,7 @@ private:
     }
 
     log_table_->scrollToBottom();
+    last_log_table_signature_ = signature;
   }
 
   int refresh_cluster_table(bool fullscreen_mode, int scroll) {
@@ -1237,57 +1339,84 @@ private:
     }
     pthread_mutex_unlock(&dxcluster_mutex);
 
-    cluster_group_->setTitle(QString("DX Cluster [%1]").arg(status));
+    set_title_if_changed(cluster_group_, QString("DX Cluster [%1]").arg(status));
 
-    cluster_table_->setRowCount((int)items.size());
-    for (int row = 0; row < (int)items.size(); row++) {
-      auto *time_item = new QTableWidgetItem(items[row].time);
-      auto *freq_item = new QTableWidgetItem(items[row].freq);
-      auto *call_item = new QTableWidgetItem(items[row].call);
-      auto *comment_item = new QTableWidgetItem(items[row].comment);
-
-      time_item->setText(clip_to_cols(time_item->text(), 8));
-      freq_item->setText(clip_to_cols(freq_item->text(), 10));
-      call_item->setText(clip_to_cols(call_item->text(), 12));
-      comment_item->setText(clip_to_cols(comment_item->text(), 80));
-
-      time_item->setTextAlignment(Qt::AlignCenter);
-      freq_item->setTextAlignment(Qt::AlignCenter | Qt::AlignVCenter);
-      call_item->setTextAlignment(Qt::AlignCenter | Qt::AlignVCenter);
-      comment_item->setTextAlignment(Qt::AlignCenter | Qt::AlignVCenter);
-
-      time_item->setForeground(QColor(14, 90, 20));
-      freq_item->setForeground(QColor(14, 90, 20));
-      call_item->setForeground(QColor(14, 90, 20));
-      comment_item->setForeground(QColor(14, 90, 20));
-
-      cluster_table_->setItem(row, 0, time_item);
-      cluster_table_->setItem(row, 1, freq_item);
-      cluster_table_->setItem(row, 2, call_item);
-      cluster_table_->setItem(row, 3, comment_item);
+    std::uint64_t signature = 1469598103934665603ULL;
+    signature = hash_qstring(signature, status);
+    signature = hash_mix(signature, (std::uint64_t)fullscreen_mode);
+    signature = hash_mix(signature, (std::uint64_t)items.size());
+    for (const SpotCopy &item : items) {
+      signature = hash_qstring(signature, item.time);
+      signature = hash_qstring(signature, item.freq);
+      signature = hash_qstring(signature, item.call);
+      signature = hash_qstring(signature, item.comment);
     }
 
-    if (!fullscreen_mode)
-      cluster_table_->scrollToBottom();
+    if (signature != last_cluster_table_signature_) {
+      cluster_table_->setRowCount((int)items.size());
+      for (int row = 0; row < (int)items.size(); row++) {
+        auto *time_item = new QTableWidgetItem(items[row].time);
+        auto *freq_item = new QTableWidgetItem(items[row].freq);
+        auto *call_item = new QTableWidgetItem(items[row].call);
+        auto *comment_item = new QTableWidgetItem(items[row].comment);
+
+        time_item->setText(clip_to_cols(time_item->text(), 8));
+        freq_item->setText(clip_to_cols(freq_item->text(), 10));
+        call_item->setText(clip_to_cols(call_item->text(), 12));
+        comment_item->setText(clip_to_cols(comment_item->text(), 80));
+
+        time_item->setTextAlignment(Qt::AlignCenter);
+        freq_item->setTextAlignment(Qt::AlignCenter | Qt::AlignVCenter);
+        call_item->setTextAlignment(Qt::AlignCenter | Qt::AlignVCenter);
+        comment_item->setTextAlignment(Qt::AlignCenter | Qt::AlignVCenter);
+
+        time_item->setForeground(QColor(14, 90, 20));
+        freq_item->setForeground(QColor(14, 90, 20));
+        call_item->setForeground(QColor(14, 90, 20));
+        comment_item->setForeground(QColor(14, 90, 20));
+
+        cluster_table_->setItem(row, 0, time_item);
+        cluster_table_->setItem(row, 1, freq_item);
+        cluster_table_->setItem(row, 2, call_item);
+        cluster_table_->setItem(row, 3, comment_item);
+      }
+
+      if (!fullscreen_mode)
+        cluster_table_->scrollToBottom();
+
+      last_cluster_table_signature_ = signature;
+    }
 
     return max_scroll;
   }
 
   void refresh_suggestions() {
     if (!call_suggestion_available || call_suggestion_count <= 0) {
-      suggestions_frame_->hide();
-      input_panel_->setStyleSheet("QFrame { background: #9be2ef; border: 1px solid #0e6a85; }");
+      set_visible_if_changed(suggestions_frame_, false);
+      set_stylesheet_if_changed(input_panel_,
+                                "QFrame { background: #9be2ef; border: 1px solid #0e6a85; }");
+      last_suggestions_signature_ = 0;
       return;
     }
 
-    suggestions_frame_->show();
+    set_visible_if_changed(suggestions_frame_, true);
     place_suggestions_panel();
 
-    input_panel_->setStyleSheet("QFrame { background: #f3d24f; border: 1px solid #0e6a85; }");
+    set_stylesheet_if_changed(input_panel_,
+                              "QFrame { background: #f3d24f; border: 1px solid #0e6a85; }");
 
-    suggestions_list_->clear();
+    std::uint64_t signature = 1469598103934665603ULL;
+    signature = hash_mix(signature, (std::uint64_t)call_suggestion_count);
+    signature = hash_mix(signature, (std::uint64_t)call_suggestion_selected_index);
     for (int i = 0; i < call_suggestion_count; i++)
-      suggestions_list_->addItem(call_suggestion_matches[i]);
+      signature = hash_cstr(signature, call_suggestion_matches[i]);
+
+    if (signature != last_suggestions_signature_) {
+      suggestions_list_->clear();
+      for (int i = 0; i < call_suggestion_count; i++)
+        suggestions_list_->addItem(call_suggestion_matches[i]);
+      last_suggestions_signature_ = signature;
+    }
 
     if (call_suggestion_selected_index >= 0 &&
         call_suggestion_selected_index < suggestions_list_->count()) {
@@ -1360,12 +1489,15 @@ private:
 
     const bool connected = cat_is_connected_slot(CAT_SLOT_A) != 0 ||
                            cat_is_connected_slot(CAT_SLOT_B) != 0;
-    cat_status_label_->setText(QString("CAT status: %1").arg(QString::fromLatin1(status)));
-    cat_slot1_status_label_->setText(QString("R1: %1").arg(QString::fromLatin1(slot1)));
-    cat_slot2_status_label_->setText(QString("R2: %1").arg(QString::fromLatin1(slot2)));
-    cat_status_frame_->setStyleSheet(connected
-                                         ? "QFrame { background: #87d37c; border: 1px solid #0e6a85; }"
-                                         : "QFrame { background: #f3d24f; border: 1px solid #0e6a85; }");
+    set_text_if_changed(cat_status_label_,
+              QString("CAT status: %1").arg(QString::fromLatin1(status)));
+    set_text_if_changed(cat_slot1_status_label_,
+              QString("R1: %1").arg(QString::fromLatin1(slot1)));
+    set_text_if_changed(cat_slot2_status_label_,
+              QString("R2: %1").arg(QString::fromLatin1(slot2)));
+    set_stylesheet_if_changed(cat_status_frame_, connected
+      ? "QFrame { background: #87d37c; border: 1px solid #0e6a85; }"
+      : "QFrame { background: #f3d24f; border: 1px solid #0e6a85; }");
   }
 
   void on_cat_connect() {
@@ -1503,11 +1635,11 @@ private:
   void refresh_cw_keyer_status() {
     char status[128] = {0};
     cat_get_cw_keyer_status(status, sizeof(status));
-    cw_status_label_->setText(QString::fromLatin1(status));
+    set_text_if_changed(cw_status_label_, QString::fromLatin1(status));
     const bool connected = cat_is_cw_keyer_connected() != 0;
-    cw_status_label_->setStyleSheet(connected
+    set_stylesheet_if_changed(cw_status_label_, connected
         ? "QLabel { color: #175017; font-weight: bold; }"
-        : "QLabel { color: #555; }");
+      : "QLabel { color: #555; }");
   }
 
   void on_technique_changed() {
@@ -1531,22 +1663,6 @@ private:
     refresh_ui();
   }
 
-  void on_contest_tx_exchange_changed() {
-    if (!contest_tx_exchange_edit_)
-      return;
-
-    const QString trimmed = contest_tx_exchange_edit_->text().trimmed();
-    std::snprintf(config.contest_tx_exchange, sizeof(config.contest_tx_exchange),
-                  "%s", trimmed.toLatin1().constData());
-
-    if (config_save("logger.conf") != 0) {
-      QMessageBox::warning(this, "Config",
-                           "Failed to save logger.conf. TX exchange override will not persist.");
-    }
-
-    refresh_ui();
-  }
-
   /*
    * Pull the latest controller state into the Qt widgets.
    *
@@ -1556,7 +1672,7 @@ private:
     AppRenderState state;
     app_controller_get_render_state(&state);
     const int active_freq_khz = app_controller_get_active_frequency_khz();
-    log_group_->setTitle(QString("QSO Log [%1 kHz]").arg(active_freq_khz));
+    set_title_if_changed(log_group_, QString("QSO Log [%1 kHz]").arg(active_freq_khz));
 
     const int input_call_cols_r1 =
       std::max(1, input_call_r1_edit_->width() / std::max(1, cell_w_) - 2);
@@ -1572,15 +1688,24 @@ private:
     const int stats_cols = panel_available_cols(stats_panel_, 16);
     const int func_cols = panel_available_cols(function_panel_, 16);
 
-    input_call_r1_edit_->setText(clip_cstr_to_cols(state.input_call_r1, input_call_cols_r1));
-    input_rst_r1_edit_->setText(clip_cstr_to_cols(state.input_rst_r1, input_rst_cols_r1));
-    input_call_r2_edit_->setText(clip_cstr_to_cols(state.input_call_r2, input_call_cols_r2));
-    input_rst_r2_edit_->setText(clip_cstr_to_cols(state.input_rst_r2, input_rst_cols_r2));
+    set_text_if_changed(input_call_r1_edit_,
+                        clip_cstr_to_cols(state.input_call_r1, input_call_cols_r1));
+    set_text_if_changed(input_rst_r1_edit_,
+                        clip_cstr_to_cols(state.input_rst_r1, input_rst_cols_r1));
+    set_text_if_changed(input_call_r2_edit_,
+                        clip_cstr_to_cols(state.input_call_r2, input_call_cols_r2));
+    set_text_if_changed(input_rst_r2_edit_,
+                        clip_cstr_to_cols(state.input_rst_r2, input_rst_cols_r2));
+    if (contest_tx_exchange_edit_) {
+      const QString tx_exchange =
+        QString::fromLatin1(state.contest_exchange_sent ? state.contest_exchange_sent : "").trimmed();
+      set_text_if_changed(contest_tx_exchange_edit_, tx_exchange);
+    }
 
     auto set_input_style = [](QLineEdit *edit, bool active_field) {
-      edit->setStyleSheet(active_field
-                              ? "QLineEdit { background: #f3d24f; border: 1px solid #0e6a85; color: #111; }"
-                              : "QLineEdit { background: #9be2ef; border: 1px solid #0e6a85; color: #0d2d3b; }");
+      set_stylesheet_if_changed(edit, active_field
+          ? "QLineEdit { background: #f3d24f; border: 1px solid #0e6a85; color: #111; }"
+          : "QLineEdit { background: #9be2ef; border: 1px solid #0e6a85; color: #0d2d3b; }");
     };
 
     const int active_radio = app_controller_get_active_radio();
@@ -1589,7 +1714,7 @@ private:
     set_input_style(input_rst_r1_edit_, active_radio == 1 && state.active_input_field_r1 == 1);
     set_input_style(input_call_r2_edit_, active_radio == 2 && state.active_input_field_r2 == 0);
     set_input_style(input_rst_r2_edit_, active_radio == 2 && state.active_input_field_r2 == 1);
-    status_label_->setText(clip_to_cols(
+    set_text_if_changed(status_label_, clip_to_cols(
       cw_feedback_ticks_ > 0
         ? (cw_feedback_ticks_--, cw_feedback_)
         : QString("Status: %1").arg(state.status ? state.status : ""),
@@ -1602,13 +1727,13 @@ private:
         QString::fromLatin1(state.contest_exchange_sent ? state.contest_exchange_sent : "");
       info_text = QString("%1 | TX %2: %3").arg(info_text, exchange_label, exchange_sent);
     }
-    info_label_->setText(clip_to_cols(info_text, std::max(1, info_cols)));
-    dxcc_label_->setText(clip_to_cols(QString("DXCC: %1  CQ:%2 ITU:%3")
+    set_text_if_changed(info_label_, clip_to_cols(info_text, std::max(1, info_cols)));
+    set_text_if_changed(dxcc_label_, clip_to_cols(QString("DXCC: %1  CQ:%2 ITU:%3")
                         .arg(state.dxcc ? state.dxcc : "")
                              .arg(last_cq)
                         .arg(last_itu),
-                      std::max(1, dxcc_cols)));
-    stats_label_->setText(clip_to_cols(
+              std::max(1, dxcc_cols)));
+    set_text_if_changed(stats_label_, clip_to_cols(
       QString("QSO:%1 DXCC:%2  CW:%3 SSB:%4 FT8:%5 FT4:%6 RTTY:%7 PSK31:%8  PTS:%9 MULT:%10 SCORE:%11")
         .arg(stats.total_qso)
         .arg(stats.total_dxcc)
@@ -1642,55 +1767,55 @@ private:
         ? QString("%1 (TX %2)").arg(contest_exchange_label,
                                      contest_exchange_sent.isEmpty() ? "-" : contest_exchange_sent)
         : "RST";
-      input_rst_r1_label_->setText(exchange_label);
-      input_rst_r2_label_->setText(exchange_label);
+      set_text_if_changed(input_rst_r1_label_, exchange_label);
+      set_text_if_changed(input_rst_r2_label_, exchange_label);
 
-      input_r2_label_->setVisible(dual_mode);
-      input_call_r2_label_->setVisible(dual_mode);
-      input_call_r2_edit_->setVisible(dual_mode);
-      input_rst_r2_label_->setVisible(dual_mode);
-      input_rst_r2_edit_->setVisible(dual_mode);
+      set_visible_if_changed(input_r2_label_, dual_mode);
+      set_visible_if_changed(input_call_r2_label_, dual_mode);
+      set_visible_if_changed(input_call_r2_edit_, dual_mode);
+      set_visible_if_changed(input_rst_r2_label_, dual_mode);
+      set_visible_if_changed(input_rst_r2_edit_, dual_mode);
 
-      radio1_focus_button_->setStyleSheet(active_radio == 1
+      set_stylesheet_if_changed(radio1_focus_button_, active_radio == 1
         ? "QPushButton { background: #f3d24f; color: #111; font-weight: bold; }"
         : "");
-      radio2_focus_button_->setStyleSheet(active_radio == 2
+      set_stylesheet_if_changed(radio2_focus_button_, active_radio == 2
         ? "QPushButton { background: #f3d24f; color: #111; font-weight: bold; }"
         : "");
 
-      run1_toggle_button_->setText(state.radio1_run ? "R1 RUN" : "R1 S&P");
-      run2_toggle_button_->setText(state.radio2_run ? "R2 RUN" : "R2 S&P");
-      run1_toggle_button_->setStyleSheet(state.radio1_run
+      set_text_if_changed(run1_toggle_button_, state.radio1_run ? "R1 RUN" : "R1 S&P");
+      set_text_if_changed(run2_toggle_button_, state.radio2_run ? "R2 RUN" : "R2 S&P");
+      set_stylesheet_if_changed(run1_toggle_button_, state.radio1_run
         ? "QPushButton { background: #87d37c; color: #111; font-weight: bold; }"
         : "");
-      run2_toggle_button_->setStyleSheet(state.radio2_run
+      set_stylesheet_if_changed(run2_toggle_button_, state.radio2_run
         ? "QPushButton { background: #87d37c; color: #111; font-weight: bold; }"
         : "");
 
-      radio1_label_->setText(QString("R1 %1 kHz %2")
+      set_text_if_changed(radio1_label_, QString("R1 %1 kHz %2")
                      .arg(state.radio1_freq_khz)
                      .arg(state.radio1_mode ? state.radio1_mode : ""));
-      radio2_label_->setText(QString("R2 %1 kHz %2")
+      set_text_if_changed(radio2_label_, QString("R2 %1 kHz %2")
                      .arg(state.radio2_freq_khz)
                      .arg(state.radio2_mode ? state.radio2_mode : ""));
 
     if (cty_update_in_progress) {
-        function_label_->setText(
+        set_text_if_changed(function_label_,
           clip_to_cols("Fn: CTY update in progress... keyboard locked",
                  std::max(1, func_cols)));
-      function_help_label_->setText(
+      set_text_if_changed(function_help_label_,
           clip_to_cols("Ctrl+Fn: unavailable during CTY update",
                  std::max(1, func_cols)));
-      function_panel_->setStyleSheet(
+      set_stylesheet_if_changed(function_panel_,
           "QFrame { background: #f3d24f; color: #111; font-weight: bold; }");
     } else {
-        function_label_->setText(clip_to_cols(
+        set_text_if_changed(function_label_, clip_to_cols(
       build_fn_status_text(state),
           std::max(1, func_cols)));
-      function_help_label_->setText(clip_to_cols(
+      set_text_if_changed(function_help_label_, clip_to_cols(
       "Ctrl+F1 Help | Ctrl+F2 New Log | Ctrl+F3 Open Log | Ctrl+F4 Export | Ctrl+F5 DXCluster | Ctrl+F6 Stats | Ctrl+F7 Update CTY | Ctrl+F10 Quit | Ctrl+K CW Keyer",
           std::max(1, func_cols)));
-      function_panel_->setStyleSheet(
+      set_stylesheet_if_changed(function_panel_,
           "QFrame { background: #0f5ea4; color: #f4f8ff; font-weight: bold; }");
     }
 
@@ -1700,14 +1825,14 @@ private:
     refresh_cat_status();
     refresh_cw_keyer_status();
 
-    log_group_->setVisible(true);
-    input_panel_->setVisible(true);
-    status_panel_->setVisible(true);
-    dxcc_panel_->setVisible(true);
-    stats_panel_->setVisible(true);
-    gap_panel_->setVisible(true);
-    suggestions_frame_->setVisible(call_suggestion_available);
-    cluster_group_->setVisible(state.cluster_view);
+    set_visible_if_changed(log_group_, true);
+    set_visible_if_changed(input_panel_, true);
+    set_visible_if_changed(status_panel_, true);
+    set_visible_if_changed(dxcc_panel_, true);
+    set_visible_if_changed(stats_panel_, true);
+    set_visible_if_changed(gap_panel_, true);
+    set_visible_if_changed(suggestions_frame_, call_suggestion_available != 0);
+    set_visible_if_changed(cluster_group_, state.cluster_view);
   }
 
   QTimer *timer_ = nullptr;
@@ -1794,6 +1919,11 @@ private:
   CwKeyMap cw_key_map_ = {};
   QString cw_feedback_;
   int cw_feedback_ticks_ = 0;
+  bool cty_update_worker_running_ = false;
+
+  std::uint64_t last_log_table_signature_ = 0;
+  std::uint64_t last_cluster_table_signature_ = 0;
+  std::uint64_t last_suggestions_signature_ = 0;
 
   int cell_w_ = 8;
   int cell_h_ = 16;
