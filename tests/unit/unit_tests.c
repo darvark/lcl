@@ -333,6 +333,104 @@ static void test_controller_numeric_static_exchange_template(const char *tmp_dir
                 "restore cwd after numeric static exchange test");
 }
 
+static void test_controller_incremental_exchange_generation(const char *tmp_dir) {
+  char case_dir[512];
+  snprintf(case_dir, sizeof(case_dir), "%s/incremental_exchange_case", tmp_dir);
+  expect_int_eq(mkdir(case_dir, 0777), 0,
+                "create isolated directory for incremental exchange test");
+
+  char contest_path[512];
+  snprintf(contest_path, sizeof(contest_path), "%s/contest.conf", case_dir);
+
+  const char *contest_text =
+      "NAME=SERIAL-TEST\n"
+      "CABRILLO_NAME=SERIAL-TEST\n"
+      "MODE=CW\n"
+      "EXCHANGE_SENT=#\n"
+      "FIELD=SERIAL,Serial Number,required\n";
+  expect_int_eq(write_text_file(contest_path, contest_text), 0,
+                "write incremental exchange contest definition");
+
+  char conf_path[512];
+  snprintf(conf_path, sizeof(conf_path), "%s/logger.conf", case_dir);
+  const char *conf_text =
+      "CONTEST_DEF_FILE=contest.conf\n"
+      "CONTEST_TX_EXCHANGE=28\n";
+  expect_int_eq(write_text_file(conf_path, conf_text), 0,
+                "write logger.conf for incremental exchange test");
+
+  char old_cwd[512];
+  expect_true(getcwd(old_cwd, sizeof(old_cwd)) != NULL,
+              "getcwd before incremental exchange test");
+  expect_int_eq(chdir(case_dir), 0,
+                "chdir to incremental exchange test directory");
+
+  app_controller_init();
+  const int base_qso_count = qso_count;
+  AppRenderState state;
+  char expected_sent[16];
+  char expected_next_sent[16];
+  char expected_third_sent[16];
+  app_controller_get_render_state(&state);
+
+  expect_true(state.contest_entry_mode,
+              "contest mode should be active in incremental exchange test");
+  expect_true(state.contest_exchange_sent != NULL,
+              "contest tx exchange should be present in incremental exchange test");
+  if (state.contest_exchange_sent) {
+    snprintf(expected_sent, sizeof(expected_sent), "%d", base_qso_count + 1);
+    expect_str_eq(state.contest_exchange_sent, expected_sent,
+                  "incremental EXCHANGE_SENT should show next serial number");
+  }
+
+  snprintf(expected_next_sent, sizeof(expected_next_sent), "%d",
+           base_qso_count + 2);
+  snprintf(expected_third_sent, sizeof(expected_third_sent), "%d",
+           base_qso_count + 3);
+
+  send_controller_chars("SP9SER");
+  app_controller_handle_key(APP_KEY_SPACE);
+  send_controller_chars("101");
+  app_controller_handle_key(APP_KEY_ENTER);
+
+  expect_int_eq(qso_count, base_qso_count + 1,
+                "first QSO should be saved in incremental exchange test");
+  expect_str_eq(logbook[base_qso_count].exchange_sent, expected_sent,
+                "first incremental TX exchange should ignore static override");
+  expect_str_eq(logbook[base_qso_count].exchange_recv, "101",
+                "first incremental RX exchange should be saved");
+
+  app_controller_get_render_state(&state);
+  expect_true(state.contest_exchange_sent != NULL,
+              "contest tx exchange should remain present after first incremental QSO");
+  if (state.contest_exchange_sent)
+    expect_str_eq(state.contest_exchange_sent, expected_next_sent,
+                  "second incremental TX exchange should advance to serial 2");
+
+  send_controller_chars("SP9SEQ");
+  app_controller_handle_key(APP_KEY_SPACE);
+  send_controller_chars("102");
+  app_controller_handle_key(APP_KEY_ENTER);
+
+  expect_int_eq(qso_count, base_qso_count + 2,
+                "second QSO should be saved in incremental exchange test");
+  expect_str_eq(logbook[base_qso_count + 1].exchange_sent, expected_next_sent,
+                "second incremental TX exchange should be serial 2");
+  expect_str_eq(logbook[base_qso_count + 1].exchange_recv, "102",
+                "second incremental RX exchange should be saved");
+
+  app_controller_get_render_state(&state);
+  expect_true(state.contest_exchange_sent != NULL,
+              "contest tx exchange should remain present after second incremental QSO");
+  if (state.contest_exchange_sent)
+    expect_str_eq(state.contest_exchange_sent, expected_third_sent,
+                  "next incremental TX exchange should advance to serial 3");
+
+  app_controller_shutdown();
+  expect_int_eq(chdir(old_cwd), 0,
+                "restore cwd after incremental exchange test");
+}
+
 static void test_controller_contest_mode_overrides_detected_mode(const char *tmp_dir) {
   char case_dir[512];
   snprintf(case_dir, sizeof(case_dir), "%s/mode_override_case", tmp_dir);
@@ -605,6 +703,11 @@ static void test_export_csv_adif(const char *tmp_dir) {
 static void test_contest_definition_and_cabrillo(const char *tmp_dir) {
   char contest_path[512];
   char cabrillo_path[512];
+  char status[128];
+  char expected_serial_1[16];
+  char expected_serial_2[16];
+  char expected_fragment_1[64];
+  char expected_fragment_2[64];
 
   snprintf(contest_path, sizeof(contest_path), "%s/contest.conf", tmp_dir);
   snprintf(cabrillo_path, sizeof(cabrillo_path), "%s/unit_log.cbr", tmp_dir);
@@ -645,6 +748,27 @@ static void test_contest_definition_and_cabrillo(const char *tmp_dir) {
   expect_int_eq(def.points_same_band_dxcc, 2,
                 "POINTS_SAME_BAND_DXCC parsed");
 
+  const int base_qso_count = qso_count;
+  snprintf(expected_serial_1, sizeof(expected_serial_1), "%d",
+           base_qso_count + 1);
+  snprintf(expected_serial_2, sizeof(expected_serial_2), "%d",
+           base_qso_count + 2);
+  snprintf(expected_fragment_1, sizeof(expected_fragment_1), "599 %-6s SP9SER",
+           expected_serial_1);
+  snprintf(expected_fragment_2, sizeof(expected_fragment_2), "599 %-6s SP9SEQ",
+           expected_serial_2);
+
+  expect_int_eq(qso_add_contest_fields("SP9SER", 7020, "599", "CW", "", "",
+                                       "101", "RUN", def.cabrillo_name, 1, 1,
+                                       status, sizeof(status)),
+                base_qso_count,
+                "first contest QSO for Cabrillo serial fallback should save");
+  expect_int_eq(qso_add_contest_fields("SP9SEQ", 7020, "599", "CW", "", "",
+                                       "102", "RUN", def.cabrillo_name, 1, 1,
+                                       status, sizeof(status)),
+                base_qso_count + 1,
+                "second contest QSO for Cabrillo serial fallback should save");
+
   expect_int_eq(export_cabrillo(cabrillo_path, &def, "SP9ABC"), 0,
                 "export_cabrillo should succeed");
 
@@ -656,6 +780,12 @@ static void test_contest_definition_and_cabrillo(const char *tmp_dir) {
                 "Cabrillo contains contest header");
     expect_true(strstr(cbr, "QSO:") != NULL,
                 "Cabrillo contains at least one QSO");
+    expect_true(strstr(cbr, expected_fragment_1) != NULL,
+                "Cabrillo should generate first serial exchange from # template");
+    expect_true(strstr(cbr, expected_fragment_2) != NULL,
+                "Cabrillo should generate second serial exchange from # template");
+    expect_true(strstr(cbr, "599 #") == NULL,
+                "Cabrillo should not emit literal # as sent exchange");
   }
 
   free(cbr);
@@ -1047,13 +1177,72 @@ static void test_named_log_commands(void) {
   app_controller_shutdown();
 }
 
+static void test_contest_preset_from_build_dir_uses_defined_settings(void) {
+  AppRenderState state;
+  char old_cwd[512];
+  int mkdir_rc;
+
+  expect_true(getcwd(old_cwd, sizeof(old_cwd)) != NULL,
+              "getcwd before contest preset path test");
+
+  errno = 0;
+  mkdir_rc = mkdir("build", 0777);
+  expect_true(mkdir_rc == 0 || errno == EEXIST,
+              "build directory should exist for contest preset path test");
+  expect_int_eq(chdir("build"), 0,
+                "chdir to build for contest preset path test");
+
+  app_controller_init();
+  app_controller_handle_key(APP_KEY_F2);
+  expect_int_eq(qso_count, 0,
+                "contest preset test should start from clean logbook");
+
+  app_controller_submit_command_text("contest contest_defs/cq_wpx_cw.conf");
+  app_controller_get_render_state(&state);
+  expect_true(state.contest_entry_mode,
+              "contest preset from contest_defs should enable contest mode");
+  expect_true(state.status != NULL, "contest preset status should exist");
+  if (state.status)
+    expect_true(strstr(state.status, "Contest loaded: CQ-WPX-CW") != NULL,
+                "contest preset should load CQ-WPX-CW definition");
+  expect_true(state.contest_exchange_sent != NULL,
+              "contest preset should expose generated TX exchange");
+  if (state.contest_exchange_sent)
+    expect_str_eq(state.contest_exchange_sent, "1",
+                  "EXCHANGE_SENT=# should start incremental exchange from 1");
+
+  send_controller_text("7020");
+  send_controller_chars("SP9WPX");
+  app_controller_handle_key(APP_KEY_SPACE);
+  send_controller_chars("100");
+  app_controller_handle_key(APP_KEY_ENTER);
+
+  expect_int_eq(qso_count, 1,
+                "contest preset test should save one QSO");
+  expect_str_eq(logbook[0].exchange_sent, "1",
+                "contest preset should save incremented TX exchange from preset");
+  expect_str_eq(logbook[0].exchange_recv, "100",
+                "contest preset should save entered RX exchange");
+
+  app_controller_get_render_state(&state);
+  expect_true(state.contest_exchange_sent != NULL,
+              "next TX exchange should remain visible after first saved QSO");
+  if (state.contest_exchange_sent)
+    expect_str_eq(state.contest_exchange_sent, "2",
+                  "EXCHANGE_SENT=# should always increment upward after save");
+
+  app_controller_shutdown();
+  expect_int_eq(chdir(old_cwd), 0,
+                "restore cwd after contest preset path test");
+}
+
 int main(void) {
   char tmp_dir[256];
   if (make_temp_dir(tmp_dir, sizeof(tmp_dir)) != 0) {
     fprintf(stderr, "Cannot create temp dir: %s\n", strerror(errno));
     return 2;
   }
-  
+
   char db_path[512];
   snprintf(db_path, sizeof(db_path), "%s/unit.sqlite3", tmp_dir);
   setenv("LOGGER_DB_PATH", db_path, 1);
@@ -1075,9 +1264,11 @@ int main(void) {
   test_controller_contest_mode_points(tmp_dir);
   test_controller_static_tx_exchange_override(tmp_dir);
   test_controller_numeric_static_exchange_template(tmp_dir);
+  test_controller_incremental_exchange_generation(tmp_dir);
   test_controller_contest_mode_overrides_detected_mode(tmp_dir);
   test_manual_frequency_entry_from_call_field();
   test_named_log_commands();
+  test_contest_preset_from_build_dir_uses_defined_settings();
 
   if (g_failures == 0) {
     printf("All unit tests passed.\n");

@@ -4,128 +4,102 @@ Logger is an amateur radio logging application for entering QSOs, looking up DXC
 
 The application uses shared controller/core logic, with Qt providing the user interface.
 
+Dodatkowa dokumentacja:
+
+- [docs/konfiguracja-i-zawody.md](docs/konfiguracja-i-zawody.md)
+- [docs/klawiszologia.md](docs/klawiszologia.md)
+- [docs/przykladowe-konfiguracje.md](docs/przykladowe-konfiguracje.md)
+- [docs/sciaga-operatora.md](docs/sciaga-operatora.md)
+
 
 ## Architecture
 
 ```mermaid
-classDiagram
-direction LR
+flowchart LR
+	subgraph UI[Qt UI]
+		Qt[qt_frontend.cpp\nLoggerQtWindow]
+	end
 
-class QtFrontend {
-	+main()
-	+LoggerQtWindow
-}
+	subgraph Controller[Shared Controller]
+		App[app_controller.c\nAppController]
+		State[AppRenderState\ninput fields, radio state, status, contest exchange]
+	end
 
-class AppController {
-	+app_controller_init()
-	+app_controller_shutdown()
-	+app_controller_get_render_state()
-	+app_controller_handle_key()
-	+app_controller_perform_cty_update()
-	+app_controller_get_active_frequency_khz()
-}
+	subgraph Core[Core Domain Modules]
+		QSO[qso.c\nQSO creation and validation]
+		Contest[contest.c\ncontest definition parser]
+		Stats[stats.c\ncontest and mode statistics]
+		Suggestion[suggestion.c\ncall history suggestions]
+		Export[export.c\nCSV, ADIF, Cabrillo]
+		Maidenhead[maidenhead.c\nlocator conversion]
+	end
 
-class QSOCore {
-	+qso_init()
-	+qso_add()
-	+qso_add_fields()
-	+qso_mark_invalid()
-	+detect_band()
-	+detect_mode()
-}
+	subgraph Services[Runtime Services]
+		CAT[cat.c\nrig frequency and mode]
+		DXC[dxcluster.c\ncluster worker and spot feed]
+		CTY[cty.c\nDXCC and zone lookup]
+		Config[config.c\nlogger.conf loader and saver]
+	end
 
-class CatControl {
-	+cat_init()
-	+cat_connect()
-	+cat_disconnect()
-	+cat_get_frequency_khz()
-	+cat_set_frequency_khz()
-}
+	subgraph Persistence[SQLite Persistence]
+		DB[db.c\nactive and named logbooks\ncall history]
+	end
 
-class Database {
-	+db_init()
-	+db_shutdown()
-	+db_load_qsos()
-	+db_insert_qso()
-	+db_export_csv()
-	+db_export_adif()
-}
+	subgraph External[External Inputs]
+		Conf[logger.conf]
+		ContestDefs[contest_defs/*.conf or custom contest file]
+		CTYFile[wl_cty.dat]
+		SQLite[(logger.db)]
+		Cluster[(DXCluster server)]
+		Rig[(Rig via Hamlib)]
+	end
 
-class CTYLookup {
-	+cty_load()
-	+cty_download_latest()
-	+cty_lookup()
-}
-
-class DXCluster {
-	+dxcluster_start()
-	+dxcluster_stop()
-	+dxcluster_set_status()
-}
-
-class CallSuggestion {
-	+call_suggestion_refresh()
-	+call_suggestion_apply()
-}
-
-class Statistics {
-	+stats_update()
-}
-
-class Export {
-	+export_csv()
-	+export_adif()
-}
-
-class Maidenhead {
-	+locator_to_latlon()
-}
-
-class Config {
-	+config_load()
-}
-
-class ExternalData {
-	<<database>> logger.db
-	<<file>> logger.conf
-	<<file>> wl_cty.dat
-	<<service>> DXCluster server
-}
-
-QtFrontend --> AppController
-AppController --> QSOCore
-AppController --> CTYLookup
-AppController --> DXCluster
-AppController --> CatControl
-AppController --> CallSuggestion
-AppController --> Statistics
-AppController --> Export
-AppController --> Database
-
-QSOCore --> CTYLookup
-QSOCore --> Database
-Statistics --> QSOCore
-Export --> Database
-Database --> ExternalData
-Config --> ExternalData
-CTYLookup --> ExternalData
-DXCluster --> ExternalData
-Maidenhead --> ExternalData
+	Qt -->|keys and commands| App
+	App -->|render snapshot| State
+	Qt -->|renders| State
+	App --> QSO
+	App --> Contest
+	App --> Stats
+	App --> Suggestion
+	App --> Export
+	App --> CAT
+	App --> DXC
+	App --> CTY
+	App --> Config
+	App --> DB
+	QSO --> CTY
+	QSO --> DB
+	Stats --> QSO
+	Export --> DB
+	Config --> Conf
+	Contest --> ContestDefs
+	CTY --> CTYFile
+	DB --> SQLite
+	DXC --> Cluster
+	CAT --> Rig
 ```
 
+Qt stays thin: it translates keyboard input into controller actions and paints the current `AppRenderState`.
 
-![lnx_logger](./lnx_logger.png "LNX Logger") 
+`app_controller.c` is the orchestration layer. It owns contest-mode entry flow, dual-radio state, CAT integration, DXCluster lifecycle, export commands, CTY refresh, and named-logbook workflows while delegating storage and domain rules to the core modules.
+
+Contest support is split cleanly: `contest.c` loads DXLog-like definitions, `app_controller.c` turns them into live entry behavior and sent-exchange generation, `qso.c` stores the resulting fields, and `export.c` produces Cabrillo from the same definition data.
+
+
+![lnx_logger](./lnx_logger.png "LNX Logger")
 
 ## What it does
 
 - Records QSOs from the Qt desktop UI
 - Uses split entry fields: `call`, `rst`, `comments`
+- Switches to contest entry mode with generated sent exchange when a contest definition is loaded
 - Lets you set manual operating frequency by entering only digits in the call field
 - Displays DXCC, CQ zone, and ITU zone information while typing a callsign
 - Shows a dedicated callsign suggestions panel in the top-right corner with all matching history entries
 - Connects to a DXCluster server, shows received spots in the cluster window, and stops the cluster worker cleanly when the app exits
 - Tracks simple statistics
 - Stores the QSO logbook and call history in SQLite
+- Supports archived and named logbooks inside the same SQLite database
 - Exports log data to CSV and ADIF files
 - Exports contest logs to Cabrillo using a DXLog-like contest definition file
 - Supports SO1R, SO2V, and SO2R operating techniques in configuration
@@ -133,8 +107,10 @@ Maidenhead --> ExternalData
 ## Features
 
 - Split QSO entry with call/rst/comments and Space-based field cycling
+- Contest entry flow with configurable exchange fields and incremental or static sent exchange
 - CAT-aware frequency handling (live rig frequency when connected, manual fallback)
 - Optional CAT-aware mode handling from the rig's current operating mode
+- Per-radio focus, RUN/S&P state, and SO2R-aware controller state
 - Callsign history suggestions with multi-match list view (top-right panel)
 - Local DXCC lookup from a CTY database
 - DXCluster status and spot display, with a stop-safe shutdown path
@@ -254,100 +230,31 @@ DXC_PORT=7300
 DXC_CALL=AAXAAA
 ```
 
-### Configuration fields
+### Configuration and contest definitions
 
-- LAT: latitude of your station
-- LON: longitude of your station
-- LOCATOR: Maidenhead locator of your station
-- DXC_HOST: DXCluster hostname
-- DXC_PORT: DXCluster TCP port
-- DXC_CALL: your callsign used for cluster login
-- STATION_CALL: station callsign used in contest exports
-- OPERATOR_NAME: operator name used for metadata
-- CONTEST_DEF_FILE: contest definition file (DXLog-like key/value format)
-- CONTEST_TX_EXCHANGE: override TX exchange for contests with static EXCHANGE_SENT templates (for example ITU=28)
-- CONTEST_TECHNIQUE: one of SO1R, SO2V, SO2R
-- CAT2_MODEL/CAT2_DEVICE/CAT2_BAUD/...: second radio CAT profile for SO2R
+Detailed field-by-field documentation is in [docs/konfiguracja-i-zawody.md](docs/konfiguracja-i-zawody.md).
 
-Contest definition example:
+Ready-to-use examples for `SO1R`, `SO2V`, and `SO2R` are in [docs/przykladowe-konfiguracje.md](docs/przykladowe-konfiguracje.md).
 
-```ini
-NAME=CQ-WW-CW
-CABRILLO_NAME=CQ-WW-CW
-MODE=CW
-CATEGORY_OPERATOR=SINGLE-OP
-CATEGORY_BAND=ALL
-CATEGORY_POWER=LOW
-EXCHANGE_SENT=#
-FIELD=SERIAL,Serial Number,required
-```
+Short rules worth remembering:
 
-Serial TX exchange rule:
+- `CONTEST_DEF_FILE` may point to a local file or a preset in `contest_defs/`
+- `EXCHANGE_SENT=#` always means incremental serials `1`, `2`, `3`...
+- `CONTEST_TX_EXCHANGE` only applies to static sent exchanges and is ignored for `EXCHANGE_SENT=#`
 
-- Use `EXCHANGE_SENT=#` for incrementing serial numbers.
-- Any other `EXCHANGE_SENT` value is treated as a static TX exchange.
+## Operation
 
-Bundled contest presets (DxLog-style key/value files):
+Full keyboard and workflow documentation is in [docs/klawiszologia.md](docs/klawiszologia.md).
 
-- `contest_defs/iaru_hf_championship.conf`
-- `contest_defs/cq_ww_cw.conf`
-- `contest_defs/cq_ww_ssb.conf`
-- `contest_defs/cq_wpx_ssb.conf`
-- `contest_defs/cq_wpx_cw.conf`
+For daily use, the shortest version is in [docs/sciaga-operatora.md](docs/sciaga-operatora.md).
 
-## Commands
+Most important operational rules:
 
-While running the application, you can use these commands in the input line:
-
-- export: write log.csv and log.adi
-- export mylog.adi: write log.csv and custom ADIF file mylog.adi
-- invalid: mark the most recent QSO as invalid so it is skipped by exports
-- newlog / clear: create a new clean logbook and clear call-history suggestions
-- newlog My Contest Name: create and switch to a new empty logbook with the given name
-- In Qt, `F2` now asks for log name and contest preset in one flow; selecting `None` clears contest mode
-- prevlog / openprev / previous: reopen the previous logbook snapshot from SQLite
-- logs: list named log archives stored in SQLite
-- openlog 12: open a named log archive by ID
-- openlog My Contest Name: open the newest logbook that matches the given name
-- quit: exit the program
-
-## Function keys
-
-- F1: help/status hint
-- F2: create a new clean logbook and clear call history
-- F3: reopen the previous logbook snapshot from SQLite
-- F4: prompt for ADIF filename, then export CSV and ADIF using the entered ADIF name
-- F5: show or hide the DXCluster window
-- F6: recalculate statistics
-- F7: download the latest wl_cty.dat and reload CTY entries
-- F10: quit
-
-## Entry workflow
-
-- Normal mode input uses three fields: `Call`, `RST`, and `Comments`
-- Contest mode input uses two fields only: `Call` and `Exchange`
-- In contest mode, exchange label and validation come from the loaded contest definition (`FIELD=...`)
-- In contest mode, the UI shows the current exchange to send (`TX <ExchangeLabel>`) derived from contest definition (`EXCHANGE_SENT`) and current QSO number
-- In contest mode, you do not enter RST or comments manually
-- In contest mode, the QSO table switches to contest-focused columns: `Exch S/R` and `Run/Pts`
-- Press `Space` to move active cursor between visible input fields
-- Press `Enter` to submit QSO when required fields are filled
-- Type only digits in the call field and press `Enter` to set manual frequency in kHz (and rig frequency via CAT when connected)
-- Log view displays RST as `sent/received` in the `RST S/R` column
-	- sent defaults to `599` for CW
-	- sent defaults to `59` for other modes
-	- received is exactly the value entered in the RST field (normal mode) or exchange-derived default in contest mode
-
-## Callsign suggestions
-
-When you start typing the first token (callsign), Logger checks the SQLite-backed
-call history and shows all matching callsigns in a separate window in the top-right corner.
-
-- Suggestions are ordered by recency (newest first)
-- Use Up/Down arrows to select a different suggested callsign
-- Press Space to apply the currently selected suggestion and continue with the next field
-- Press Tab to apply the currently selected suggestion
-- Suggestions are shown only while editing the first token
+- `F1..F10` send CW messages defined in `cw_keys.ini`
+- `Ctrl+F2` creates a new log and can immediately assign a contest preset
+- `Space` moves between visible input fields, it does not insert a literal space into the entry line
+- in contest mode you enter `Call` and received `Exchange`, while sent exchange is generated from the contest definition
+- callsign suggestions are shown only while editing the first field and can be accepted with `Tab` or `Space`
 
 ## Data files
 

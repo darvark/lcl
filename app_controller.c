@@ -69,6 +69,7 @@ static void update_composed_input_line(void);
 static void refresh_callsign_suggestion(const char *input);
 static void update_dxcc_from_input(const char *input);
 static int is_digits_only(const char *s);
+static int process_command(const char *cmd);
 
 static const ContestFieldDef *active_exchange_field_def(void) {
   if (!contest_definition_loaded || active_contest_def.field_count <= 0)
@@ -269,6 +270,8 @@ static void advance_entry_field(void) {
  * @return 1 on success, or 0 if the field is full.
  */
 static int append_to_active_field(int key) {
+  const int radio_idx = active_radio_index();
+  const int active_entry_field = *active_entry_field_for_idx(radio_idx);
   size_t size = 0;
   char *field = active_field_buffer(&size);
 
@@ -279,7 +282,11 @@ static int append_to_active_field(int key) {
   if (len >= size - 1)
     return 0;
 
-  field[len] = (char)key;
+  char ch = (char)key;
+  if (active_entry_field == ENTRY_FIELD_CALL)
+    ch = (char)toupper((unsigned char)ch);
+
+  field[len] = ch;
   field[len + 1] = 0;
   return 1;
 }
@@ -1127,6 +1134,44 @@ static int load_contest_definition_file(const char *path) {
   return 0;
 }
 
+static int resolve_contest_definition_path(const char *path, char *resolved,
+                                          size_t resolved_size) {
+  if (!path || !path[0] || !resolved || resolved_size == 0)
+    return -1;
+
+  if (access(path, R_OK) == 0) {
+    snprintf(resolved, resolved_size, "%s", path);
+    return 0;
+  }
+
+  if (path[0] == '/')
+    return -1;
+
+  const char *prefixes[] = {"../", "../../"};
+  char candidate[512];
+
+  for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); i++) {
+    snprintf(candidate, sizeof(candidate), "%s%s", prefixes[i], path);
+    if (access(candidate, R_OK) == 0) {
+      snprintf(resolved, resolved_size, "%s", candidate);
+      return 0;
+    }
+  }
+
+  if (!strchr(path, '/')) {
+    for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); i++) {
+      snprintf(candidate, sizeof(candidate), "%scontest_defs/%s", prefixes[i],
+               path);
+      if (access(candidate, R_OK) == 0) {
+        snprintf(resolved, resolved_size, "%s", candidate);
+        return 0;
+      }
+    }
+  }
+
+  return -1;
+}
+
 /*
  * Load contest definition path from config with fallback relative locations.
  */
@@ -1134,33 +1179,12 @@ static int load_configured_contest_definition(void) {
   if (!config.contest_definition_path[0])
     return 0;
 
-  if (access(config.contest_definition_path, R_OK) == 0)
-    return load_contest_definition_file(config.contest_definition_path);
-
-  if (config.contest_definition_path[0] == '/') {
+  char resolved[512];
+  if (resolve_contest_definition_path(config.contest_definition_path, resolved,
+                                      sizeof(resolved)) != 0)
     return -1;
-  }
 
-  const char *prefixes[] = {"../", "../../"};
-  char candidate[512];
-
-  for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); i++) {
-    snprintf(candidate, sizeof(candidate), "%s%s", prefixes[i],
-             config.contest_definition_path);
-    if (access(candidate, R_OK) == 0)
-      return load_contest_definition_file(candidate);
-  }
-
-  if (!strchr(config.contest_definition_path, '/')) {
-    for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); i++) {
-      snprintf(candidate, sizeof(candidate), "%scontest_defs/%s", prefixes[i],
-               config.contest_definition_path);
-      if (access(candidate, R_OK) == 0)
-        return load_contest_definition_file(candidate);
-    }
-  }
-
-  return -1;
+  return load_contest_definition_file(resolved);
 }
 
 /*
@@ -1280,7 +1304,11 @@ static int process_command(const char *cmd) {
       stats_update();
       snprintf(status_text, sizeof(status_text), "Contest cleared");
     } else {
-      load_contest_definition_file(arg);
+      char resolved[512];
+      if (resolve_contest_definition_path(arg, resolved, sizeof(resolved)) == 0)
+        load_contest_definition_file(resolved);
+      else
+        load_contest_definition_file(arg);
     }
     return 1;
   }
@@ -1567,6 +1595,31 @@ void app_controller_get_render_state(AppRenderState *out) {
   out->radio2_mode = radio_mode_2;
   out->radio1_run = radio1_run != 0;
   out->radio2_run = radio2_run != 0;
+}
+
+AppControllerEvent app_controller_submit_command_text(const char *command_text) {
+  char command_line[256] = {0};
+
+  if (!command_text)
+    return APP_CTRL_EVENT_NONE;
+
+  snprintf(command_line, sizeof(command_line), "%s", command_text);
+  trim_whitespace_in_place(command_line);
+  if (!command_line[0])
+    return APP_CTRL_EVENT_NONE;
+
+  clear_active_entry_fields();
+  clear_callsign_suggestion();
+  export_prompt_mode = false;
+  input_buffer[0] = 0;
+  input_len = 0;
+
+  if (strcmp(command_line, "quit") == 0)
+    return APP_CTRL_EVENT_EXIT;
+
+  process_command(command_line);
+  update_composed_input_line();
+  return APP_CTRL_EVENT_NONE;
 }
 
 /*

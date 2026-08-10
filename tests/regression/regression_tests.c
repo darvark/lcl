@@ -312,6 +312,11 @@ static void test_export_outputs(const char *tmp_dir) {
 static void test_contest_definition_and_cabrillo(const char *tmp_dir) {
   char contest_path[512];
   char cabrillo_path[512];
+  char status[128];
+  char expected_serial_1[16];
+  char expected_serial_2[16];
+  char expected_fragment_1[64];
+  char expected_fragment_2[64];
 
   snprintf(contest_path, sizeof(contest_path), "%s/cqww.conf", tmp_dir);
   snprintf(cabrillo_path, sizeof(cabrillo_path), "%s/out.cbr", tmp_dir);
@@ -337,6 +342,27 @@ static void test_contest_definition_and_cabrillo(const char *tmp_dir) {
   expect_str_eq(def.cabrillo_name, "CQ-WW-CW", "cabrillo name parsed");
   expect_int_eq(def.field_count, 1, "contest field parsed");
 
+  const int base_qso_count = qso_count;
+  snprintf(expected_serial_1, sizeof(expected_serial_1), "%d",
+           base_qso_count + 1);
+  snprintf(expected_serial_2, sizeof(expected_serial_2), "%d",
+           base_qso_count + 2);
+  snprintf(expected_fragment_1, sizeof(expected_fragment_1), "599 %-6s SP9SER",
+           expected_serial_1);
+  snprintf(expected_fragment_2, sizeof(expected_fragment_2), "599 %-6s SP9SEQ",
+           expected_serial_2);
+
+  expect_int_eq(qso_add_contest_fields("SP9SER", 7020, "599", "CW", "", "",
+                                       "101", "RUN", def.cabrillo_name, 1, 1,
+                                       status, sizeof(status)),
+                base_qso_count,
+                "first contest QSO for Cabrillo serial fallback should save");
+  expect_int_eq(qso_add_contest_fields("SP9SEQ", 7020, "599", "CW", "", "",
+                                       "102", "RUN", def.cabrillo_name, 1, 1,
+                                       status, sizeof(status)),
+                base_qso_count + 1,
+                "second contest QSO for Cabrillo serial fallback should save");
+
   expect_int_eq(export_cabrillo(cabrillo_path, &def, "SP9ABC"), 0,
                 "cabrillo export should succeed");
 
@@ -348,6 +374,12 @@ static void test_contest_definition_and_cabrillo(const char *tmp_dir) {
     expect_true(strstr(cbr, "CONTEST: CQ-WW-CW") != NULL,
                 "Cabrillo contest header exists");
     expect_true(strstr(cbr, "QSO:") != NULL, "Cabrillo contains QSO rows");
+    expect_true(strstr(cbr, expected_fragment_1) != NULL,
+                "Cabrillo should generate first serial exchange from # template");
+    expect_true(strstr(cbr, expected_fragment_2) != NULL,
+                "Cabrillo should generate second serial exchange from # template");
+    expect_true(strstr(cbr, "599 #") == NULL,
+                "Cabrillo should not emit literal # as sent exchange");
   }
 
   free(cbr);
@@ -421,7 +453,7 @@ int main(void) {
     fprintf(stderr, "Cannot create temp dir: %s\n", strerror(errno));
     return 2;
   }
-  
+
   char db_path[512];
   snprintf(db_path, sizeof(db_path), "%s/regression.sqlite3", tmp_dir);
   setenv("LOGGER_DB_PATH", db_path, 1);

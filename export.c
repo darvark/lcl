@@ -18,6 +18,20 @@ static const char *cabrillo_mode_from_qso_mode(const char *mode) {
   return "DG";
 }
 
+static const char *cabrillo_sent_exchange_for_qso(
+    const QSO *q, const ContestDefinition *definition, int qso_index,
+    char *fallback, size_t fallback_size) {
+  if (q->exchange_sent[0])
+    return q->exchange_sent;
+
+  if (strcmp(definition->exchange_sent_template, "#") == 0) {
+    snprintf(fallback, fallback_size, "%d", qso_index + 1);
+    return fallback;
+  }
+
+  return definition->exchange_sent_template;
+}
+
 /*
  * Export the current logbook to CSV, using the database layer when available.
  *
@@ -147,12 +161,13 @@ int export_cabrillo(const char *filename, const ContestDefinition *definition,
 
   for (int i = 0; i < qso_count; i++) {
     QSO *q = &logbook[i];
+    char sent_fallback[16] = {0};
 
     if (q->invalid)
       continue;
 
-    const char *sent = q->exchange_sent[0] ? q->exchange_sent
-                                           : definition->exchange_sent_template;
+    const char *sent = cabrillo_sent_exchange_for_qso(
+        q, definition, i, sent_fallback, sizeof(sent_fallback));
     const char *recv = q->exchange_recv[0] ? q->exchange_recv : "000";
 
     fprintf(f,

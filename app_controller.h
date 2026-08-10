@@ -96,6 +96,14 @@ void app_controller_shutdown(void);
 void app_controller_get_render_state(AppRenderState *out);
 
 /*
+ * Execute one full command line directly, without split-field key emulation.
+ *
+ * @param command_text Command text such as "contest contest_defs/cq_wpx_cw.conf".
+ * @return The controller event the UI should react to.
+ */
+AppControllerEvent app_controller_submit_command_text(const char *command_text);
+
+/*
  * Handle a translated key code and update shared controller state.
  *
  * @param key One of the APP_KEY_* values.

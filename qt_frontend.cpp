@@ -16,6 +16,7 @@
 #include <QMainWindow>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QStringList>
 #include <QShowEvent>
 #include <QSpinBox>
 #include <QTableWidget>
@@ -672,11 +673,15 @@ public:
     root->addWidget(left_column, 1);
 
     function_panel_ = new QFrame(central);
-    auto *function_layout = new QHBoxLayout(function_panel_);
+    auto *function_layout = new QVBoxLayout(function_panel_);
     function_layout->setContentsMargins(8, 2, 8, 2);
+    function_layout->setSpacing(0);
     function_label_ = new QLabel(function_panel_);
+    function_help_label_ = new QLabel(function_panel_);
     function_label_->setWordWrap(false);
+    function_help_label_->setWordWrap(false);
     function_layout->addWidget(function_label_);
+    function_layout->addWidget(function_help_label_);
     left_layout->addWidget(function_panel_);
 
     apply_theme();
@@ -787,23 +792,11 @@ protected:
 
 private:
   void submit_command_text(const QString &command_text) {
-    // Ensure command entry starts from a clean state; otherwise command text can
-    // be appended to partially typed QSO input and won't be recognized.
-    app_controller_handle_key(APP_KEY_ESC);
-
-    AppRenderState state;
-    app_controller_get_render_state(&state);
-    if (state.input) {
-      size_t existing_len = std::strlen(state.input);
-      for (size_t i = 0; i < existing_len; i++)
-        app_controller_handle_key(APP_KEY_BACKSPACE);
-    }
-
     const QByteArray bytes = command_text.toUtf8();
-    for (unsigned char ch : bytes)
-      app_controller_handle_key((int)ch);
-
-    app_controller_handle_key(APP_KEY_ENTER);
+    AppControllerEvent ctrl_event =
+        app_controller_submit_command_text(bytes.constData());
+    if (ctrl_event == APP_CTRL_EVENT_EXIT)
+      close();
   }
 
   void prompt_create_named_log() {
@@ -1035,6 +1028,34 @@ private:
     return px / std::max(1, cell_w_);
   }
 
+  QString build_fn_status_text(const AppRenderState &state) const {
+    const int active_radio = state.active_radio;
+    const bool is_run = active_radio == 2 ? state.radio2_run : state.radio1_run;
+    const char *mode = active_radio == 2 ? state.radio2_mode : state.radio1_mode;
+    const char *rst = (mode && std::strstr(mode, "CW")) ? "599" : "59";
+    const char *exchange = state.contest_exchange_sent ? state.contest_exchange_sent : "";
+    const char *hiscall = active_radio == 2 ? state.input_call_r2 : state.input_call_r1;
+
+    QStringList parts;
+    parts << QString("%1").arg(is_run ? "RUN" : "S&P");
+
+    for (int fn = 1; fn <= CW_KEY_COUNT; fn++) {
+      const char *tpl = cw_keys_get(&cw_key_map_, fn, is_run ? 1 : 0);
+      char expanded[256] = {0};
+
+      if (tpl && tpl[0])
+        cw_keys_expand(tpl, config.station_call, rst, exchange, hiscall, expanded,
+                       sizeof(expanded));
+
+      const QString rendered = expanded[0]
+                                   ? QString::fromLatin1(expanded).simplified()
+                                   : QString("-");
+      parts << QString("F%1=%2").arg(fn).arg(rendered);
+    }
+
+    return parts.join(" | ");
+  }
+
   void apply_character_cell_layout() {
     QFontMetrics fm(font());
     cell_w_ = std::max(7, fm.horizontalAdvance(QLatin1Char('M')));
@@ -1070,7 +1091,7 @@ private:
     stats_panel_->setFixedHeight(line_panel_h);
     op_panel_->setFixedHeight(line_panel_h * 3 + 12);
     gap_panel_->setFixedHeight(line_panel_h / 2);
-    function_panel_->setFixedHeight(line_panel_h);
+    function_panel_->setFixedHeight(line_panel_h * 2);
   }
 
   void place_suggestions_panel() {
@@ -1432,6 +1453,7 @@ private:
 
     const char *rst  = (mode && std::strstr(mode, "CW")) ? "599" : "59";
     const char *exch = state.contest_exchange_sent ? state.contest_exchange_sent : "";
+    const char *hiscall = (active == 2) ? state.input_call_r2 : state.input_call_r1;
 
     const char *tpl = cw_keys_get(&cw_key_map_, fn, is_run ? 1 : 0);
     if (!tpl || tpl[0] == 0) {
@@ -1441,7 +1463,7 @@ private:
     }
 
     char text[256];
-    cw_keys_expand(tpl, config.station_call, rst, exch, text, sizeof(text));
+    cw_keys_expand(tpl, config.station_call, rst, exch, hiscall, text, sizeof(text));
     if (text[0] == 0) return;
 
     cw_feedback_ = QString("CW: %1").arg(QString::fromLatin1(text));
@@ -1654,13 +1676,19 @@ private:
 
     if (cty_update_in_progress) {
         function_label_->setText(
-          clip_to_cols("F7 CTY update in progress... keyboard locked",
+          clip_to_cols("Fn: CTY update in progress... keyboard locked",
+                 std::max(1, func_cols)));
+      function_help_label_->setText(
+          clip_to_cols("Ctrl+Fn: unavailable during CTY update",
                  std::max(1, func_cols)));
       function_panel_->setStyleSheet(
           "QFrame { background: #f3d24f; color: #111; font-weight: bold; }");
     } else {
         function_label_->setText(clip_to_cols(
-      "F1-F10: CW | Ctrl+F1 Help | Ctrl+F2 New Log | Ctrl+F3 Open Log | Ctrl+F4 Export | Ctrl+F5 DXCluster | Ctrl+F6 Stats | Ctrl+F7 Update CTY | Ctrl+F10 Quit | Ctrl+K CW Keyer",
+      build_fn_status_text(state),
+          std::max(1, func_cols)));
+      function_help_label_->setText(clip_to_cols(
+      "Ctrl+F1 Help | Ctrl+F2 New Log | Ctrl+F3 Open Log | Ctrl+F4 Export | Ctrl+F5 DXCluster | Ctrl+F6 Stats | Ctrl+F7 Update CTY | Ctrl+F10 Quit | Ctrl+K CW Keyer",
           std::max(1, func_cols)));
       function_panel_->setStyleSheet(
           "QFrame { background: #0f5ea4; color: #f4f8ff; font-weight: bold; }");
@@ -1760,6 +1788,7 @@ private:
 
   QFrame *function_panel_ = nullptr;
   QLabel *function_label_ = nullptr;
+  QLabel *function_help_label_ = nullptr;
 
   CwKeyerDialog *cw_dialog_ = nullptr;
   CwKeyMap cw_key_map_ = {};

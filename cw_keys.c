@@ -73,11 +73,13 @@ int cw_keys_load(CwKeyMap *map, const char *filename) {
 }
 
 void cw_keys_expand(const char *tpl, const char *mycall, const char *rst,
-                    const char *exch, char *out, size_t out_size) {
+                    const char *exch, const char *hiscall,
+                    char *out, size_t out_size) {
   if (!tpl || !out || out_size < 2) return;
   if (!mycall) mycall = "";
   if (!rst)    rst    = "";
   if (!exch)   exch   = "";
+  if (!hiscall) hiscall = "";
 
   size_t pos = 0;
   const char *p = tpl;
@@ -95,6 +97,7 @@ void cw_keys_expand(const char *tpl, const char *mycall, const char *rst,
       if      (strcmp(tag, "MYCALL") == 0) subst = mycall;
       else if (strcmp(tag, "RST")    == 0) subst = rst;
       else if (strcmp(tag, "EXCH")   == 0) subst = exch;
+      else if (strcmp(tag, "HISCALL") == 0 || strcmp(tag, "CALL") == 0) subst = hiscall;
 
       if (subst) {
         while (*subst && pos + 1 < out_size) out[pos++] = *subst++;
