@@ -17,6 +17,7 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QShowEvent>
+#include <QSpinBox>
 #include <QTableWidget>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -32,6 +33,7 @@ extern "C" {
 #include "app_controller.h"
 #include "cat.h"
 #include "config.h"
+#include "cw_keys.h"
 #include "db.h"
 #include "dxcluster.h"
 #include "globals.h"
@@ -139,6 +141,117 @@ constexpr std::array<ContestPreset, 5> kContestPresets = {{
     {"CQ WPX CW", "contest_defs/cq_wpx_cw.conf"},
 }};
 } // namespace
+
+class CwKeyerDialog : public QWidget {
+public:
+  explicit CwKeyerDialog(QWidget *parent = nullptr)
+      : QWidget(parent, Qt::Dialog) {
+    setWindowTitle("CW Keyer (Ctrl+K)");
+    setAttribute(Qt::WA_DeleteOnClose, false);
+    resize(420, 160);
+
+    auto *layout = new QVBoxLayout(this);
+    layout->setContentsMargins(10, 10, 10, 10);
+    layout->setSpacing(6);
+
+    auto *slot_row = new QHBoxLayout();
+    slot_row->addWidget(new QLabel("Rig:", this));
+    slot_combo_ = new QComboBox(this);
+    slot_combo_->addItem("Radio 1", CAT_SLOT_A);
+    slot_combo_->addItem("Radio 2", CAT_SLOT_B);
+    slot_row->addWidget(slot_combo_);
+    slot_row->addStretch(1);
+    layout->addLayout(slot_row);
+
+    layout->addWidget(new QLabel("Wpisz tekst — znaki są nadawane CW na bieżąco:", this));
+
+    text_edit_ = new QLineEdit(this);
+    text_edit_->setPlaceholderText("Wpisz tutaj...");
+    layout->addWidget(text_edit_);
+
+    status_label_ = new QLabel(this);
+    layout->addWidget(status_label_);
+
+    auto *btn_row = new QHBoxLayout();
+    stop_btn_ = new QPushButton("Stop TX (Esc)", this);
+    auto *clear_btn = new QPushButton("Wyczyść", this);
+    btn_row->addWidget(stop_btn_);
+    btn_row->addWidget(clear_btn);
+    layout->addLayout(btn_row);
+
+    connect(text_edit_, &QLineEdit::textChanged, this,
+            [this](const QString &text) { on_text_changed(text); });
+    connect(stop_btn_, &QPushButton::clicked, this, [this]() { on_stop(); });
+    connect(clear_btn, &QPushButton::clicked, this, [this]() {
+      on_stop();
+      last_sent_pos_ = 0;
+      text_edit_->clear();
+    });
+  }
+
+  void showAndFocus() {
+    last_sent_pos_ = text_edit_->text().length();
+    show();
+    raise();
+    activateWindow();
+    text_edit_->setFocus();
+  }
+
+protected:
+  void keyPressEvent(QKeyEvent *event) override {
+    if (event->key() == Qt::Key_Escape) {
+      on_stop();
+      hide();
+      event->accept();
+      return;
+    }
+    QWidget::keyPressEvent(event);
+  }
+
+private:
+  void on_text_changed(const QString &text) {
+    const int current_len = text.length();
+    if (current_len <= last_sent_pos_) {
+      last_sent_pos_ = current_len;
+      return;
+    }
+
+    const QString new_chars = text.mid(last_sent_pos_);
+    last_sent_pos_ = current_len;
+
+    const QByteArray bytes = new_chars.toUpper().toLatin1();
+
+    if (cat_is_cw_keyer_connected()) {
+      if (cat_cw_send(bytes.constData()) == 0) {
+        status_label_->setText(QString("Keyer: wysyłanie \"%1\"").arg(new_chars));
+        return;
+      }
+    }
+
+    /* fall back to CAT rig send_morse */
+    const int slot = slot_combo_->currentData().toInt();
+    if (cat_send_morse_slot(slot, bytes.constData()) == 0)
+      status_label_->setText(QString("CAT rig: wysyłanie \"%1\"").arg(new_chars));
+    else
+      status_label_->setText("Błąd — brak keyer i brak połączenia CAT");
+  }
+
+  void on_stop() {
+    if (cat_is_cw_keyer_connected()) {
+      cat_cw_stop();
+    } else {
+      const int slot = slot_combo_->currentData().toInt();
+      cat_stop_morse_slot(slot);
+    }
+    status_label_->setText("TX zatrzymany");
+  }
+
+  QLineEdit *text_edit_ = nullptr;
+  QComboBox *slot_combo_ = nullptr;
+  QLabel *status_label_ = nullptr;
+  QPushButton *stop_btn_ = nullptr;
+  int last_sent_pos_ = 0;
+};
 
 class LoggerQtWindow : public QMainWindow {
 public:
@@ -491,6 +604,47 @@ public:
         cat_status_layout->addWidget(cat_slot1_status_label_);
         cat_status_layout->addWidget(cat_slot2_status_label_);
         cat_layout->addWidget(cat_status_frame_);
+
+        /* --- CW Keyer section --- */
+        auto *cw_sep = new QFrame(cat_group_);
+        cw_sep->setFrameShape(QFrame::HLine);
+        cw_sep->setFrameShadow(QFrame::Sunken);
+        cat_layout->addWidget(cw_sep);
+
+        auto *cw_grid = new QGridLayout();
+        cw_grid->setContentsMargins(0, 0, 0, 0);
+        cw_grid->setHorizontalSpacing(8);
+        cw_grid->setVerticalSpacing(4);
+
+        cw_grid->addWidget(new QLabel("CW port:", cat_group_), 0, 0);
+        cw_device_edit_ = new QLineEdit(cat_group_);
+        cw_device_edit_->setText(QString::fromLatin1(config.cw_device));
+        cw_grid->addWidget(cw_device_edit_, 0, 1);
+
+        cw_grid->addWidget(new QLabel("Linia:", cat_group_), 1, 0);
+        cw_line_combo_ = new QComboBox(cat_group_);
+        cw_line_combo_->addItems({"DTR", "RTS"});
+        cw_line_combo_->setCurrentText(QString::fromLatin1(config.cw_keyer_line));
+        cw_grid->addWidget(cw_line_combo_, 1, 1);
+
+        cw_grid->addWidget(new QLabel("WPM:", cat_group_), 2, 0);
+        cw_wpm_spin_ = new QSpinBox(cat_group_);
+        cw_wpm_spin_->setRange(5, 60);
+        cw_wpm_spin_->setValue(config.cw_wpm);
+        cw_grid->addWidget(cw_wpm_spin_, 2, 1);
+
+        cat_layout->addLayout(cw_grid);
+
+        auto *cw_buttons = new QHBoxLayout();
+        cw_connect_button_ = new QPushButton("CW Connect", cat_group_);
+        cw_disconnect_button_ = new QPushButton("CW Disconnect", cat_group_);
+        cw_buttons->addWidget(cw_connect_button_);
+        cw_buttons->addWidget(cw_disconnect_button_);
+        cat_layout->addLayout(cw_buttons);
+
+        cw_status_label_ = new QLabel("CW keyer: idle", cat_group_);
+        cat_layout->addWidget(cw_status_label_);
+
         cat_layout->addStretch(1);
 
         connect(cat_connect_button_, &QPushButton::clicked, this,
@@ -499,6 +653,10 @@ public:
           [this]() { on_cat_disconnect(); });
         connect(cat_slot_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
           this, [this](int) { load_cat_slot_form(selected_cat_slot()); });
+        connect(cw_connect_button_, &QPushButton::clicked, this,
+          [this]() { on_cw_connect(); });
+        connect(cw_disconnect_button_, &QPushButton::clicked, this,
+          [this]() { on_cw_disconnect(); });
 
         load_cat_slot_form(CAT_SLOT_A);
         cat_group_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
@@ -523,6 +681,20 @@ public:
 
     apply_theme();
     apply_character_cell_layout();
+
+    cw_dialog_ = new CwKeyerDialog(this);
+
+    /* try app dir (build), then CWD, then one level up (source tree) */
+    {
+      const QString base = QApplication::applicationDirPath();
+      if (cw_keys_load(&cw_key_map_, (base + "/cw_keys.ini").toLocal8Bit().constData()) != 0 &&
+          cw_keys_load(&cw_key_map_, "cw_keys.ini") != 0)
+        cw_keys_load(&cw_key_map_, (base + "/../cw_keys.ini").toLocal8Bit().constData());
+    }
+
+    /* auto-connect CW keyer if device is configured */
+    if (config.cw_device[0])
+      cat_connect_cw_keyer(config.cw_device, config.cw_keyer_line, config.cw_wpm);
 
     timer_ = new QTimer(this);
     connect(timer_, &QTimer::timeout, this, [this]() { refresh_ui(); });
@@ -557,18 +729,40 @@ protected:
    * @return Nothing.
    */
   void keyPressEvent(QKeyEvent *event) override {
-    if (event->key() == Qt::Key_F2) {
+    const bool ctrl = (event->modifiers() & Qt::ControlModifier) != 0;
+
+    if (ctrl && event->key() == Qt::Key_F2) {
       prompt_create_named_log();
       refresh_ui();
       event->accept();
       return;
     }
 
-    if (event->key() == Qt::Key_F3) {
+    if (ctrl && event->key() == Qt::Key_F3) {
       prompt_open_named_log();
       refresh_ui();
       event->accept();
       return;
+    }
+
+    if (ctrl && event->key() == Qt::Key_K) {
+      cw_dialog_->showAndFocus();
+      event->accept();
+      return;
+    }
+
+    if (event->key() == Qt::Key_Escape) {
+      cat_cw_stop();
+      /* fall through — ESC also clears input fields via APP_KEY_ESC */
+    }
+
+    if (!ctrl) {
+      int fn = cw_fn_number(event->key());
+      if (fn > 0) {
+        on_cw_fn_key(fn);
+        event->accept();
+        return;
+      }
     }
 
     int key = translate_key(event);
@@ -714,23 +908,24 @@ private:
   }
 
   static int translate_key(QKeyEvent *event) {
+    const bool ctrl = (event->modifiers() & Qt::ControlModifier) != 0;
     switch (event->key()) {
     case Qt::Key_F1:
-      return APP_KEY_F1;
+      return ctrl ? APP_KEY_F1 : APP_KEY_NONE;
     case Qt::Key_F2:
-      return APP_KEY_F2;
+      return ctrl ? APP_KEY_F2 : APP_KEY_NONE;
     case Qt::Key_F3:
-      return APP_KEY_F3;
+      return ctrl ? APP_KEY_F3 : APP_KEY_NONE;
     case Qt::Key_F4:
-      return APP_KEY_F4;
+      return ctrl ? APP_KEY_F4 : APP_KEY_NONE;
     case Qt::Key_F5:
-      return APP_KEY_F5;
+      return ctrl ? APP_KEY_F5 : APP_KEY_NONE;
     case Qt::Key_F6:
-      return APP_KEY_F6;
+      return ctrl ? APP_KEY_F6 : APP_KEY_NONE;
     case Qt::Key_F7:
-      return APP_KEY_F7;
+      return ctrl ? APP_KEY_F7 : APP_KEY_NONE;
     case Qt::Key_F10:
-      return APP_KEY_F10;
+      return ctrl ? APP_KEY_F10 : APP_KEY_NONE;
     case Qt::Key_Up:
       return APP_KEY_UP;
     case Qt::Key_Down:
@@ -1211,6 +1406,88 @@ private:
     refresh_cat_status();
   }
 
+  static int cw_fn_number(int qt_key) {
+    switch (qt_key) {
+    case Qt::Key_F1:  return 1;
+    case Qt::Key_F2:  return 2;
+    case Qt::Key_F3:  return 3;
+    case Qt::Key_F4:  return 4;
+    case Qt::Key_F5:  return 5;
+    case Qt::Key_F6:  return 6;
+    case Qt::Key_F7:  return 7;
+    case Qt::Key_F8:  return 8;
+    case Qt::Key_F9:  return 9;
+    case Qt::Key_F10: return 10;
+    default:          return 0;
+    }
+  }
+
+  void on_cw_fn_key(int fn) {
+    AppRenderState state;
+    app_controller_get_render_state(&state);
+
+    const int active = state.active_radio;
+    const bool is_run = (active == 2) ? state.radio2_run : state.radio1_run;
+    const char *mode  = (active == 2) ? state.radio2_mode : state.radio1_mode;
+
+    const char *rst  = (mode && std::strstr(mode, "CW")) ? "599" : "59";
+    const char *exch = state.contest_exchange_sent ? state.contest_exchange_sent : "";
+
+    const char *tpl = cw_keys_get(&cw_key_map_, fn, is_run ? 1 : 0);
+    if (!tpl || tpl[0] == 0) {
+      cw_feedback_ = QString("F%1: brak definicji CW").arg(fn);
+      cw_feedback_ticks_ = 20;
+      return;
+    }
+
+    char text[256];
+    cw_keys_expand(tpl, config.station_call, rst, exch, text, sizeof(text));
+    if (text[0] == 0) return;
+
+    cw_feedback_ = QString("CW: %1").arg(QString::fromLatin1(text));
+    cw_feedback_ticks_ = 20;
+
+    if (cat_is_cw_keyer_connected()) {
+      cat_cw_send(text);
+    } else if (cat_send_morse_slot(CAT_SLOT_A, text) != 0) {
+      cw_feedback_ = QString("CW: brak keyer/CAT — %1").arg(QString::fromLatin1(text));
+    }
+  }
+
+  void on_cw_connect() {    const QString device = cw_device_edit_->text().trimmed();
+    const QString line   = cw_line_combo_->currentText();
+    const int wpm        = cw_wpm_spin_->value();
+
+    std::snprintf(config.cw_device, sizeof(config.cw_device), "%s",
+                  device.toLatin1().constData());
+    std::snprintf(config.cw_keyer_line, sizeof(config.cw_keyer_line), "%s",
+                  line.toLatin1().constData());
+    config.cw_wpm = wpm;
+    config_save("logger.conf");
+
+    if (cat_connect_cw_keyer(config.cw_device, config.cw_keyer_line,
+                             config.cw_wpm) != 0) {
+      QMessageBox::warning(this, "CW Keyer",
+                           "Nie można otworzyć portu CW. Sprawdź ścieżkę urządzenia.");
+    }
+    refresh_cw_keyer_status();
+  }
+
+  void on_cw_disconnect() {
+    cat_disconnect_cw_keyer();
+    refresh_cw_keyer_status();
+  }
+
+  void refresh_cw_keyer_status() {
+    char status[128] = {0};
+    cat_get_cw_keyer_status(status, sizeof(status));
+    cw_status_label_->setText(QString::fromLatin1(status));
+    const bool connected = cat_is_cw_keyer_connected() != 0;
+    cw_status_label_->setStyleSheet(connected
+        ? "QLabel { color: #175017; font-weight: bold; }"
+        : "QLabel { color: #555; }");
+  }
+
   void on_technique_changed() {
     app_controller_set_contest_technique(
         technique_from_combo_index(technique_combo_->currentIndex()));
@@ -1291,7 +1568,9 @@ private:
     set_input_style(input_call_r2_edit_, active_radio == 2 && state.active_input_field_r2 == 0);
     set_input_style(input_rst_r2_edit_, active_radio == 2 && state.active_input_field_r2 == 1);
     status_label_->setText(clip_to_cols(
-      QString("Status: %1").arg(state.status ? state.status : ""),
+      cw_feedback_ticks_ > 0
+        ? (cw_feedback_ticks_--, cw_feedback_)
+        : QString("Status: %1").arg(state.status ? state.status : ""),
       std::max(1, status_cols)));
     QString info_text = QString("Info: %1").arg(state.info ? state.info : "");
     if (contest_entry_mode) {
@@ -1381,7 +1660,7 @@ private:
           "QFrame { background: #f3d24f; color: #111; font-weight: bold; }");
     } else {
         function_label_->setText(clip_to_cols(
-      "F1 Help | F2 New Named Log | F3 Open Log | F4 Export Log | F5 DXCluster | F6 Statistics | F7 Update CTY | F10 Quit",
+      "F1-F10: CW | Ctrl+F1 Help | Ctrl+F2 New Log | Ctrl+F3 Open Log | Ctrl+F4 Export | Ctrl+F5 DXCluster | Ctrl+F6 Stats | Ctrl+F7 Update CTY | Ctrl+F10 Quit | Ctrl+K CW Keyer",
           std::max(1, func_cols)));
       function_panel_->setStyleSheet(
           "QFrame { background: #0f5ea4; color: #f4f8ff; font-weight: bold; }");
@@ -1391,6 +1670,7 @@ private:
     refresh_cluster_table(false, 0);
     refresh_suggestions();
     refresh_cat_status();
+    refresh_cw_keyer_status();
 
     log_group_->setVisible(true);
     input_panel_->setVisible(true);
@@ -1471,8 +1751,20 @@ private:
   QLabel *cat_slot1_status_label_ = nullptr;
   QLabel *cat_slot2_status_label_ = nullptr;
 
+  QLineEdit *cw_device_edit_ = nullptr;
+  QComboBox *cw_line_combo_ = nullptr;
+  QSpinBox *cw_wpm_spin_ = nullptr;
+  QPushButton *cw_connect_button_ = nullptr;
+  QPushButton *cw_disconnect_button_ = nullptr;
+  QLabel *cw_status_label_ = nullptr;
+
   QFrame *function_panel_ = nullptr;
   QLabel *function_label_ = nullptr;
+
+  CwKeyerDialog *cw_dialog_ = nullptr;
+  CwKeyMap cw_key_map_ = {};
+  QString cw_feedback_;
+  int cw_feedback_ticks_ = 0;
 
   int cell_w_ = 8;
   int cell_h_ = 16;
@@ -1518,6 +1810,7 @@ int main(int argc, char **argv) {
 
   const int rc = app.exec();
 
+  cat_disconnect_cw_keyer();
   cat_shutdown();
   app_controller_shutdown();
   return rc;

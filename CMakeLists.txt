@@ -43,6 +43,7 @@ add_executable(logger
     cty.c
     contest.c
     cat.c
+    cw_keys.c
     dxcluster.c
     export.c
     stats.c
@@ -149,3 +150,5 @@ target_include_directories(unit_tests
 )
 
 add_test(NAME unit_tests COMMAND unit_tests)
+
+configure_file(${CMAKE_SOURCE_DIR}/cw_keys.ini cw_keys.ini COPYONLY)

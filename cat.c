@@ -1,8 +1,13 @@
 #include "cat.h"
 
+#include <ctype.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/ioctl.h>
+#include <termios.h>
+#include <unistd.h>
 
 #ifdef HAVE_HAMLIB
 #include <hamlib/rig.h>
@@ -28,6 +33,28 @@ static void cat_set_status(const char *text) {
   snprintf(cat_status, sizeof(cat_status), "%s", text);
   pthread_mutex_unlock(&cat_mutex);
 }
+
+#ifdef HAVE_HAMLIB
+static vfo_t cat_map_vfo(CatVfo vfo) {
+  switch (vfo) {
+  case CAT_VFO_A:
+    return RIG_VFO_A;
+  case CAT_VFO_B:
+    return RIG_VFO_B;
+  case CAT_VFO_CURR:
+  default:
+    return RIG_VFO_CURR;
+  }
+}
+
+static CatVfo cat_unmap_vfo(vfo_t vfo) {
+  if (vfo == RIG_VFO_A)
+    return CAT_VFO_A;
+  if (vfo == RIG_VFO_B)
+    return CAT_VFO_B;
+  return CAT_VFO_CURR;
+}
+#endif
 
 void cat_get_status(char *out, size_t out_size) {
   if (!out || out_size < 2)
@@ -285,6 +312,10 @@ int cat_get_frequency_khz(int *out_khz) {
 }
 
 int cat_get_frequency_khz_slot(int slot, int *out_khz) {
+  return cat_get_frequency_khz_slot_vfo(slot, CAT_VFO_CURR, out_khz);
+}
+
+int cat_get_frequency_khz_slot_vfo(int slot, CatVfo vfo, int *out_khz) {
   if (!out_khz)
     return -1;
 
@@ -300,7 +331,7 @@ int cat_get_frequency_khz_slot(int slot, int *out_khz) {
   }
 
   freq_t freq_hz = 0;
-  const int rc = rig_get_freq(active_rigs[slot], RIG_VFO_CURR, &freq_hz);
+  const int rc = rig_get_freq(active_rigs[slot], cat_map_vfo(vfo), &freq_hz);
   pthread_mutex_unlock(&cat_mutex);
 
   if (rc != RIG_OK) {
@@ -320,6 +351,11 @@ int cat_get_mode_label(char *out, size_t out_size) {
 }
 
 int cat_get_mode_label_slot(int slot, char *out, size_t out_size) {
+  return cat_get_mode_label_slot_vfo(slot, CAT_VFO_CURR, out, out_size);
+}
+
+int cat_get_mode_label_slot_vfo(int slot, CatVfo vfo, char *out,
+                                size_t out_size) {
   if (!out || out_size < 2)
     return -1;
 
@@ -336,7 +372,8 @@ int cat_get_mode_label_slot(int slot, char *out, size_t out_size) {
 
   rmode_t mode = 0;
   pbwidth_t width = 0;
-  const int rc = rig_get_mode(active_rigs[slot], RIG_VFO_CURR, &mode, &width);
+  const int rc = rig_get_mode(active_rigs[slot], cat_map_vfo(vfo), &mode,
+                              &width);
   pthread_mutex_unlock(&cat_mutex);
 
   if (rc != RIG_OK) {
@@ -360,6 +397,10 @@ int cat_set_frequency_khz(int freq_khz) {
 }
 
 int cat_set_frequency_khz_slot(int slot, int freq_khz) {
+  return cat_set_frequency_khz_slot_vfo(slot, CAT_VFO_CURR, freq_khz);
+}
+
+int cat_set_frequency_khz_slot_vfo(int slot, CatVfo vfo, int freq_khz) {
   if (freq_khz <= 0)
     return -1;
 
@@ -375,7 +416,7 @@ int cat_set_frequency_khz_slot(int slot, int freq_khz) {
   }
 
   const freq_t freq_hz = (freq_t)freq_khz * 1000.0;
-  const int rc = rig_set_freq(active_rigs[slot], RIG_VFO_CURR, freq_hz);
+  const int rc = rig_set_freq(active_rigs[slot], cat_map_vfo(vfo), freq_hz);
   pthread_mutex_unlock(&cat_mutex);
 
   if (rc != RIG_OK) {
@@ -387,4 +428,320 @@ int cat_set_frequency_khz_slot(int slot, int freq_khz) {
 #else
   return -1;
 #endif
+}
+
+int cat_set_active_vfo_slot(int slot, CatVfo vfo) {
+  if (!cat_slot_valid(slot))
+    return -1;
+
+#ifdef HAVE_HAMLIB
+  pthread_mutex_lock(&cat_mutex);
+
+  if (!active_rigs[slot]) {
+    pthread_mutex_unlock(&cat_mutex);
+    return -1;
+  }
+
+  const int rc = rig_set_vfo(active_rigs[slot], cat_map_vfo(vfo));
+  pthread_mutex_unlock(&cat_mutex);
+
+  if (rc != RIG_OK) {
+    cat_set_status_fmt("CAT set VFO failed", rc);
+    return -1;
+  }
+
+  return 0;
+#else
+  (void)vfo;
+  return -1;
+#endif
+}
+
+int cat_get_active_vfo_slot(int slot, CatVfo *out_vfo) {
+  if (!cat_slot_valid(slot) || !out_vfo)
+    return -1;
+
+#ifdef HAVE_HAMLIB
+  pthread_mutex_lock(&cat_mutex);
+
+  if (!active_rigs[slot]) {
+    pthread_mutex_unlock(&cat_mutex);
+    return -1;
+  }
+
+  vfo_t vfo = RIG_VFO_CURR;
+  const int rc = rig_get_vfo(active_rigs[slot], &vfo);
+  pthread_mutex_unlock(&cat_mutex);
+
+  if (rc != RIG_OK) {
+    cat_set_status_fmt("CAT read VFO failed", rc);
+    return -1;
+  }
+
+  *out_vfo = cat_unmap_vfo(vfo);
+  return 0;
+#else
+  return -1;
+#endif
+}
+
+int cat_send_morse(const char *text) {
+  return cat_send_morse_slot(CAT_SLOT_A, text);
+}
+
+int cat_send_morse_slot(int slot, const char *text) {
+  if (!text || !text[0])
+    return -1;
+
+  if (!cat_slot_valid(slot))
+    return -1;
+
+#ifdef HAVE_HAMLIB
+  pthread_mutex_lock(&cat_mutex);
+
+  if (!active_rigs[slot]) {
+    pthread_mutex_unlock(&cat_mutex);
+    return -1;
+  }
+
+  const int rc = rig_send_morse(active_rigs[slot], RIG_VFO_CURR, text);
+  pthread_mutex_unlock(&cat_mutex);
+
+  if (rc != RIG_OK) {
+    cat_set_status_fmt("CW send failed", rc);
+    return -1;
+  }
+
+  return 0;
+#else
+  (void)text;
+  return -1;
+#endif
+}
+
+int cat_stop_morse(void) {
+  return cat_stop_morse_slot(CAT_SLOT_A);
+}
+
+int cat_stop_morse_slot(int slot) {
+  if (!cat_slot_valid(slot))
+    return -1;
+
+#ifdef HAVE_HAMLIB
+  pthread_mutex_lock(&cat_mutex);
+
+  if (!active_rigs[slot]) {
+    pthread_mutex_unlock(&cat_mutex);
+    return -1;
+  }
+
+  const int rc = rig_stop_morse(active_rigs[slot], RIG_VFO_CURR);
+  pthread_mutex_unlock(&cat_mutex);
+
+  if (rc != RIG_OK) {
+    cat_set_status_fmt("CW stop failed", rc);
+    return -1;
+  }
+
+  return 0;
+#else
+  return -1;
+#endif
+}
+
+/* ---- Dedicated CW keyer (serial port DTR/RTS) ---- */
+
+#define CW_QUEUE_SIZE 512
+
+static int cw_fd = -1;
+static int cw_use_dtr = 1;
+static int cw_wpm = 20;
+static char cw_status[128] = "CW keyer idle";
+
+static char cw_queue[CW_QUEUE_SIZE];
+static int cw_queue_len = 0;
+static pthread_mutex_t cw_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t cw_cond = PTHREAD_COND_INITIALIZER;
+static pthread_t cw_thread;
+static volatile int cw_thread_running = 0;
+static volatile int cw_abort_flag = 0;
+
+static const char *cw_encode(char c) {
+  switch (c) {
+  case 'A': return ".-";    case 'B': return "-...";  case 'C': return "-.-.";
+  case 'D': return "-..";   case 'E': return ".";     case 'F': return "..-.";
+  case 'G': return "--.";   case 'H': return "....";  case 'I': return "..";
+  case 'J': return ".---";  case 'K': return "-.-";   case 'L': return ".-..";
+  case 'M': return "--";    case 'N': return "-.";    case 'O': return "---";
+  case 'P': return ".--.";  case 'Q': return "--.-";  case 'R': return ".-.";
+  case 'S': return "...";   case 'T': return "-";     case 'U': return "..-";
+  case 'V': return "...-";  case 'W': return ".--";   case 'X': return "-..-";
+  case 'Y': return "-.--";  case 'Z': return "--..";
+  case '0': return "-----"; case '1': return ".----"; case '2': return "..---";
+  case '3': return "...--"; case '4': return "....-"; case '5': return ".....";
+  case '6': return "-...."; case '7': return "--..."; case '8': return "---..";
+  case '9': return "----.";
+  case '.': return ".-.-.-"; case ',': return "--..--"; case '?': return "..--..";
+  case '/': return "-..-.";  case '-': return "-....-"; case '=': return "-...-";
+  case '+': return ".-.-.";  case ' ': return " ";
+  default:  return NULL;
+  }
+}
+
+/* Returns 0 on completion, -1 if aborted. */
+static int cw_sleep_ms(int ms) {
+  for (int i = 0; i < ms; i++) {
+    if (cw_abort_flag)
+      return -1;
+    usleep(1000);
+  }
+  return 0;
+}
+
+static void cw_key(int down) {
+  if (cw_fd < 0)
+    return;
+  int bit = cw_use_dtr ? TIOCM_DTR : TIOCM_RTS;
+  ioctl(cw_fd, down ? TIOCMBIS : TIOCMBIC, &bit);
+}
+
+static int cw_send_char(char c) {
+  const int dot = 1200 / (cw_wpm > 0 ? cw_wpm : 20);
+  const char *code = cw_encode((char)toupper((unsigned char)c));
+
+  if (!code)
+    return 0;
+
+  if (c == ' ')
+    return cw_sleep_ms(4 * dot); /* 7T total - 3T char gap already waited */
+
+  for (const char *p = code; *p; p++) {
+    if (cw_abort_flag) {
+      cw_key(0);
+      return -1;
+    }
+    cw_key(1);
+    if (cw_sleep_ms(*p == '-' ? 3 * dot : dot) < 0) { cw_key(0); return -1; }
+    cw_key(0);
+    if (cw_sleep_ms(dot) < 0) return -1; /* inter-element gap */
+  }
+  return cw_sleep_ms(2 * dot); /* char gap = 3T; already waited 1T above */
+}
+
+static void *cw_thread_func(void *arg) {
+  (void)arg;
+  while (1) {
+    pthread_mutex_lock(&cw_mutex);
+    while (cw_queue_len == 0 && cw_thread_running)
+      pthread_cond_wait(&cw_cond, &cw_mutex);
+
+    if (!cw_thread_running) {
+      pthread_mutex_unlock(&cw_mutex);
+      break;
+    }
+
+    char c = cw_queue[0];
+    memmove(cw_queue, cw_queue + 1, (size_t)(--cw_queue_len));
+    pthread_mutex_unlock(&cw_mutex);
+
+    cw_abort_flag = 0;
+    cw_send_char(c);
+  }
+  cw_key(0);
+  return NULL;
+}
+
+int cat_connect_cw_keyer(const char *device, const char *line, int wpm) {
+  if (!device || !device[0] || !line || !line[0])
+    return -1;
+
+  cat_disconnect_cw_keyer();
+
+  int fd = open(device, O_RDWR | O_NOCTTY | O_NONBLOCK);
+  if (fd < 0) {
+    pthread_mutex_lock(&cat_mutex);
+    snprintf(cw_status, sizeof(cw_status), "CW keyer: cannot open %s", device);
+    pthread_mutex_unlock(&cat_mutex);
+    return -1;
+  }
+
+  /* ensure key-up on open */
+  int bit = (strcmp(line, "RTS") == 0) ? TIOCM_RTS : TIOCM_DTR;
+  ioctl(fd, TIOCMBIC, &bit);
+
+  cw_fd = fd;
+  cw_use_dtr = (strcmp(line, "RTS") != 0);
+  cw_wpm = (wpm >= 5 && wpm <= 60) ? wpm : 20;
+  cw_abort_flag = 0;
+  cw_queue_len = 0;
+  cw_thread_running = 1;
+  pthread_create(&cw_thread, NULL, cw_thread_func, NULL);
+
+  pthread_mutex_lock(&cat_mutex);
+  snprintf(cw_status, sizeof(cw_status), "CW keyer: %s via %s @ %d WPM",
+           device, line, cw_wpm);
+  pthread_mutex_unlock(&cat_mutex);
+  return 0;
+}
+
+void cat_disconnect_cw_keyer(void) {
+  if (!cw_thread_running && cw_fd < 0)
+    return;
+
+  cw_abort_flag = 1;
+
+  pthread_mutex_lock(&cw_mutex);
+  cw_thread_running = 0;
+  pthread_cond_signal(&cw_cond);
+  pthread_mutex_unlock(&cw_mutex);
+
+  if (cw_thread_running == 0)
+    pthread_join(cw_thread, NULL);
+
+  if (cw_fd >= 0) {
+    close(cw_fd);
+    cw_fd = -1;
+  }
+
+  pthread_mutex_lock(&cat_mutex);
+  snprintf(cw_status, sizeof(cw_status), "%s", "CW keyer: disconnected");
+  pthread_mutex_unlock(&cat_mutex);
+}
+
+int cat_is_cw_keyer_connected(void) {
+  return cw_fd >= 0 ? 1 : 0;
+}
+
+void cat_get_cw_keyer_status(char *out, size_t out_size) {
+  if (!out || out_size < 2)
+    return;
+  pthread_mutex_lock(&cat_mutex);
+  snprintf(out, out_size, "%s", cw_status);
+  pthread_mutex_unlock(&cat_mutex);
+}
+
+int cat_cw_send(const char *text) {
+  if (!text || !text[0])
+    return -1;
+
+  pthread_mutex_lock(&cw_mutex);
+
+  if (cw_fd < 0) {
+    pthread_mutex_unlock(&cw_mutex);
+    return -1;
+  }
+
+  for (size_t i = 0; text[i] && cw_queue_len < CW_QUEUE_SIZE - 1; i++)
+    cw_queue[cw_queue_len++] = text[i];
+
+  pthread_cond_signal(&cw_cond);
+  pthread_mutex_unlock(&cw_mutex);
+  return 0;
+}
+
+void cat_cw_stop(void) {
+  cw_abort_flag = 1;
+  pthread_mutex_lock(&cw_mutex);
+  cw_queue_len = 0;
+  pthread_mutex_unlock(&cw_mutex);
 }

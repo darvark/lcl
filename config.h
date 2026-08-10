@@ -37,6 +37,10 @@ typedef struct {
   char contest_tx_exchange[32];
   ContestTechnique contest_technique;
 
+  char cw_device[128];
+  char cw_keyer_line[8];  /* "DTR" or "RTS" */
+  int cw_wpm;
+
 } Config;
 
 extern Config config;

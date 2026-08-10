@@ -66,6 +66,10 @@ static void set_defaults(void) {
   strcpy(config.contest_definition_path, "contest.conf");
   strcpy(config.contest_tx_exchange, "");
   config.contest_technique = CONTEST_TECH_SO1R;
+
+  strcpy(config.cw_device, "/dev/ttyUSB2");
+  strcpy(config.cw_keyer_line, "DTR");
+  config.cw_wpm = 20;
 }
 
 /*
@@ -187,6 +191,16 @@ int config_load(const char *filename) {
       config.contest_tx_exchange[sizeof(config.contest_tx_exchange) - 1] = 0;
     } else if (strcmp(key, "CONTEST_TECHNIQUE") == 0) {
       config.contest_technique = contest_technique_from_text(value);
+    } else if (strcmp(key, "CW_DEVICE") == 0) {
+      strncpy(config.cw_device, value, sizeof(config.cw_device));
+      config.cw_device[sizeof(config.cw_device) - 1] = 0;
+    } else if (strcmp(key, "CW_KEYER_LINE") == 0) {
+      strncpy(config.cw_keyer_line, value, sizeof(config.cw_keyer_line));
+      config.cw_keyer_line[sizeof(config.cw_keyer_line) - 1] = 0;
+    } else if (strcmp(key, "CW_WPM") == 0) {
+      config.cw_wpm = atoi(value);
+      if (config.cw_wpm < 5) config.cw_wpm = 5;
+      if (config.cw_wpm > 60) config.cw_wpm = 60;
     }
   }
 
@@ -239,6 +253,10 @@ int config_save(const char *filename) {
   fprintf(f, "CONTEST_TX_EXCHANGE=%s\n", config.contest_tx_exchange);
   fprintf(f, "CONTEST_TECHNIQUE=%s\n",
           contest_technique_to_text(config.contest_technique));
+  fprintf(f, "\n");
+  fprintf(f, "CW_DEVICE=%s\n", config.cw_device);
+  fprintf(f, "CW_KEYER_LINE=%s\n", config.cw_keyer_line);
+  fprintf(f, "CW_WPM=%d\n", config.cw_wpm);
 
   fclose(f);
   return 0;

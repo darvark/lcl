@@ -539,6 +539,16 @@ static int cat_slot_for_radio(int radio_idx) {
 }
 
 /*
+ * Resolve CAT VFO mapping for one logical radio.
+ */
+static CatVfo cat_vfo_for_radio(int radio_idx) {
+  if (config.contest_technique == CONTEST_TECH_SO2V)
+    return radio_idx == 1 ? CAT_VFO_B : CAT_VFO_A;
+
+  return CAT_VFO_CURR;
+}
+
+/*
  * Resolve QSO frequency, preferring live CAT over manual fallback.
  *
  * @return Frequency in kHz.
@@ -546,10 +556,11 @@ static int cat_slot_for_radio(int radio_idx) {
 static int resolve_qso_frequency_khz(void) {
   const int radio_idx = radio_index_from_nr(active_radio_nr);
   const int slot = cat_slot_for_radio(radio_idx);
+  const CatVfo vfo = cat_vfo_for_radio(radio_idx);
   int cat_freq_khz = 0;
 
   if (cat_is_connected_slot(slot) &&
-      cat_get_frequency_khz_slot(slot, &cat_freq_khz) == 0 &&
+      cat_get_frequency_khz_slot_vfo(slot, vfo, &cat_freq_khz) == 0 &&
       is_valid_frequency_khz(cat_freq_khz)) {
     return cat_freq_khz;
   }
@@ -572,11 +583,12 @@ static const char *resolve_qso_mode(char *mode_out, size_t mode_out_size) {
 
   const int radio_idx = radio_index_from_nr(active_radio_nr);
   const int slot = cat_slot_for_radio(radio_idx);
+  const CatVfo vfo = cat_vfo_for_radio(radio_idx);
 
   mode_out[0] = 0;
 
   if (cat_is_connected_slot(slot) && config.cat_mode_from_rig &&
-      cat_get_mode_label_slot(slot, mode_out, mode_out_size) == 0 &&
+      cat_get_mode_label_slot_vfo(slot, vfo, mode_out, mode_out_size) == 0 &&
       mode_out[0]) {
     return mode_out;
   }
@@ -739,6 +751,8 @@ void app_controller_set_contest_technique(ContestTechnique technique) {
   if (config.contest_technique == CONTEST_TECH_SO1R)
     active_radio_nr = 1;
 
+  app_controller_set_active_radio(active_radio_nr);
+
   config_save("logger.conf");
 }
 
@@ -757,8 +771,12 @@ void app_controller_set_active_radio(int radio_nr) {
 
   const int idx = radio_index_from_nr(active_radio_nr);
   const int slot = cat_slot_for_radio(idx);
-  if (cat_is_connected_slot(slot))
-    cat_set_frequency_khz_slot(slot, manual_entry_freq_khz[idx]);
+  const CatVfo vfo = cat_vfo_for_radio(idx);
+  if (cat_is_connected_slot(slot)) {
+    if (config.contest_technique == CONTEST_TECH_SO2V)
+      cat_set_active_vfo_slot(slot, vfo);
+    cat_set_frequency_khz_slot_vfo(slot, vfo, manual_entry_freq_khz[idx]);
+  }
 
   update_dxcc_from_input(entry_call_for_idx(idx));
   refresh_callsign_suggestion(entry_call_for_idx(idx));
@@ -813,11 +831,12 @@ int app_controller_get_radio_state(int radio_nr, int *out_freq_khz,
                                    int *out_is_run) {
   const int idx = radio_index_from_nr(radio_nr);
   const int slot = cat_slot_for_radio(idx);
+  const CatVfo vfo = cat_vfo_for_radio(idx);
 
   int freq_khz = manual_entry_freq_khz[idx];
   if (cat_is_connected_slot(slot)) {
     int cat_freq_khz = 0;
-    if (cat_get_frequency_khz_slot(slot, &cat_freq_khz) == 0 &&
+    if (cat_get_frequency_khz_slot_vfo(slot, vfo, &cat_freq_khz) == 0 &&
         is_valid_frequency_khz(cat_freq_khz)) {
       freq_khz = cat_freq_khz;
     }
@@ -836,7 +855,7 @@ int app_controller_get_radio_state(int radio_nr, int *out_freq_khz,
       else
         snprintf(out_mode, out_mode_size, "%s", active_contest_def.mode);
     } else if (cat_is_connected_slot(slot) && config.cat_mode_from_rig) {
-      if (cat_get_mode_label_slot(slot, out_mode, out_mode_size) != 0 ||
+      if (cat_get_mode_label_slot_vfo(slot, vfo, out_mode, out_mode_size) != 0 ||
           !out_mode[0]) {
         detect_mode(freq_khz, out_mode);
       }
@@ -1771,9 +1790,10 @@ AppControllerEvent app_controller_handle_key(int key) {
             snprintf(status_text, sizeof(status_text), "Invalid frequency");
           } else {
             manual_entry_freq_khz[radio_idx] = freq_khz;
+            const CatVfo vfo = cat_vfo_for_radio(radio_idx);
 
             if (cat_is_connected_slot(slot)) {
-              if (cat_set_frequency_khz_slot(slot, freq_khz) == 0) {
+              if (cat_set_frequency_khz_slot_vfo(slot, vfo, freq_khz) == 0) {
                 snprintf(status_text, sizeof(status_text),
                          "Frequency set to %d kHz (manual + CAT)", freq_khz);
               } else {
