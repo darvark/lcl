@@ -29,8 +29,8 @@ public:
     bandmap_list_->setFocusPolicy(Qt::NoFocus);
     bandmap_list_->setUniformItemSizes(true);
     bandmap_layout->addWidget(bandmap_list_, 1);
-    bandmap_group_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    bandmap_group_->setMinimumWidth(150);
+    bandmap_group_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+    bandmap_group_->setMinimumWidth(170);
 
     connect(bandmap_list_, &QListWidget::itemDoubleClicked, this,
             [this](QListWidgetItem *item) {
@@ -51,6 +51,7 @@ public:
 
     auto *left_column = new QWidget(central);
     left_column->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    left_column->setMinimumWidth(420);
     auto *left_layout = new QVBoxLayout(left_column);
     left_layout->setContentsMargins(0, 0, 0, 0);
     left_layout->setSpacing(2);
@@ -373,8 +374,8 @@ public:
     bandmap2_list_->setFocusPolicy(Qt::NoFocus);
     bandmap2_list_->setUniformItemSizes(true);
     bandmap2_layout->addWidget(bandmap2_list_, 1);
-    bandmap2_group_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    bandmap2_group_->setMinimumWidth(150);
+    bandmap2_group_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+    bandmap2_group_->setMinimumWidth(170);
 
     connect(bandmap2_list_, &QListWidget::itemDoubleClicked, this,
             [this](QListWidgetItem *item) {
@@ -2645,9 +2646,11 @@ private:
     set_visible_if_changed(gap_panel_, true);
     set_visible_if_changed(suggestions_frame_, call_suggestion_available != 0);
     set_visible_if_changed(cluster_group_, state.cluster_view);
+    bandmap_group_->setMinimumWidth(bandmap_r1_visible_ ? 170 : 0);
     set_visible_if_changed(bandmap_group_, bandmap_r1_visible_);
-    if (bandmap2_group_)
-      bandmap2_group_->setMinimumWidth((dual_mode && bandmap_r2_visible_) ? 260 : 0);
+    if (bandmap2_group_) {
+      bandmap2_group_->setMinimumWidth((dual_mode && bandmap_r2_visible_) ? 170 : 0);
+    }
     set_visible_if_changed(bandmap2_group_, dual_mode && bandmap_r2_visible_);
     if (toggle_bandmap_r1_action_) {
       toggle_bandmap_r1_action_->blockSignals(true);
