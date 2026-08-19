@@ -148,7 +148,9 @@ static int is_dxlog_key_supported_for_import(const char *key_upper) {
          strcmp(key_upper, "MULT2_COUNT") == 0 ||
          strcmp(key_upper, "FIELD") == 0 ||
          strcmp(key_upper, "FIELD_RCVD_TYPE") == 0 ||
-         strcmp(key_upper, "BONUS_POINTS") == 0;
+         strcmp(key_upper, "BONUS_POINTS") == 0 ||
+         strcmp(key_upper, "QTC_SENDER") == 0 ||
+         strcmp(key_upper, "POINTS_PER_QTC") == 0;
 }
 
 static void build_dxlog_import_warnings(const char *source_path,
@@ -264,6 +266,8 @@ void contest_definition_init_defaults(ContestDefinition *out) {
   out->points_same_band_dxcc = 0;
   out->multiplier_type = CONTEST_MULT_DXCC;
   out->bonus_points = 0;
+  snprintf(out->qtc_sender_side, sizeof(out->qtc_sender_side), "%s", "NONE");
+  out->points_per_qtc = 0;
   out->field_count = 0;
 }
 
@@ -412,6 +416,10 @@ int contest_definition_import_dxlog(const char *source_path,
   fprintf(f, "POINTS_SAME_BAND_DXCC=%d\n", def.points_same_band_dxcc);
   fprintf(f, "MULTIPLIER=%s\n", contest_multiplier_to_text(def.multiplier_type));
   fprintf(f, "BONUS_POINTS=%d\n", def.bonus_points);
+  if (def.qtc_sender_side[0] && strcmp(def.qtc_sender_side, "NONE") != 0) {
+    fprintf(f, "QTC_SENDER=%s\n", def.qtc_sender_side);
+    fprintf(f, "POINTS_PER_QTC=%d\n", def.points_per_qtc > 0 ? def.points_per_qtc : 1);
+  }
 
   for (int i = 0; i < def.field_count; i++) {
     const ContestFieldDef *field = &def.fields[i];
@@ -621,6 +629,13 @@ int contest_definition_load(const char *path, ContestDefinition *out,
       out->bonus_points = atoi(value);
       if (out->bonus_points < 0)
         out->bonus_points = 0;
+    } else if (strcmp(key, "QTC_SENDER") == 0) {
+      snprintf(out->qtc_sender_side, sizeof(out->qtc_sender_side), "%s", value);
+      uppercase_in_place(out->qtc_sender_side);
+    } else if (strcmp(key, "POINTS_PER_QTC") == 0) {
+      out->points_per_qtc = atoi(value);
+      if (out->points_per_qtc < 0)
+        out->points_per_qtc = 0;
     } else if (strcmp(key, "FIELD") == 0) {
       parse_field_line(value, out);
     } else {

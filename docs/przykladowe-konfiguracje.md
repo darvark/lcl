@@ -178,3 +178,11 @@ W tym scenariuszu:
 | `SO1R` | jedno radio, najprostsza obsługa |
 | `SO2V` | dwa niezależne pola wejściowe, ale jeden fizyczny tor radiowy lub jedna logika operatorska |
 | `SO2R` | dwa niezależne radia CAT i pełna praca dwuradiowa |
+
+## Szybka kontrola po uruchomieniu
+
+Po starcie aplikacji możesz szybko sprawdzić stan konfiguracji CAT/CW:
+
+- obok sekcji `Run/S&P` są dwa stale widoczne badge: `CAT ON/OFF` i `CW ON/OFF`
+- panel konfiguracji CAT/CW można pokazać lub ukryć przez `Menu -> Show CAT/CW Config` albo `Ctrl+F9`
+- przy `SO2R` status `CAT ON` oznacza aktywne połączenie przynajmniej jednego slotu radiowego (R1 albo R2)

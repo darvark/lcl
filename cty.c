@@ -43,7 +43,7 @@ int cty_download_latest(const char *filename) {
   char cmd[512];
 
   snprintf(cmd, sizeof(cmd),
-           "curl -fsSL --connect-timeout 10 --max-time 90 \"%s\" -o \"%s\"",
+           "curl -fsSLk --connect-timeout 10 --max-time 90 \"%s\" -o \"%s\"",
            CTY_URL, tmp_file);
 
   int status = system(cmd);

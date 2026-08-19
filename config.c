@@ -52,6 +52,7 @@ static void set_defaults(void) {
   strcpy(config.cat_parity, "None");
   strcpy(config.cat_handshake, "None");
   config.cat_mode_from_rig = 0;
+  config.cat_auto_connect = 1;
 
   config.cat2_model = 2;
   strcpy(config.cat2_device, "/dev/ttyUSB1");
@@ -70,6 +71,7 @@ static void set_defaults(void) {
   strcpy(config.cw_device, "/dev/ttyUSB2");
   strcpy(config.cw_keyer_line, "DTR");
   config.cw_wpm = 20;
+  config.cw_auto_connect = 1;
 }
 
 /*
@@ -150,6 +152,8 @@ int config_load(const char *filename) {
       config.cat_handshake[sizeof(config.cat_handshake) - 1] = 0;
     } else if (strcmp(key, "CAT_MODE_FROM_RIG") == 0) {
       config.cat_mode_from_rig = atoi(value) ? 1 : 0;
+    } else if (strcmp(key, "CAT_AUTO_CONNECT") == 0) {
+      config.cat_auto_connect = atoi(value) ? 1 : 0;
     } else if (strcmp(key, "CAT2_MODEL") == 0) {
       config.cat2_model = atoi(value);
     } else if (strcmp(key, "CAT2_DEVICE") == 0) {
@@ -199,8 +203,10 @@ int config_load(const char *filename) {
       config.cw_keyer_line[sizeof(config.cw_keyer_line) - 1] = 0;
     } else if (strcmp(key, "CW_WPM") == 0) {
       config.cw_wpm = atoi(value);
-      if (config.cw_wpm < 5) config.cw_wpm = 5;
+      if (config.cw_wpm < 1) config.cw_wpm = 1;
       if (config.cw_wpm > 60) config.cw_wpm = 60;
+    } else if (strcmp(key, "CW_AUTO_CONNECT") == 0) {
+      config.cw_auto_connect = atoi(value) ? 1 : 0;
     }
   }
 
@@ -239,6 +245,7 @@ int config_save(const char *filename) {
   fprintf(f, "CAT_PARITY=%s\n", config.cat_parity);
   fprintf(f, "CAT_HANDSHAKE=%s\n", config.cat_handshake);
   fprintf(f, "CAT_MODE_FROM_RIG=%d\n", config.cat_mode_from_rig ? 1 : 0);
+  fprintf(f, "CAT_AUTO_CONNECT=%d\n", config.cat_auto_connect ? 1 : 0);
   fprintf(f, "CAT2_MODEL=%d\n", config.cat2_model);
   fprintf(f, "CAT2_DEVICE=%s\n", config.cat2_device);
   fprintf(f, "CAT2_BAUD=%d\n", config.cat2_baud);
@@ -257,6 +264,7 @@ int config_save(const char *filename) {
   fprintf(f, "CW_DEVICE=%s\n", config.cw_device);
   fprintf(f, "CW_KEYER_LINE=%s\n", config.cw_keyer_line);
   fprintf(f, "CW_WPM=%d\n", config.cw_wpm);
+  fprintf(f, "CW_AUTO_CONNECT=%d\n", config.cw_auto_connect ? 1 : 0);
 
   fclose(f);
   return 0;

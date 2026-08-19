@@ -2,10 +2,13 @@
 #include "config.h"
 #include "contest.h"
 #include "cty.h"
+#include "db.h"
+#include "cw_keys.h"
 #include "dxcluster.h"
 #include "export.h"
 #include "maidenhead.h"
 #include "qso.h"
+#include "qtc.h"
 #include "suggestion.h"
 #include "stats.h"
 
@@ -122,6 +125,13 @@ static void join_path(char *out, size_t out_size,
 
 static void send_controller_chars(const char *text);
 static void send_controller_text(const char *text);
+
+static void set_test_db_path(const char *dir_path) {
+  char db_path[512];
+  join_path(db_path, sizeof(db_path), dir_path, "unit.sqlite3");
+  db_shutdown();
+  setenv("LOGGER_DB_PATH", db_path, 1);
+}
 
 static int make_temp_dir(char *out, size_t out_size) {
   const char *tmp_base = getenv("TMPDIR");
@@ -390,6 +400,7 @@ static void test_controller_incremental_exchange_generation(const char *tmp_dir)
                 "chdir to incremental exchange test directory");
 
   app_controller_init();
+  app_controller_handle_key(APP_KEY_F2);
   const int base_qso_count = qso_count;
   AppRenderState state;
   char expected_sent[16];
@@ -399,6 +410,11 @@ static void test_controller_incremental_exchange_generation(const char *tmp_dir)
 
   expect_true(state.contest_entry_mode,
               "contest mode should be active in incremental exchange test");
+  expect_true(state.contest_exchange_label != NULL,
+              "contest exchange label should be present");
+  if (state.contest_exchange_label)
+    expect_str_eq(state.contest_exchange_label, "EXCH",
+                  "contest readback field should be labelled EXCH");
   expect_true(state.contest_exchange_sent != NULL,
               "contest tx exchange should be present in incremental exchange test");
   if (state.contest_exchange_sent) {
@@ -453,6 +469,122 @@ static void test_controller_incremental_exchange_generation(const char *tmp_dir)
   app_controller_shutdown();
   expect_int_eq(chdir(old_cwd), 0,
                 "restore cwd after incremental exchange test");
+}
+
+static void test_controller_reopen_resume_from_last_sent_serial(const char *tmp_dir) {
+  char case_dir[512];
+  snprintf(case_dir, sizeof(case_dir), "%s/reopen_serial_resume_case", tmp_dir);
+
+  expect_int_eq(mkdir(case_dir, 0777), 0,
+                "create isolated directory for reopen serial resume test");
+
+  char contest_path[512];
+  join_path(contest_path, sizeof(contest_path), case_dir, "contest.conf");
+
+  const char *contest_text =
+      "NAME=SERIAL-RESUME\n"
+      "CABRILLO_NAME=SERIAL-RESUME\n"
+      "MODE=CW\n"
+      "EXCHANGE_SENT=#\n"
+      "FIELD=SERIAL,Serial Number,required\n";
+  expect_int_eq(write_text_file(contest_path, contest_text), 0,
+                "write contest definition for reopen serial resume test");
+
+  char conf_path[512];
+  join_path(conf_path, sizeof(conf_path), case_dir, "logger.conf");
+  const char *conf_text =
+      "CONTEST_DEF_FILE=contest.conf\n";
+  expect_int_eq(write_text_file(conf_path, conf_text), 0,
+                "write logger.conf for reopen serial resume test");
+
+  char old_cwd[512];
+  expect_true(getcwd(old_cwd, sizeof(old_cwd)) != NULL,
+              "getcwd before reopen serial resume test");
+  expect_int_eq(chdir(case_dir), 0,
+                "chdir to reopen serial resume case directory");
+
+  app_controller_init();
+  app_controller_handle_key(APP_KEY_F2);
+  qso_count = 3;
+
+  snprintf(logbook[0].exchange_sent, sizeof(logbook[0].exchange_sent), "%s", "7");
+  snprintf(logbook[0].exchange_recv, sizeof(logbook[0].exchange_recv), "%s", "200");
+  snprintf(logbook[1].exchange_sent, sizeof(logbook[1].exchange_sent), "%s", "9");
+  snprintf(logbook[1].exchange_recv, sizeof(logbook[1].exchange_recv), "%s", "201");
+  snprintf(logbook[2].exchange_sent, sizeof(logbook[2].exchange_sent), "%s", "10");
+  snprintf(logbook[2].exchange_recv, sizeof(logbook[2].exchange_recv), "%s", "202");
+
+  AppRenderState state;
+  app_controller_get_render_state(&state);
+  expect_true(state.contest_exchange_sent != NULL,
+              "contest TX exchange should be available after reopen");
+  if (state.contest_exchange_sent)
+    expect_str_eq(state.contest_exchange_sent, "11",
+                  "reopened contest should resume from highest saved sent serial, not received exchange or row count");
+
+  app_controller_shutdown();
+  expect_int_eq(chdir(old_cwd), 0,
+                "restore cwd after reopen serial resume test");
+}
+
+static void test_controller_received_exchange_persists_after_reopen(const char *tmp_dir) {
+  char case_dir[512];
+  snprintf(case_dir, sizeof(case_dir), "%s/received_exchange_persist_case", tmp_dir);
+  expect_int_eq(mkdir(case_dir, 0777), 0,
+                "create isolated directory for received exchange persist test");
+
+  char contest_path[512];
+  join_path(contest_path, sizeof(contest_path), case_dir, "contest.conf");
+  const char *contest_text =
+      "NAME=RECV-PERSIST\n"
+      "CABRILLO_NAME=RECV-PERSIST\n"
+      "MODE=CW\n"
+      "EXCHANGE_SENT=#\n"
+      "FIELD=SERIAL,Serial Number,required\n";
+  expect_int_eq(write_text_file(contest_path, contest_text), 0,
+                "write contest definition for received exchange persist test");
+
+  char conf_path[512];
+  join_path(conf_path, sizeof(conf_path), case_dir, "logger.conf");
+  const char *conf_text = "CONTEST_DEF_FILE=contest.conf\n";
+  expect_int_eq(write_text_file(conf_path, conf_text), 0,
+                "write logger.conf for received exchange persist test");
+
+  char old_cwd[512];
+  expect_true(getcwd(old_cwd, sizeof(old_cwd)) != NULL,
+              "getcwd before received exchange persist test");
+  expect_int_eq(chdir(case_dir), 0,
+                "chdir to received exchange persist case directory");
+
+  app_controller_init();
+  app_controller_handle_key(APP_KEY_F2);
+
+  send_controller_text("7020");
+  send_controller_chars("SP9RECV");
+  app_controller_handle_key(APP_KEY_SPACE);
+  send_controller_chars("123");
+  app_controller_handle_key(APP_KEY_ENTER);
+
+  expect_int_eq(qso_count, 1,
+                "first contest QSO should be saved in received exchange persist test");
+  expect_str_eq(logbook[0].exchange_sent, "1",
+                "sent exchange should be generated as serial 1");
+  expect_str_eq(logbook[0].exchange_recv, "123",
+                "received exchange should be present in memory right after save");
+
+  app_controller_shutdown();
+  app_controller_init();
+
+  expect_int_eq(qso_count, 1,
+                "reloaded log should contain the saved QSO after reopen");
+  expect_str_eq(logbook[0].exchange_sent, "1",
+                "reload should preserve sent exchange after reopen");
+  expect_str_eq(logbook[0].exchange_recv, "123",
+                "reload should preserve received exchange after reopen");
+
+  app_controller_shutdown();
+  expect_int_eq(chdir(old_cwd), 0,
+                "restore cwd after received exchange persist test");
 }
 
 static void test_controller_contest_mode_overrides_detected_mode(const char *tmp_dir) {
@@ -722,6 +854,36 @@ static void test_export_csv_adif(const char *tmp_dir) {
   free(adi);
 
   qso_mark_invalid(1);
+}
+
+static void test_export_command_exports_cabrillo_too(const char *tmp_dir) {
+  char old_cwd[512];
+  char export_dir[512];
+  char adif_path[512];
+  char cab_path[512];
+
+  expect_true(getcwd(old_cwd, sizeof(old_cwd)) != NULL,
+              "getcwd before export command test");
+  join_path(export_dir, sizeof(export_dir), tmp_dir, "export_command_case");
+  expect_int_eq(mkdir(export_dir, 0777), 0,
+                "create export command test directory");
+  expect_int_eq(chdir(export_dir), 0,
+                "chdir to export command test directory");
+
+  app_controller_init();
+  app_controller_submit_command_text("export");
+
+  join_path(adif_path, sizeof(adif_path), export_dir, "log.adi");
+  join_path(cab_path, sizeof(cab_path), export_dir, "log.cbr");
+
+  expect_true(access(adif_path, F_OK) == 0,
+              "export command should generate ADIF output");
+  expect_true(access(cab_path, F_OK) == 0,
+              "export command should generate Cabrillo output too");
+
+  app_controller_shutdown();
+  expect_int_eq(chdir(old_cwd), 0,
+                "restore cwd after export command test");
 }
 
 static void test_contest_definition_and_cabrillo(const char *tmp_dir) {
@@ -997,8 +1159,18 @@ static void test_dxcluster_start_stop(void) {
               "dxcluster_stop should finish worker lifecycle");
 }
 
-static void test_app_controller_shutdown_stops_cluster(void) {
+static void test_app_controller_shutdown_stops_cluster(const char *tmp_dir) {
   AppRenderState state;
+  char case_dir[512];
+  snprintf(case_dir, sizeof(case_dir), "%s/dxcluster_shutdown_case", tmp_dir);
+  expect_int_eq(mkdir(case_dir, 0777), 0,
+                "create isolated directory for DXCluster shutdown test");
+  expect_int_eq(chdir(case_dir), 0,
+                "chdir to DXCluster shutdown test directory");
+  set_test_db_path(case_dir);
+
+  expect_int_eq(write_text_file("logger.conf", "CONTEST_DEF_FILE=\n"), 0,
+                "write empty logger.conf for DXCluster shutdown test");
 
   app_controller_init();
   app_controller_get_render_state(&state);
@@ -1011,6 +1183,8 @@ static void test_app_controller_shutdown_stops_cluster(void) {
                   strstr(dxcluster_status, "timeout") != NULL ||
                   strstr(dxcluster_status, "Connecting") != NULL,
               "app_controller_shutdown should stop DXCluster worker");
+
+  chdir("..");
 }
 
 static void test_call_suggestions(void) {
@@ -1057,8 +1231,17 @@ static void test_call_suggestions(void) {
                 "no suggestions after first token is completed");
 }
 
-static void test_app_controller_key_flow(void) {
+static void test_app_controller_key_flow(const char *tmp_dir) {
   AppRenderState state;
+  char case_dir[512];
+  snprintf(case_dir, sizeof(case_dir), "%s/keyflow_case", tmp_dir);
+  expect_int_eq(mkdir(case_dir, 0777), 0,
+                "create isolated directory for key-flow test");
+  expect_int_eq(chdir(case_dir), 0,
+                "chdir to key-flow test directory");
+  set_test_db_path(case_dir);
+  expect_int_eq(write_text_file("logger.conf", "CONTEST_DEF_FILE=\n"), 0,
+                "write empty logger.conf for key-flow test");
 
   app_controller_init();
   app_controller_get_render_state(&state);
@@ -1087,9 +1270,19 @@ static void test_app_controller_key_flow(void) {
     expect_true(strstr(state.status, "Enter ADIF filename") != NULL,
                 "F4 prompts for export filename");
 
+  app_controller_set_export_filename_text("AB12");
+  expect_true(app_controller_export_prompt_active(),
+              "export prompt should remain active while typing");
+  expect_str_eq(app_controller_export_filename_text(), "AB12",
+                "typed export filename should remain visible in the buffer");
+
   ev = app_controller_handle_key(APP_KEY_ESC);
   expect_int_eq((int)ev, (int)APP_CTRL_EVENT_NONE,
                 "ESC should cancel export prompt");
+  expect_true(!app_controller_export_prompt_active(),
+              "ESC should close the export prompt");
+  expect_str_eq(app_controller_export_filename_text(), "",
+                "canceling export should clear the filename buffer");
 
   ev = app_controller_handle_key(APP_KEY_F5);
   expect_int_eq((int)ev, (int)APP_CTRL_EVENT_NONE,
@@ -1116,6 +1309,7 @@ static void test_app_controller_key_flow(void) {
                 "F10 should request exit event");
 
   app_controller_shutdown();
+  chdir("..");
 }
 
 static void send_controller_text(const char *text) {
@@ -1167,6 +1361,7 @@ static void test_controller_contest_mode_points(const char *tmp_dir) {
     expect_int_eq(chdir(case_dir), 0, "chdir to controller test temp dir");
 
   app_controller_init();
+  app_controller_handle_key(APP_KEY_F2);
   const int base_qso_count = qso_count;
   AppRenderState state;
   char expected_tx_before[16];
@@ -1275,8 +1470,17 @@ static void test_manual_frequency_entry_from_call_field(void) {
   app_controller_shutdown();
 }
 
-static void test_named_log_commands(void) {
+static void test_named_log_commands(const char *tmp_dir) {
   AppRenderState state;
+  char case_dir[512];
+  snprintf(case_dir, sizeof(case_dir), "%s/named_logs_case", tmp_dir);
+  expect_int_eq(mkdir(case_dir, 0777), 0,
+                "create isolated directory for named-log test");
+  expect_int_eq(chdir(case_dir), 0,
+                "chdir to named-log test directory");
+  set_test_db_path(case_dir);
+  expect_int_eq(write_text_file("logger.conf", "CONTEST_DEF_FILE=\n"), 0,
+                "write empty logger.conf for named-log test");
 
   app_controller_init();
   app_controller_handle_key(APP_KEY_F2);
@@ -1318,6 +1522,7 @@ static void test_named_log_commands(void) {
                 "openlog should confirm selected log name");
 
   app_controller_shutdown();
+  chdir("..");
 }
 
 static void test_contest_preset_from_build_dir_uses_defined_settings(void) {
@@ -1334,6 +1539,9 @@ static void test_contest_preset_from_build_dir_uses_defined_settings(void) {
               "build directory should exist for contest preset path test");
   expect_int_eq(chdir("build"), 0,
                 "chdir to build for contest preset path test");
+  set_test_db_path(".");
+  expect_int_eq(write_text_file("logger.conf", "CONTEST_DEF_FILE=\n"), 0,
+                "write isolated logger.conf for contest preset test");
 
   app_controller_init();
   app_controller_handle_key(APP_KEY_F2);
@@ -1377,6 +1585,97 @@ static void test_contest_preset_from_build_dir_uses_defined_settings(void) {
   app_controller_shutdown();
   expect_int_eq(chdir(old_cwd), 0,
                 "restore cwd after contest preset path test");
+}
+
+static void test_missing_default_contest_file_is_nonfatal(void) {
+  char case_dir[512];
+  snprintf(case_dir, sizeof(case_dir), "%s/missing_default_contest_case", "/tmp");
+
+  /* Ensure the named directory is clean and isolated from the repository state. */
+  if (mkdir(case_dir, 0777) != 0 && errno != EEXIST) {
+    failf("create isolated directory for missing default contest test");
+    return;
+  }
+
+  char conf_path[512];
+  snprintf(conf_path, sizeof(conf_path), "%s/logger.conf", case_dir);
+  expect_int_eq(write_text_file(conf_path, "CONTEST_DEF_FILE=contest.conf\n"), 0,
+                "write logger.conf with default missing contest path");
+
+  char old_cwd[512];
+  expect_true(getcwd(old_cwd, sizeof(old_cwd)) != NULL,
+              "getcwd before missing default contest file test");
+  expect_int_eq(chdir(case_dir), 0,
+                "chdir to missing default contest file test directory");
+
+  app_controller_init();
+
+  AppRenderState state;
+  app_controller_get_render_state(&state);
+  expect_true(!state.contest_entry_mode,
+              "missing default contest file should keep contest mode off");
+  expect_true(state.contest_exchange_label == NULL ||
+                  strcmp(state.contest_exchange_label, "EXCH") == 0,
+              "missing default contest file should leave contest label unset or default");
+
+  expect_int_eq(chdir(old_cwd), 0,
+                "restore cwd after missing default contest file test");
+}
+
+static void test_openlog_restores_saved_contest_definition(const char *tmp_dir) {
+  char case_dir[512];
+  snprintf(case_dir, sizeof(case_dir), "%s/openlog_contest_restore", tmp_dir);
+  expect_int_eq(mkdir(case_dir, 0777), 0,
+                "create isolated directory for openlog contest restore test");
+
+  char conf_path[512];
+  join_path(conf_path, sizeof(conf_path), case_dir, "logger.conf");
+  expect_int_eq(write_text_file(conf_path, "CONTEST_DEF_FILE=\n"), 0,
+                "write logger.conf for openlog contest restore test");
+
+  char contest_path[512];
+  join_path(contest_path, sizeof(contest_path), case_dir, "wae_restore.conf");
+  const char *contest_text =
+      "NAME=WAE-RESTORE\n"
+      "CABRILLO_NAME=WAE-DX-CW\n"
+      "MODE=CW\n"
+      "EXCHANGE_SENT=#\n"
+      "QTC_SENDER=EU\n"
+      "POINTS_PER_QTC=1\n"
+      "FIELD=SERIAL,Serial Number,required\n";
+  expect_int_eq(write_text_file(contest_path, contest_text), 0,
+                "write WAE restore contest definition");
+
+  char old_cwd[512];
+  expect_true(getcwd(old_cwd, sizeof(old_cwd)) != NULL,
+              "getcwd before openlog contest restore test");
+  expect_int_eq(chdir(case_dir), 0,
+                "chdir to openlog contest restore test directory");
+
+  app_controller_init();
+  app_controller_submit_command_text("contest wae_restore.conf");
+
+  AppRenderState state;
+  app_controller_get_render_state(&state);
+  expect_true(state.contest_entry_mode,
+              "contest should load before saving log state");
+
+  expect_int_eq(db_archive_current_logbook_named("Contest Restore Log"), 0,
+                "archive current logbook before reopening it");
+
+  app_controller_submit_command_text("openlog Contest Restore Log");
+  app_controller_get_render_state(&state);
+  expect_true(state.contest_entry_mode,
+              "opening a named log should restore the saved contest definition");
+  expect_true(state.contest_name != NULL,
+              "reopened log should expose a contest name");
+  if (state.contest_name)
+    expect_true(strstr(state.contest_name, "WAE") != NULL,
+                "reopened log should restore WAE contest metadata");
+
+  app_controller_shutdown();
+  expect_int_eq(chdir(old_cwd), 0,
+                "restore cwd after openlog contest restore test");
 }
 
 static void test_contest_import_only_does_not_autoload_or_set_active_path(
@@ -1462,6 +1761,586 @@ static void test_contest_import_only_does_not_autoload_or_set_active_path(
                 "restore cwd after import-only command test");
 }
 
+static void test_wae_qso_scoring(const char *tmp_dir) {
+  char case_dir[512];
+  snprintf(case_dir, sizeof(case_dir), "%s/wae_scoring", tmp_dir);
+  expect_int_eq(mkdir(case_dir, 0777), 0,
+                "create WAE scoring test directory");
+
+  char contest_path[512];
+  join_path(contest_path, sizeof(contest_path), case_dir, "wae.conf");
+
+  const char *contest_text =
+      "NAME=WAE-TEST-SCORING\n"
+      "CABRILLO_NAME=DARC-WAEDC-CW\n"
+      "MODE=CW\n"
+      "EXCHANGE_SENT=#\n"
+      "POINTS_PER_QSO=1\n"
+      "MULTIPLIER=DXCC_PER_BAND\n"
+      "QTC_SENDER=EU\n"
+      "POINTS_PER_QTC=1\n"
+      "FIELD=SERIAL,Rcv Nr,required\n";
+  expect_int_eq(write_text_file(contest_path, contest_text), 0,
+                "write WAE scoring contest definition");
+
+  char old_cwd[512];
+  expect_true(getcwd(old_cwd, sizeof(old_cwd)) != NULL,
+              "getcwd before WAE scoring test");
+  expect_int_eq(chdir(case_dir), 0, "chdir to WAE scoring test directory");
+
+  app_controller_init();
+  const int base_qso_count = qso_count;
+
+  /* Load the WAE contest definition. */
+  app_controller_submit_command_text("contest wae.conf");
+
+  AppRenderState state;
+  app_controller_get_render_state(&state);
+  expect_true(state.contest_entry_mode,
+              "WAE contest mode should be active");
+
+  /*
+   * Verify QTC is flagged as enabled in the render state.
+   * Note: app_controller_qtc_enabled() checks loaded definition only;
+   * qtc_can_send() additionally checks CTY (which requires wl_cty.dat).
+   * Since CTY is unavailable in the test environment, we only test
+   * the definition-level flag here.
+   */
+  expect_true(state.qtc_enabled, "WAE contest should report qtc_enabled=true");
+
+  app_controller_shutdown();
+  expect_int_eq(chdir(old_cwd), 0, "restore cwd after WAE scoring test");
+  (void)base_qso_count;
+}
+
+static void test_qtc_enabled_for_opened_wae_log_without_loaded_definition(
+    const char *tmp_dir) {
+  char case_dir[512];
+  snprintf(case_dir, sizeof(case_dir), "%s/wae_qtc_openlog", tmp_dir);
+  expect_int_eq(mkdir(case_dir, 0777), 0,
+                "create WAE openlog QTC test directory");
+
+  char conf_path[512];
+  join_path(conf_path, sizeof(conf_path), case_dir, "logger.conf");
+  expect_int_eq(write_text_file(conf_path, "CONTEST_DEF_FILE=\n"), 0,
+                "write logger.conf without contest definition");
+
+  char old_cwd[512];
+  expect_true(getcwd(old_cwd, sizeof(old_cwd)) != NULL,
+              "getcwd before WAE openlog QTC test");
+  expect_int_eq(chdir(case_dir), 0,
+                "chdir to WAE openlog QTC test directory");
+
+  app_controller_init();
+  app_controller_handle_key(APP_KEY_F2);
+
+  char status[128] = {0};
+  int idx = qso_add_contest_fields(
+      "W1AW", 14025, "599", "CW", "", "001", "123", "RUN",
+      "DARC-WAEDC-CW", 1, 1, status, sizeof(status));
+  expect_true(idx >= 0, "WAE-tagged QSO should be added");
+
+  AppRenderState state;
+  app_controller_get_render_state(&state);
+  expect_true(!state.contest_entry_mode,
+              "contest mode should remain disabled without loaded definition");
+  expect_true(state.qtc_enabled,
+              "WAE-tagged log should enable QTC fallback");
+
+  expect_int_eq(app_controller_handle_key(APP_KEY_CTRL_L),
+                APP_CTRL_EVENT_OPEN_QTC_WINDOW,
+                "Ctrl+L should open QTC window for opened WAE log");
+
+  app_controller_shutdown();
+  expect_int_eq(chdir(old_cwd), 0,
+                "restore cwd after WAE openlog QTC test");
+}
+
+static void test_qtc_sendable_prefill_uses_call_and_received_exchange(
+    const char *tmp_dir) {
+  char case_dir[512];
+  snprintf(case_dir, sizeof(case_dir), "%s/qtc_prefill_values", tmp_dir);
+  expect_int_eq(mkdir(case_dir, 0777), 0,
+                "create QTC prefill values test directory");
+
+  char conf_path[512];
+  join_path(conf_path, sizeof(conf_path), case_dir, "logger.conf");
+  expect_int_eq(write_text_file(conf_path, "CONTEST_DEF_FILE=\n"), 0,
+                "write logger.conf for QTC prefill values test");
+
+  char old_cwd[512];
+  expect_true(getcwd(old_cwd, sizeof(old_cwd)) != NULL,
+              "getcwd before QTC prefill values test");
+  expect_int_eq(chdir(case_dir), 0,
+                "chdir to QTC prefill values test directory");
+
+  app_controller_init();
+  app_controller_handle_key(APP_KEY_F2);
+
+  char status[128] = {0};
+  int idx = qso_add_contest_fields(
+      "W1AW", 14025, "599", "CW", "", "001", "123", "RUN",
+      "DARC-WAEDC-CW", 1, 1, status, sizeof(status));
+  expect_true(idx >= 0, "QSO for QTC prefill should be added");
+
+  /* Simulate one malformed legacy row that should never be offered as QTC. */
+  QSO bad;
+  memset(&bad, 0, sizeof(bad));
+  snprintf(bad.call, sizeof(bad.call), "%s", "NOCALL");
+  snprintf(bad.date, sizeof(bad.date), "%s", "20260101");
+  snprintf(bad.utc, sizeof(bad.utc), "%s", "1200");
+  logbook[qso_count++] = bad;
+
+  QTCRecord sendable[QTC_MAX_RECORDS_PER_BUNDLE];
+  memset(sendable, 0, sizeof(sendable));
+  const int n = app_controller_qtc_get_sendable(sendable,
+                                                 QTC_MAX_RECORDS_PER_BUNDLE);
+
+  expect_true(n >= 1, "QTC prefill should return at least one record");
+  if (n >= 1) {
+    expect_str_eq(sendable[0].call, "W1AW",
+                  "QTC prefill should expose worked callsign");
+    expect_str_eq(sendable[0].exch, "123",
+                  "QTC prefill should use received exchange, not sent serial");
+  }
+
+  app_controller_shutdown();
+  expect_int_eq(chdir(old_cwd), 0,
+                "restore cwd after QTC prefill values test");
+}
+
+static void test_qtc_enabled_for_opened_log_with_qtc_bundles_only(
+    const char *tmp_dir) {
+  char case_dir[512];
+  snprintf(case_dir, sizeof(case_dir), "%s/qtc_enabled_bundles_only", tmp_dir);
+  expect_int_eq(mkdir(case_dir, 0777), 0,
+                "create QTC bundles-only test directory");
+
+  char conf_path[512];
+  join_path(conf_path, sizeof(conf_path), case_dir, "logger.conf");
+  expect_int_eq(write_text_file(conf_path, "CONTEST_DEF_FILE=\n"), 0,
+                "write logger.conf without contest definition for bundles-only test");
+
+  char old_cwd[512];
+  expect_true(getcwd(old_cwd, sizeof(old_cwd)) != NULL,
+              "getcwd before QTC bundles-only test");
+  expect_int_eq(chdir(case_dir), 0,
+                "chdir to QTC bundles-only test directory");
+
+  app_controller_init();
+  app_controller_handle_key(APP_KEY_F2);
+
+  qso_count = 0;
+  qtc_bundle_count = 0;
+  memset(qtc_bundles, 0, sizeof(qtc_bundles));
+
+  QTCBundle b;
+  memset(&b, 0, sizeof(b));
+  snprintf(b.sender_call, sizeof(b.sender_call), "%s", "SP5XYZ");
+  snprintf(b.receiver_call, sizeof(b.receiver_call), "%s", "W1AW");
+  b.bundle_nr = 1;
+  b.record_count = 1;
+  b.sent = 1;
+  qtc_record_init(&b.records[0], "20260101", "1200", "DL1ABC", "77");
+  qtc_bundles[0] = b;
+  qtc_bundle_count = 1;
+
+  AppRenderState state;
+  app_controller_get_render_state(&state);
+  expect_true(state.qtc_enabled,
+              "log with existing QTC bundles should enable QTC fallback");
+
+  expect_int_eq(app_controller_handle_key(APP_KEY_CTRL_L),
+                APP_CTRL_EVENT_OPEN_QTC_WINDOW,
+                "Ctrl+L should open QTC window when bundles exist");
+
+  app_controller_shutdown();
+  expect_int_eq(chdir(old_cwd), 0,
+                "restore cwd after QTC bundles-only test");
+}
+
+/* ------------------------------------------------------------------ */
+/* QTC unit tests                                                       */
+/* ------------------------------------------------------------------ */
+
+static void test_qtc_record_init(void) {
+  QTCRecord r;
+  qtc_record_init(&r, "20241201", "1430", "DK5AI", "42");
+  expect_str_eq(r.date, "20241201", "qtc record date");
+  expect_str_eq(r.time, "1430",     "qtc record time");
+  expect_str_eq(r.call, "DK5AI",   "qtc record call");
+  expect_str_eq(r.exch, "42",      "qtc record exch");
+}
+
+static void test_qtc_bundle_validate_valid(void) {
+  QTCBundle b;
+  memset(&b, 0, sizeof(b));
+  snprintf(b.sender_call,   sizeof(b.sender_call),   "%s", "SP5XYZ");
+  snprintf(b.receiver_call, sizeof(b.receiver_call), "%s", "W1AW");
+  b.bundle_nr   = 1;
+  b.record_count = 2;
+  qtc_record_init(&b.records[0], "20241201", "1430", "DK5AI",  "42");
+  qtc_record_init(&b.records[1], "20241201", "1432", "G3XYZ",  "43");
+  b.sent = 1;
+
+  char err[64] = {0};
+  expect_int_eq(qtc_bundle_validate(&b, err, sizeof(err)), 0,
+                "valid qtc bundle should pass validation");
+  expect_str_eq(err, "", "error text should be empty for valid bundle");
+}
+
+static void test_qtc_bundle_validate_empty_sender(void) {
+  QTCBundle b;
+  memset(&b, 0, sizeof(b));
+  /* sender_call intentionally left empty */
+  snprintf(b.receiver_call, sizeof(b.receiver_call), "%s", "W1AW");
+  b.record_count = 1;
+  qtc_record_init(&b.records[0], "20241201", "1430", "DK5AI", "42");
+
+  char err[64] = {0};
+  expect_int_eq(qtc_bundle_validate(&b, err, sizeof(err)), -1,
+                "empty sender should fail validation");
+}
+
+static void test_qtc_bundle_validate_record_count_zero(void) {
+  QTCBundle b;
+  memset(&b, 0, sizeof(b));
+  snprintf(b.sender_call,   sizeof(b.sender_call),   "%s", "SP5XYZ");
+  snprintf(b.receiver_call, sizeof(b.receiver_call), "%s", "W1AW");
+  b.record_count = 0;  /* invalid: must be >= 1 */
+
+  char err[64] = {0};
+  expect_int_eq(qtc_bundle_validate(&b, err, sizeof(err)), -1,
+                "zero record_count should fail validation");
+}
+
+static void test_qtc_bundle_validate_too_many_records(void) {
+  QTCBundle b;
+  memset(&b, 0, sizeof(b));
+  snprintf(b.sender_call,   sizeof(b.sender_call),   "%s", "SP5XYZ");
+  snprintf(b.receiver_call, sizeof(b.receiver_call), "%s", "W1AW");
+  b.record_count = QTC_MAX_RECORDS_PER_BUNDLE + 1;
+
+  char err[64] = {0};
+  expect_int_eq(qtc_bundle_validate(&b, err, sizeof(err)), -1,
+                "record_count > 10 should fail validation");
+}
+
+static void test_qtc_qso_already_sent(void) {
+  /* Reset the QTC store before the test. */
+  qtc_bundle_count = 0;
+  memset(qtc_bundles, 0, sizeof(qtc_bundles));
+
+  QTCBundle b;
+  memset(&b, 0, sizeof(b));
+  snprintf(b.sender_call,   sizeof(b.sender_call),   "%s", "SP5XYZ");
+  snprintf(b.receiver_call, sizeof(b.receiver_call), "%s", "W1AW");
+  b.bundle_nr    = 1;
+  b.record_count = 1;
+  b.sent         = 1;
+  qtc_record_init(&b.records[0], "20241201", "1430", "DK5AI", "42");
+
+  /* Manually add to in-memory store without DB. */
+  qtc_bundles[0] = b;
+  qtc_bundle_count = 1;
+
+  expect_int_eq(qtc_qso_already_sent("DK5AI", "20241201", "1430"), 1,
+                "QSO already in sent bundle should be detected");
+  expect_int_eq(qtc_qso_already_sent("DK5AI", "20241201", "1431"), 0,
+                "different time should not match");
+  expect_int_eq(qtc_qso_already_sent("G3XYZ", "20241201", "1430"), 0,
+                "different call should not match");
+
+  /* Reset after test. */
+  qtc_bundle_count = 0;
+}
+
+static void test_qtc_next_bundle_nr(void) {
+  qtc_bundle_count = 0;
+  memset(qtc_bundles, 0, sizeof(qtc_bundles));
+
+  /* No bundles yet → next nr = 1. */
+  expect_int_eq(qtc_next_bundle_nr("SP5XYZ", "W1AW"), 1,
+                "next bundle nr with empty store should be 1");
+
+  /* Add two sent bundles. */
+  QTCBundle b;
+  memset(&b, 0, sizeof(b));
+  snprintf(b.sender_call,   sizeof(b.sender_call),   "%s", "SP5XYZ");
+  snprintf(b.receiver_call, sizeof(b.receiver_call), "%s", "W1AW");
+  b.bundle_nr    = 1;
+  b.record_count = 1;
+  b.sent         = 1;
+  qtc_record_init(&b.records[0], "20241201", "1430", "DK5AI", "42");
+  qtc_bundles[0] = b;
+  b.bundle_nr    = 2;
+  qtc_bundles[1] = b;
+  qtc_bundle_count = 2;
+
+  expect_int_eq(qtc_next_bundle_nr("SP5XYZ", "W1AW"), 3,
+                "next bundle nr after two bundles should be 3");
+
+  qtc_bundle_count = 0;
+}
+
+static void test_qtc_total_records(void) {
+  qtc_bundle_count = 0;
+
+  QTCBundle b;
+  memset(&b, 0, sizeof(b));
+  snprintf(b.sender_call,   sizeof(b.sender_call),   "%s", "SP5XYZ");
+  snprintf(b.receiver_call, sizeof(b.receiver_call), "%s", "W1AW");
+  b.bundle_nr    = 1;
+  b.record_count = 3;
+  b.sent         = 1;
+  qtc_bundles[0] = b;
+  b.bundle_nr    = 2;
+  b.record_count = 5;
+  qtc_bundles[1] = b;
+  qtc_bundle_count = 2;
+
+  expect_int_eq(qtc_total_records(), 8,
+                "total QTC records should sum all bundles");
+
+  qtc_bundle_count = 0;
+}
+
+static void test_contest_definition_qtc_fields(const char *tmp_dir) {
+  char conf_path[512];
+  snprintf(conf_path, sizeof(conf_path), "%s/wae_test.conf", tmp_dir);
+
+  const char *conf_text =
+      "NAME=WAE-TEST\n"
+      "CABRILLO_NAME=WAE-DX-CW\n"
+      "MODE=CW\n"
+      "EXCHANGE_SENT=#\n"
+      "MULTIPLIER=DXCC_PER_BAND\n"
+      "QTC_SENDER=EU\n"
+      "POINTS_PER_QTC=1\n"
+      "FIELD=SERIAL,Serial Number,required\n";
+
+  expect_int_eq(write_text_file(conf_path, conf_text), 0,
+                "write WAE test contest definition");
+
+  ContestDefinition def;
+  char err[64] = {0};
+  expect_int_eq(contest_definition_load(conf_path, &def, err, sizeof(err)), 0,
+                "WAE test definition should load without error");
+  expect_str_eq(def.qtc_sender_side, "EU", "qtc_sender_side parsed correctly");
+  expect_int_eq(def.points_per_qtc,  1,    "points_per_qtc parsed correctly");
+}
+
+static void test_wae_contest_definition_files(const char *tmp_dir) {
+  (void)tmp_dir;
+
+  /* Try loading the real WAE CW definition from contest_defs/. */
+  ContestDefinition def;
+  char err[64] = {0};
+
+  const char *paths[] = {
+      "contest_defs/wae_cw.conf",
+      "../contest_defs/wae_cw.conf",
+      "../../contest_defs/wae_cw.conf",
+  };
+
+  int loaded = 0;
+  for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+    if (contest_definition_load(paths[i], &def, err, sizeof(err)) == 0) {
+      loaded = 1;
+      break;
+    }
+  }
+
+  if (!loaded) {
+    /* Not finding the file is not a failure — skip further checks. */
+    return;
+  }
+
+  expect_str_eq(def.qtc_sender_side, "EU",
+                "WAE CW definition should have EU as QTC sender");
+  expect_true(def.points_per_qtc > 0,
+              "WAE CW definition should have positive points_per_qtc");
+  /* Verify the correct Cabrillo name per DXLog WAE definition. */
+  expect_str_eq(def.cabrillo_name, "DARC-WAEDC-CW",
+                "WAE CW Cabrillo name should be DARC-WAEDC-CW");
+  expect_int_eq((int)def.multiplier_type, (int)CONTEST_MULT_DXCC_PER_BAND,
+                "WAE CW multiplier should be DXCC_PER_BAND");
+}
+
+static void test_stats_qtc_scoring(void) {
+  /* Set up a minimal WAE-like contest definition. */
+  ContestDefinition def;
+  contest_definition_init_defaults(&def);
+  snprintf(def.qtc_sender_side, sizeof(def.qtc_sender_side), "%s", "EU");
+  def.points_per_qtc = 1;
+  def.multiplier_type = CONTEST_MULT_NONE;
+
+  stats_set_contest_definition(&def);
+
+  /* Reset QTC store and add a bundle with 5 records. */
+  qtc_bundle_count = 0;
+  memset(qtc_bundles, 0, sizeof(qtc_bundles));
+
+  QTCBundle b;
+  memset(&b, 0, sizeof(b));
+  snprintf(b.sender_call,   sizeof(b.sender_call),   "%s", "SP5XYZ");
+  snprintf(b.receiver_call, sizeof(b.receiver_call), "%s", "W1AW");
+  b.bundle_nr    = 1;
+  b.record_count = 5;
+  b.sent         = 1;
+  for (int i = 0; i < 5; i++)
+    qtc_record_init(&b.records[i], "20241201", "1430", "DK5AI", "42");
+  qtc_bundles[0] = b;
+  qtc_bundle_count = 1;
+
+  stats_update();
+
+  expect_int_eq(stats.qtc_records, 5, "stats qtc_records should count 5");
+  expect_int_eq(stats.qtc_points,  5, "stats qtc_points = 5 * 1");
+
+  /* Cleanup. */
+  qtc_bundle_count = 0;
+  ContestDefinition empty;
+  contest_definition_init_defaults(&empty);
+  stats_set_contest_definition(&empty);
+}
+
+static void test_cw_qtc_expand(void) {
+  char out[256];
+
+  cw_qtc_expand("QTC {QTC_NR}/{QTC_COUNT}",
+                "SP5XYZ", "W1AW",
+                3, 10,
+                "", "", "",
+                out, sizeof(out));
+  expect_str_eq(out, "QTC 3/10", "qtc expand preamble");
+
+  cw_qtc_expand("{QTC_TIME} {QTC_CALL} {QTC_EXCH}",
+                "SP5XYZ", "W1AW",
+                1, 5,
+                "1430", "DK5AI", "42",
+                out, sizeof(out));
+  expect_str_eq(out, "1430 DK5AI 42", "qtc expand record");
+
+  cw_qtc_expand("{MYCALL} DE {HISCALL}",
+                "SP5XYZ", "W1AW",
+                1, 1,
+                "", "", "",
+                out, sizeof(out));
+  expect_str_eq(out, "SP5XYZ DE W1AW", "qtc expand mycall/hiscall");
+}
+
+static void test_export_cabrillo_qtc_lines(const char *tmp_dir) {
+  char conf_path[512];
+  char cab_path[512];
+  snprintf(conf_path, sizeof(conf_path), "%s/wae_export.conf", tmp_dir);
+  snprintf(cab_path,  sizeof(cab_path),  "%s/wae_export.cbr",  tmp_dir);
+
+  const char *conf_text =
+      "NAME=WAE-EXPORT-TEST\n"
+      "CABRILLO_NAME=WAE-DX-CW\n"
+      "MODE=CW\n"
+      "EXCHANGE_SENT=#\n"
+      "QTC_SENDER=EU\n"
+      "POINTS_PER_QTC=1\n"
+      "FIELD=SERIAL,Serial Number,required\n";
+
+  expect_int_eq(write_text_file(conf_path, conf_text), 0,
+                "write WAE export contest definition");
+
+  ContestDefinition def;
+  char err[64] = {0};
+  expect_int_eq(contest_definition_load(conf_path, &def, err, sizeof(err)), 0,
+                "load WAE export contest definition");
+
+  /* Seed one QTC bundle. */
+  qtc_bundle_count = 0;
+  memset(qtc_bundles, 0, sizeof(qtc_bundles));
+
+  QTCBundle b;
+  memset(&b, 0, sizeof(b));
+  snprintf(b.sender_call,   sizeof(b.sender_call),   "%s", "SP5XYZ");
+  snprintf(b.receiver_call, sizeof(b.receiver_call), "%s", "W1AW");
+  b.bundle_nr    = 1;
+  b.record_count = 2;
+  b.sent         = 1;
+  qtc_record_init(&b.records[0], "20241201", "1430", "DK5AI", "42");
+  qtc_record_init(&b.records[1], "20241201", "1432", "G3XYZ", "43");
+  qtc_bundles[0] = b;
+  qtc_bundle_count = 1;
+
+  expect_int_eq(export_cabrillo_with_qtc(cab_path, &def, "SP5XYZ"), 0,
+                "cabrillo with qtc export should succeed");
+
+  char *cab = read_whole_file(cab_path);
+  expect_true(cab != NULL, "cabrillo file should be readable");
+  if (cab) {
+    expect_true(strstr(cab, "QTC:") != NULL,
+                "cabrillo file should contain QTC: lines");
+    expect_true(strstr(cab, "DK5AI") != NULL,
+                "cabrillo QTC line should contain first record call");
+    free(cab);
+  }
+
+  /* Cleanup. */
+  qtc_bundle_count = 0;
+}
+
+static void test_export_cabrillo_qtc_lines_without_qtc_definition(
+    const char *tmp_dir) {
+  char cab_path[512];
+  snprintf(cab_path, sizeof(cab_path), "%s/general_with_qtc.cbr", tmp_dir);
+
+  ContestDefinition def;
+  contest_definition_init_defaults(&def);
+  snprintf(def.name, sizeof(def.name), "%s", "GENERAL");
+  snprintf(def.cabrillo_name, sizeof(def.cabrillo_name), "%s", "GENERAL");
+  snprintf(def.mode, sizeof(def.mode), "%s", "CW");
+
+  qtc_bundle_count = 0;
+  memset(qtc_bundles, 0, sizeof(qtc_bundles));
+
+  const int saved_qso_count = qso_count;
+  QSO saved_qso = {0};
+  if (saved_qso_count > 0)
+    saved_qso = logbook[saved_qso_count - 1];
+
+  qso_count = 1;
+  memset(&logbook[0], 0, sizeof(logbook[0]));
+  snprintf(logbook[0].contest_id, sizeof(logbook[0].contest_id), "%s",
+           "DARC-WAEDC-CW");
+
+  QTCBundle b;
+  memset(&b, 0, sizeof(b));
+  snprintf(b.sender_call,   sizeof(b.sender_call),   "%s", "SP5XYZ");
+  snprintf(b.receiver_call, sizeof(b.receiver_call), "%s", "W1AW");
+  b.bundle_nr    = 3;
+  b.record_count = 1;
+  b.sent         = 1;
+  qtc_record_init(&b.records[0], "20241201", "1500", "DL1ABC", "77");
+  qtc_bundles[0] = b;
+  qtc_bundle_count = 1;
+
+  expect_int_eq(export_cabrillo_with_qtc(cab_path, &def, "SP5XYZ"), 0,
+                "cabrillo export should succeed without explicit QTC contest config");
+
+  char *cab = read_whole_file(cab_path);
+  expect_true(cab != NULL,
+              "cabrillo without qtc definition should be readable");
+  if (cab) {
+    expect_true(strstr(cab, "QTC:") != NULL,
+                "cabrillo should still contain QTC lines when bundles exist");
+    expect_true(strstr(cab, "DL1ABC") != NULL,
+                "cabrillo should contain bundled QTC callsign");
+    free(cab);
+  }
+
+  qtc_bundle_count = 0;
+  if (saved_qso_count > 0)
+    logbook[saved_qso_count - 1] = saved_qso;
+  qso_count = saved_qso_count;
+}
+
 int main(void) {
   char tmp_dir[256];
   if (make_temp_dir(tmp_dir, sizeof(tmp_dir)) != 0) {
@@ -1480,24 +2359,49 @@ int main(void) {
   test_qso_helpers();
   test_qso_add_mark_and_stats();
   test_export_csv_adif(tmp_dir);
+  test_export_command_exports_cabrillo_too(tmp_dir);
   test_contest_definition_and_cabrillo(tmp_dir);
   test_dxlog_definition_compatibility(tmp_dir);
   test_dxlog_importer_generates_local_conf(tmp_dir);
   test_maidenhead();
   test_dxcluster_set_status();
   test_dxcluster_start_stop();
-  test_app_controller_shutdown_stops_cluster();
+  test_app_controller_shutdown_stops_cluster(tmp_dir);
   test_call_suggestions();
-  test_app_controller_key_flow();
+  test_app_controller_key_flow(tmp_dir);
   test_controller_contest_mode_points(tmp_dir);
   test_controller_static_tx_exchange_override(tmp_dir);
   test_controller_numeric_static_exchange_template(tmp_dir);
   test_controller_incremental_exchange_generation(tmp_dir);
+  test_controller_reopen_resume_from_last_sent_serial(tmp_dir);
+  test_controller_received_exchange_persists_after_reopen(tmp_dir);
   test_controller_contest_mode_overrides_detected_mode(tmp_dir);
   test_manual_frequency_entry_from_call_field();
-  test_named_log_commands();
+  test_named_log_commands(tmp_dir);
   test_contest_preset_from_build_dir_uses_defined_settings();
+  test_missing_default_contest_file_is_nonfatal();
+  test_openlog_restores_saved_contest_definition(tmp_dir);
   test_contest_import_only_does_not_autoload_or_set_active_path(tmp_dir);
+
+  /* QTC tests */
+  test_wae_qso_scoring(tmp_dir);
+  test_qtc_enabled_for_opened_wae_log_without_loaded_definition(tmp_dir);
+  test_qtc_sendable_prefill_uses_call_and_received_exchange(tmp_dir);
+  test_qtc_enabled_for_opened_log_with_qtc_bundles_only(tmp_dir);
+  test_qtc_record_init();
+  test_qtc_bundle_validate_valid();
+  test_qtc_bundle_validate_empty_sender();
+  test_qtc_bundle_validate_record_count_zero();
+  test_qtc_bundle_validate_too_many_records();
+  test_qtc_qso_already_sent();
+  test_qtc_next_bundle_nr();
+  test_qtc_total_records();
+  test_contest_definition_qtc_fields(tmp_dir);
+  test_wae_contest_definition_files(tmp_dir);
+  test_stats_qtc_scoring();
+  test_cw_qtc_expand();
+  test_export_cabrillo_qtc_lines(tmp_dir);
+  test_export_cabrillo_qtc_lines_without_qtc_definition(tmp_dir);
 
   if (g_failures == 0) {
     printf("All unit tests passed.\n");

@@ -2,6 +2,13 @@
 
 #include "db.h"
 
+#include <stdlib.h>
+
+static int qso_debug_enabled(void) {
+  const char *value = getenv("LOGGER_DEBUG");
+  return value && value[0] && strcmp(value, "0") != 0;
+}
+
 QSO logbook[MAX_QSO];
 int qso_count = 0;
 
@@ -409,6 +416,16 @@ int qso_add_contest_fields(const char *call, int freq_khz, const char *rst,
   sanitize_text(q->exchange_recv, sizeof(q->exchange_recv), exchange_recv);
   sanitize_text(q->operator_mode, sizeof(q->operator_mode), operator_mode);
   sanitize_text(q->contest_id, sizeof(q->contest_id), contest_id);
+
+  if (qso_debug_enabled()) {
+    fprintf(stderr,
+            "[debug] qso_add_contest_fields: call=%s sent=%s recv=%s mode=%s contest=%s\n",
+            call ? call : "<null>",
+            q->exchange_sent[0] ? q->exchange_sent : "<empty>",
+            q->exchange_recv[0] ? q->exchange_recv : "<empty>",
+            mode ? mode : "<null>",
+            contest_id ? contest_id : "<null>");
+  }
 
   if (radio_nr < 1)
     radio_nr = 1;

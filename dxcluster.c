@@ -24,6 +24,8 @@ pthread_mutex_t dxcluster_mutex = PTHREAD_MUTEX_INITIALIZER;
 static FILE *dxcluster_log = NULL;
 
 static int worker_started = 0;
+static int retry_requested = 0;
+static int stop_requested = 0;
 static pthread_t thread_id;
 struct sockaddr_in addr;
 
@@ -388,7 +390,12 @@ static void *cluster_thread(void *arg) {
                       config.dxc_port,
                       config.dxc_call[0] ? config.dxc_call : "<empty>");
 
-  while (1) {
+  while (!stop_requested) {
+    if (retry_requested) {
+      retry_requested = 0;
+      dxcluster_set_status("Retrying DXCluster...");
+    }
+
     int sock = -1;
 
     dxcluster_debug_log("connection attempt started");
@@ -500,8 +507,13 @@ static void *cluster_thread(void *arg) {
     }
 
     while (1) {
+      if (retry_requested) {
+        dxcluster_debug_log("manual retry requested, closing active connection");
+        break;
+      }
+
       int n = 0;
-      int ready = dxcluster_wait_for_socket(sock, 0, -1);
+      int ready = dxcluster_wait_for_socket(sock, 0, 1);
       if (ready < 0) {
         dxcluster_debug_log("read wait failed: errno=%d (%s)", errno,
                             strerror(errno));
@@ -619,11 +631,18 @@ static void *cluster_thread(void *arg) {
 
     dxcluster_close_socket(&sock);
 
+    if (stop_requested) {
+      break;
+    }
+
     dxcluster_set_status("Reconnecting...");
     dxcluster_debug_log("connection lost, retrying in 1 second");
     dxcluster_sleep_seconds(1);
   }
 
+  worker_started = 0;
+  dxcluster_set_status("Disconnected");
+  dxcluster_debug_log("worker exiting");
   return NULL;
 }
 
@@ -640,6 +659,8 @@ int dxcluster_start(void) {
   if (worker_started)
     return 0;
 
+  stop_requested = 0;
+
   if (pthread_create(&thread_id, NULL, cluster_thread, NULL) != 0) {
     dxcluster_debug_log("pthread_create() failed: errno=%d (%s)", errno,
                         strerror(errno));
@@ -654,6 +675,12 @@ int dxcluster_start(void) {
   return 0;
 }
 
+int dxcluster_retry_connection(void) {
+  retry_requested = 1;
+  dxcluster_set_status("Retrying DXCluster...");
+  return dxcluster_start();
+}
+
 /* ------------------------------------------------ */
 
 /*
@@ -662,5 +689,18 @@ int dxcluster_start(void) {
  * @return Nothing.
  */
 void dxcluster_stop(void) {
-  dxcluster_debug_log("dxcluster_stop() ignored (stop disabled)");
+  if (!worker_started) {
+    dxcluster_set_status("Disconnected");
+    return;
+  }
+
+  stop_requested = 1;
+  retry_requested = 0;
+
+  pthread_cancel(thread_id);
+  pthread_join(thread_id, NULL);
+  worker_started = 0;
+
+  dxcluster_set_status("Disconnected");
+  dxcluster_debug_log("dxcluster_stop() completed");
 }

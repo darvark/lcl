@@ -76,7 +76,7 @@ Ważna reguła dla wymiany nadawanej:
 | --- | --- | --- | --- |
 | `CW_DEVICE` | tekst | `/dev/ttyUSB2` | Port klucza CW. |
 | `CW_KEYER_LINE` | `DTR` lub `RTS` | `DTR` | Linia sterująca używana przez keyer. |
-| `CW_WPM` | liczba całkowita | `20` | Tempo nadawania. Parser ogranicza zakres do `5..60`. |
+| `CW_WPM` | liczba całkowita | `20` | Tempo nadawania. Parser ogranicza zakres do `1..60`. Wartość jest natychmiast stosowana po zmianie w głównym interfejsie. |
 
 ## Przykład `logger.conf`
 
@@ -186,6 +186,8 @@ Uwaga praktyczna:
 | `POINTS_SAME_BAND_DXCC` | liczba całkowita `>= 0` | `0` | Punkty za ten sam DXCC na tym samym paśmie. |
 | `MULTIPLIER` | `NONE`, `DXCC`, `DXCC_PER_BAND`, `ZONE_PER_BAND`, `ZONE`, `PREFIX`, `PREFIX_PER_BAND` | `DXCC` | Typ mnożnika (`BAND_DXCC`/`BAND-DXCC` i `MODE_DXCC`/`MODE-DXCC` nadal działają jako aliasy kompatybilności). |
 | `BONUS_POINTS` | liczba całkowita `>= 0` | `0` | Dodatkowe punkty bonusowe. |
+| `QTC_SENDER` | `NONE`, `EU`, `DX`, `BOTH` | `NONE` | Określa, która strona może wysyłać QTC (wymiana QTC w zawodach WAE). `NONE` wyłącza obsługę QTC. |
+| `POINTS_PER_QTC` | liczba całkowita `>= 0` | `0` | Punkty za każdy rekord QSO zawarty w paczce QTC. Wymaga `QTC_SENDER` ≠ `NONE`. |
 
 ## Przykład definicji zawodów
 
@@ -204,20 +206,60 @@ FIELD=SERIAL,Serial Number,required
 
 ## Presety dostarczane z programem
 
-W katalogu `contest_defs/` znajdują się gotowe definicje:
+W katalogu `contest_defs/` znajdują się gotowe definicje wyprowadzone z oficjalnych plików DXLog.net.
+Każdy plik zawiera komentarze opisujące zasady punktowania i ewentualne ograniczenia implementacji.
 
-- `contest_defs/iaru_hf_championship.conf`
-- `contest_defs/cq_ww_cw.conf`
-- `contest_defs/cq_ww_ssb.conf`
-- `contest_defs/cq_wpx_ssb.conf`
-- `contest_defs/cq_wpx_cw.conf`
+### Duże zawody międzynarodowe
+
+| Plik | Zawody | Cabrillo | Multiplikator | Uwagi |
+|------|--------|----------|--------------|-------|
+| `cq_ww_cw.conf` | CQ World Wide DX CW | `CQ-WW-CW` | DXCC + CQ zone/band | 0/1/2/3 pkt wg kontynentu |
+| `cq_ww_ssb.conf` | CQ World Wide DX SSB | `CQ-WW-SSB` | DXCC + CQ zone/band | j.w. |
+| `cq_wpx_cw.conf` | CQ WPX CW | `CQ-WPX-CW` | PREFIX | 1–6 pkt wg kontynentu i pasma |
+| `cq_wpx_ssb.conf` | CQ WPX SSB | `CQ-WPX-SSB` | PREFIX | j.w. |
+| `iaru_hf_championship.conf` | IARU HF Championship | `IARU-HF` | ZONE_PER_BAND (ITU) | 1/3/5 pkt; stacje HQ nie zaimplementowane |
+| `wae_cw.conf` | WAE DX CW | `DARC-WAEDC-CW` | DXCC/band | EU↔DX=1 pkt; QTC=1 pkt/rekord |
+| `wae_ssb.conf` | WAE DX SSB | `DARC-WAEDC-SSB` | DXCC/band | j.w. |
+| `sac_cw.conf` | Scandinavian Activity CW | `SAC-CW` | DXCC/band | Scand→EU=2, →DX=3; EU→Scand=1 |
+| `sac_ssb.conf` | Scandinavian Activity SSB | `SAC-SSB` | DXCC/band | j.w. |
+| `arrl_dx_cw.conf` | ARRL DX CW | `ARRL-DX-CW` | DXCC/band | K/VE↔DX = 3 pkt |
+| `arrl_dx_ssb.conf` | ARRL DX SSB | `ARRL-DX-SSB` | DXCC/band | j.w. |
+| `oceania_dx_cw.conf` | Oceania DX CW | `OCEANIA-DX-CW` | PREFIX/band | 160m=20, 80m=10, 40m=5, 20m=1, 15m=2, 10m=3 pkt |
+| `oceania_dx_ssb.conf` | Oceania DX SSB | `OCEANIA-DX-SSB` | PREFIX/band | j.w. |
+| `rdxc_cw.conf` | Russian DX CW | `RDXC` | DXCC/band | Uproszczone; oblast nie zaimplementowany |
+| `rdxc_ssb.conf` | Russian DX SSB | `RDXC` | DXCC/band | j.w. |
+| `holyland.conf` | Holyland DX | `HOLYLAND-DX` | DXCC/band | 4X obszary nie zaimplementowane |
+| `wag.conf` | Worked All Germany | `WAG` | DXCC/band | DOK multiplier nie zaimplementowany |
+
+### Zawody krajowe
+
+| Plik | Zawody | Cabrillo | Multiplikator | Uwagi |
+|------|--------|----------|--------------|-------|
+| `sp_dx.conf` | SP DX Contest | `SP-DX` | SPDX (voivodeships) | DX→SP=3, SP→EU=1, SP→DX=3 pkt |
+
+### Ograniczenia implementacji
+
+Niektóre zaawansowane funkcje z definicji DXLog nie są jeszcze obsługiwane:
+
+- **CUSTOM_MULT_LIST** (oblast RDXC, DOK WAG, area Holyland, section ARRL DX) – zastąpiony przez DXCC_PER_BAND
+- **Multiplikator PFX_AREA** (WAE dla K/VE/VK/etc.) – używany jest DXCC_PER_BAND
+- **HQ stations** w IARU HF – wliczane jako ZONE multiplikator
+- **Punktacja zależna od pasma** (Oceania) – zaimplementowana dla CW i SSB
+- **Warunkowe formaty Cabrillo** (DL vs DX w WAG) – uproszczone
 
 ## Ważne uwagi praktyczne
 
 - Definicja zawodów może być ładowana z `logger.conf`, z komendy `contest <plik>` albo z dialogu tworzenia nowego logu w Qt.
 - Preset typu `contest_defs/cq_wpx_cw.conf` jest rozwiązywany także po uruchomieniu programu z katalogu `build/`.
 - Jeśli `CONTEST_DEF_FILE` albo komenda `contest` wskazuje nieistniejący plik, tryb zawodów nie zostanie aktywowany.
+- Gdy logbook jest otwierany ponownie, program automatycznie przywraca zapisany `contest_definition_path` i wczytuje zgodną definicję zawodów dla tego logu.
 - Jeśli `EXCHANGE_SENT=#`, numer nadawany rośnie razem z kolejnymi zapisanymi QSO i jest zapisywany do logu oraz używany w eksporcie Cabrillo.
+
+### Konfiguracja zawodów z poziomu UI Qt
+
+- Okno konfiguracji zawodów otworzysz przez `Ctrl+F8` albo `Menu -> Contest Config`.
+- Po zatwierdzeniu formularza aplikacja zapisuje plik definicji zawodów i aktualizuje `logger.conf`.
+- Przeładowanie zawodów odbywa się po zamknięciu okna dialogowego, aby zminimalizować chwilowe zacięcia UI przy większych logach.
 
 ### Import definicji DXLog z poziomu komendy
 

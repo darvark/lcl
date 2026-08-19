@@ -57,14 +57,18 @@ Jeśli dla danego klawisza nie ma definicji, program pokaże status `F<n>: brak 
 
 | Skrót | Działanie |
 | --- | --- |
-| `Ctrl+F1` | pokazuje krótką pomoc w pasku statusu |
+| `Ctrl+F1` | otwiera okno dokumentacji (README + pliki z `docs/`, filtr plików, render Markdown, Match case i podświetlanie wszystkich trafień) |
 | `Ctrl+F2` | otwiera dialog tworzenia nowego logu z opcjonalnym wyborem presetu zawodów |
 | `Ctrl+F3` | otwiera dialog wyboru istniejącego nazwanego logu |
 | `Ctrl+F4` | uruchamia tryb wpisania nazwy pliku ADIF do eksportu |
 | `Ctrl+F5` | pokazuje lub ukrywa okno DXCluster |
 | `Ctrl+F6` | przelicza statystyki |
 | `Ctrl+F7` | pobiera `wl_cty.dat` i blokuje klawiaturę na czas aktualizacji |
+| `Ctrl+F8` | otwiera okno konfiguracji zawodów |
+| `Ctrl+F9` | pokazuje albo ukrywa panel konfiguracji CAT/CW |
 | `Ctrl+F10` | kończy program |
+| `Ctrl+Up` | przechodzi do poprzedniego spotu w bandmapie i ustawia jego częstotliwość |
+| `Ctrl+Down` | przechodzi do następnego spotu w bandmapie i ustawia jego częstotliwość |
 
 ### Inne skróty Qt
 
@@ -73,6 +77,35 @@ Jeśli dla danego klawisza nie ma definicji, program pokaże status `F<n>: brak 
 | `Ctrl+K` | otwiera okno ręcznego keyera CW |
 | `Esc` | zatrzymuje nadawanie CW i jednocześnie czyści aktywne pola wejściowe |
 | `Alt+W` | czyści pola `Call` i `Exchange` dla aktywnego radia |
+
+## Menu i widoczność paneli
+
+Aplikacja używa jednego menu głównego `Menu` z pogrupowanymi akcjami.
+
+Najważniejsze pozycje:
+
+- `Contest Config` - otwiera konfigurację zawodów (to samo co `Ctrl+F8`)
+- `DX Cluster` - przełącza widoczność okna clustera
+- `Show CAT/CW Config` - pokazuje albo ukrywa panel konfiguracji CAT/CW (to samo co `Ctrl+F9`)
+
+## Znaczniki połączenia CAT i CW
+
+Obok sekcji `Run/S&P` są stale widoczne dwa badge:
+
+- `CAT ON`/`CAT OFF`
+- `CW ON`/`CW OFF`
+
+`CW` jest wyświetlany pod `CAT`, dzięki czemu status połączeń jest czytelny nawet przy ukrytym panelu konfiguracji CAT/CW.
+
+## Bandmapa
+
+W panelu DXCluster widoczna jest dodatkowa lista bandmapy:
+
+- zawiera spoty z aktualnie ustawionego pasma
+- jest sortowana rosnąco po częstotliwości
+- automatycznie pomija duplikaty tego samego callsignu na bardzo bliskich częstotliwościach
+- podwójne kliknięcie na spot ustawia częstotliwość tego spotu
+- `Ctrl+Up` / `Ctrl+Down` przechodzi po liście i stroi radio do wybranego spotu
 
 ## Klawisze sterujące w głównym oknie
 

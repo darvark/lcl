@@ -4,6 +4,7 @@
 #include "export.h"
 #include "maidenhead.h"
 #include "qso.h"
+#include "qtc.h"
 #include "suggestion.h"
 #include "stats.h"
 
@@ -447,6 +448,289 @@ static void test_call_suggestions(void) {
                 "no suggestions after first token is completed");
 }
 
+/* ------------------------------------------------------------------ */
+/* QTC regression tests                                                 */
+/* ------------------------------------------------------------------ */
+
+static void test_wae_definition_qtc_round_trip(const char *tmp_dir) {
+  char in_path[512];
+  char out_path[512];
+  snprintf(in_path,  sizeof(in_path),  "%s/wae_round.conf", tmp_dir);
+  snprintf(out_path, sizeof(out_path), "%s/wae_round_out.conf", tmp_dir);
+
+  const char *conf_text =
+      "NAME=WAE-ROUND\n"
+      "CABRILLO_NAME=WAE-DX-CW\n"
+      "MODE=CW\n"
+      "EXCHANGE_SENT=#\n"
+      "MULTIPLIER=DXCC_PER_BAND\n"
+      "QTC_SENDER=EU\n"
+      "POINTS_PER_QTC=1\n"
+      "FIELD=SERIAL,Serial Number,required\n";
+
+  expect_int_eq(write_text_file(in_path, conf_text), 0,
+                "write WAE round-trip input");
+
+  ContestDefinition def;
+  char err[64] = {0};
+  expect_int_eq(contest_definition_load(in_path, &def, err, sizeof(err)), 0,
+                "load WAE round-trip definition");
+  expect_str_eq(def.qtc_sender_side, "EU", "round-trip qtc_sender_side");
+  expect_int_eq(def.points_per_qtc,  1,    "round-trip points_per_qtc");
+
+  /* Export via import-export path. */
+  char warn[128] = {0};
+  expect_int_eq(
+      contest_definition_import_dxlog(in_path, out_path, err, sizeof(err),
+                                      warn, sizeof(warn)),
+      0, "import_dxlog round-trip should succeed");
+
+  ContestDefinition def2;
+  expect_int_eq(contest_definition_load(out_path, &def2, err, sizeof(err)), 0,
+                "load re-exported definition");
+  expect_str_eq(def2.qtc_sender_side, "EU",
+                "re-exported qtc_sender_side should be EU");
+  expect_int_eq(def2.points_per_qtc, 1,
+                "re-exported points_per_qtc should be 1");
+}
+
+static void test_cabrillo_qtc_section(const char *tmp_dir) {
+  char conf_path[512];
+  char cab_path[512];
+  snprintf(conf_path, sizeof(conf_path), "%s/wae_cab.conf", tmp_dir);
+  snprintf(cab_path,  sizeof(cab_path),  "%s/wae_cab.cbr",  tmp_dir);
+
+  const char *conf_text =
+      "NAME=WAE-CAB-TEST\n"
+      "CABRILLO_NAME=WAE-DX-CW\n"
+      "MODE=CW\n"
+      "EXCHANGE_SENT=#\n"
+      "QTC_SENDER=EU\n"
+      "POINTS_PER_QTC=1\n"
+      "FIELD=SERIAL,Serial Number,required\n";
+
+  expect_int_eq(write_text_file(conf_path, conf_text), 0,
+                "write WAE cabrillo test definition");
+
+  ContestDefinition def;
+  char err[64] = {0};
+  expect_int_eq(contest_definition_load(conf_path, &def, err, sizeof(err)), 0,
+                "load WAE cabrillo test definition");
+
+  /* Seed QTC store with a two-record bundle. */
+  qtc_bundle_count = 0;
+  memset(qtc_bundles, 0, sizeof(qtc_bundles));
+
+  QTCBundle b;
+  memset(&b, 0, sizeof(b));
+  snprintf(b.sender_call,   sizeof(b.sender_call),   "%s", "SP5XYZ");
+  snprintf(b.receiver_call, sizeof(b.receiver_call), "%s", "W1AW");
+  b.bundle_nr    = 1;
+  b.record_count = 2;
+  b.sent         = 1;
+  qtc_record_init(&b.records[0], "20241201", "1430", "DK5AI", "42");
+  qtc_record_init(&b.records[1], "20241201", "1432", "G3XYZ", "43");
+  qtc_bundles[0] = b;
+  qtc_bundle_count = 1;
+
+  expect_int_eq(export_cabrillo_with_qtc(cab_path, &def, "SP5XYZ"), 0,
+                "export_cabrillo_with_qtc should succeed");
+
+  char *cab = read_whole_file(cab_path);
+  expect_true(cab != NULL, "cabrillo file should be readable");
+  if (cab) {
+    expect_true(strstr(cab, "QTC:") != NULL,
+                "exported cabrillo must contain QTC: section");
+    expect_true(strstr(cab, "G3XYZ") != NULL,
+                "exported cabrillo QTC must contain second record call");
+    expect_true(strstr(cab, "END-OF-LOG:") != NULL,
+                "cabrillo must end with END-OF-LOG:");
+    free(cab);
+  }
+
+  qtc_bundle_count = 0;
+}
+
+static void test_qtc_no_lines_without_qtc_contest(const char *tmp_dir) {
+  char conf_path[512];
+  char cab_path[512];
+  snprintf(conf_path, sizeof(conf_path), "%s/no_qtc.conf", tmp_dir);
+  snprintf(cab_path,  sizeof(cab_path),  "%s/no_qtc.cbr",  tmp_dir);
+
+  const char *conf_text =
+      "NAME=NO-QTC-TEST\n"
+      "CABRILLO_NAME=NO-QTC\n"
+      "MODE=CW\n"
+      "EXCHANGE_SENT=#\n"
+      "FIELD=SERIAL,Serial Number,required\n";
+
+  expect_int_eq(write_text_file(conf_path, conf_text), 0,
+                "write no-qtc contest definition");
+
+  ContestDefinition def;
+  char err[64] = {0};
+  expect_int_eq(contest_definition_load(conf_path, &def, err, sizeof(err)), 0,
+                "load no-qtc contest definition");
+  expect_str_eq(def.qtc_sender_side, "NONE",
+                "default qtc_sender_side should be NONE");
+
+  /* Even with bundles in store, no QTC lines should appear. */
+  qtc_bundle_count = 0;
+  QTCBundle b;
+  memset(&b, 0, sizeof(b));
+  snprintf(b.sender_call,   sizeof(b.sender_call),   "%s", "SP5XYZ");
+  snprintf(b.receiver_call, sizeof(b.receiver_call), "%s", "W1AW");
+  b.bundle_nr    = 1;
+  b.record_count = 1;
+  b.sent         = 1;
+  qtc_record_init(&b.records[0], "20241201", "1430", "DK5AI", "42");
+  qtc_bundles[0] = b;
+  qtc_bundle_count = 1;
+
+  expect_int_eq(export_cabrillo_with_qtc(cab_path, &def, "SP5XYZ"), 0,
+                "export should succeed even when qtc disabled");
+
+  char *cab = read_whole_file(cab_path);
+  expect_true(cab != NULL, "cabrillo file should be readable");
+  if (cab) {
+    expect_true(strstr(cab, "QTC:") == NULL,
+                "cabrillo without qtc contest must not contain QTC: lines");
+    free(cab);
+  }
+
+  qtc_bundle_count = 0;
+}
+
+/*
+ * Verify that the local WAE CW config file loads with the correct parameters
+ * derived from the official DXLog definition (DARC-WAEDC-CW, DXCC_PER_BAND,
+ * EU QTC sender).
+ */
+static void test_wae_cabrillo_name_from_config(const char *tmp_dir) {
+  char conf_path[512];
+  snprintf(conf_path, sizeof(conf_path), "%s/wae_darc.conf", tmp_dir);
+
+  /* Minimal definition matching what our wae_cw.conf produces. */
+  const char *conf_text =
+      "NAME=WAE-DX-CW\n"
+      "CABRILLO_NAME=DARC-WAEDC-CW\n"
+      "MODE=CW\n"
+      "EXCHANGE_SENT=#\n"
+      "POINTS_PER_QSO=1\n"
+      "MULTIPLIER=DXCC_PER_BAND\n"
+      "QTC_SENDER=EU\n"
+      "POINTS_PER_QTC=1\n"
+      "FIELD=SERIAL,Rcv Nr,required\n";
+
+  expect_int_eq(write_text_file(conf_path, conf_text), 0,
+                "write WAE DARC cabrillo test conf");
+
+  ContestDefinition def;
+  char err[64] = {0};
+  expect_int_eq(contest_definition_load(conf_path, &def, err, sizeof(err)), 0,
+                "load WAE DARC cabrillo test conf");
+
+  expect_str_eq(def.name,           "WAE-DX-CW",       "WAE name correct");
+  expect_str_eq(def.cabrillo_name,  "DARC-WAEDC-CW",   "WAE cabrillo name = DARC-WAEDC-CW");
+  expect_str_eq(def.mode,           "CW",               "WAE mode = CW");
+  expect_str_eq(def.qtc_sender_side,"EU",               "WAE qtc sender = EU");
+  expect_int_eq(def.points_per_qtc, 1,                  "WAE points_per_qtc = 1");
+  expect_int_eq((int)def.multiplier_type,
+                (int)CONTEST_MULT_DXCC_PER_BAND,        "WAE multiplier = DXCC_PER_BAND");
+  expect_int_eq(def.field_count, 1,                     "WAE should have 1 exchange field");
+  if (def.field_count >= 1) {
+    expect_str_eq(def.fields[0].name, "SERIAL", "WAE field name = SERIAL");
+    expect_int_eq(def.fields[0].required, 1,    "WAE SERIAL field is required");
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* New contest definition regression tests                              */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Helper: load a contest definition from an inline conf text and check basics.
+ */
+static void check_conf_loads(const char *tmp_dir, const char *filename,
+                             const char *conf_text,
+                             const char *expected_cabrillo_name,
+                             int expected_multiplier) {
+  char conf_path[512];
+  snprintf(conf_path, sizeof(conf_path), "%s/%s", tmp_dir, filename);
+
+  expect_int_eq(write_text_file(conf_path, conf_text), 0, filename);
+
+  ContestDefinition def;
+  char err[64] = {0};
+  expect_int_eq(contest_definition_load(conf_path, &def, err, sizeof(err)), 0,
+                filename);
+  expect_str_eq(def.cabrillo_name, expected_cabrillo_name, filename);
+  if (expected_multiplier >= 0)
+    expect_int_eq((int)def.multiplier_type, expected_multiplier, filename);
+}
+
+static void test_new_contest_defs_load(const char *tmp_dir) {
+  /* SAC CW */
+  check_conf_loads(tmp_dir, "sac_cw.conf",
+    "NAME=SAC-CW\nCABRILLO_NAME=SAC-CW\nMODE=CW\nEXCHANGE_SENT=#\n"
+    "MULTIPLIER=DXCC_PER_BAND\nFIELD=SERIAL,Rcv Nr,required\n",
+    "SAC-CW", (int)CONTEST_MULT_DXCC_PER_BAND);
+
+  /* SAC SSB */
+  check_conf_loads(tmp_dir, "sac_ssb.conf",
+    "NAME=SAC-SSB\nCABRILLO_NAME=SAC-SSB\nMODE=SSB\nEXCHANGE_SENT=#\n"
+    "MULTIPLIER=DXCC_PER_BAND\nFIELD=SERIAL,Rcv Nr,required\n",
+    "SAC-SSB", (int)CONTEST_MULT_DXCC_PER_BAND);
+
+  /* ARRL DX CW */
+  check_conf_loads(tmp_dir, "arrl_dx_cw.conf",
+    "NAME=ARRL-DX-CW\nCABRILLO_NAME=ARRL-DX-CW\nMODE=CW\nEXCHANGE_SENT=#\n"
+    "MULTIPLIER=DXCC_PER_BAND\nFIELD=SERIAL,Rcv Exch,required\n",
+    "ARRL-DX-CW", (int)CONTEST_MULT_DXCC_PER_BAND);
+
+  /* ARRL DX SSB */
+  check_conf_loads(tmp_dir, "arrl_dx_ssb.conf",
+    "NAME=ARRL-DX-SSB\nCABRILLO_NAME=ARRL-DX-SSB\nMODE=SSB\nEXCHANGE_SENT=#\n"
+    "MULTIPLIER=DXCC_PER_BAND\nFIELD=SERIAL,Rcv Exch,required\n",
+    "ARRL-DX-SSB", (int)CONTEST_MULT_DXCC_PER_BAND);
+
+  /* WAG */
+  check_conf_loads(tmp_dir, "wag.conf",
+    "NAME=WAG\nCABRILLO_NAME=WAG\nMODE=MIXED\nEXCHANGE_SENT=#\n"
+    "MULTIPLIER=DXCC_PER_BAND\nFIELD=SERIAL,Rcv Exch,required\n",
+    "WAG", (int)CONTEST_MULT_DXCC_PER_BAND);
+
+  /* Oceania DX CW - PREFIX_PER_BAND */
+  check_conf_loads(tmp_dir, "oceania_dx_cw.conf",
+    "NAME=OCEANIA-DX-CW\nCABRILLO_NAME=OCEANIA-DX-CW\nMODE=CW\nEXCHANGE_SENT=#\n"
+    "MULTIPLIER=PREFIX_PER_BAND\nFIELD=SERIAL,Rcv Nr,required\n",
+    "OCEANIA-DX-CW", (int)CONTEST_MULT_PREFIX_PER_BAND);
+
+  /* RDXC CW */
+  check_conf_loads(tmp_dir, "rdxc_cw.conf",
+    "NAME=RDXC-CW\nCABRILLO_NAME=RDXC\nMODE=CW\nEXCHANGE_SENT=#\n"
+    "MULTIPLIER=DXCC_PER_BAND\nFIELD=SERIAL,Rcv Exch,required\n",
+    "RDXC", (int)CONTEST_MULT_DXCC_PER_BAND);
+
+  /* Holyland */
+  check_conf_loads(tmp_dir, "holyland.conf",
+    "NAME=HOLYLAND-DX\nCABRILLO_NAME=HOLYLAND-DX\nMODE=MIXED\nEXCHANGE_SENT=#\n"
+    "MULTIPLIER=DXCC_PER_BAND\nFIELD=SERIAL,Rcv Exch,required\n",
+    "HOLYLAND-DX", (int)CONTEST_MULT_DXCC_PER_BAND);
+
+  /* IARU HF - verify ZONE_PER_BAND */
+  check_conf_loads(tmp_dir, "iaru_hf.conf",
+    "NAME=IARU-HF-CHAMPIONSHIP\nCABRILLO_NAME=IARU-HF\nMODE=MIXED\nEXCHANGE_SENT=ITU\n"
+    "MULTIPLIER=ZONE_PER_BAND\nFIELD=ITU_ZONE,ITU Zone or HQ,required\n",
+    "IARU-HF", (int)CONTEST_MULT_ZONE_PER_BAND);
+
+  /* CQ WPX SSB - must now have PREFIX multiplier (was NONE before fix) */
+  check_conf_loads(tmp_dir, "cq_wpx_ssb.conf",
+    "NAME=CQ-WPX-SSB\nCABRILLO_NAME=CQ-WPX-SSB\nMODE=SSB\nEXCHANGE_SENT=#\n"
+    "MULTIPLIER=PREFIX\nFIELD=SERIAL,Serial Number,required\n",
+    "CQ-WPX-SSB", (int)CONTEST_MULT_PREFIX);
+}
+
 int main(void) {
   char tmp_dir[256];
   if (make_temp_dir(tmp_dir, sizeof(tmp_dir)) != 0) {
@@ -466,6 +750,13 @@ int main(void) {
   test_contest_definition_and_cabrillo(tmp_dir);
   test_maidenhead_conversion();
   test_call_suggestions();
+
+  /* QTC regression tests */
+  test_wae_definition_qtc_round_trip(tmp_dir);
+  test_cabrillo_qtc_section(tmp_dir);
+  test_qtc_no_lines_without_qtc_contest(tmp_dir);
+  test_wae_cabrillo_name_from_config(tmp_dir);
+  test_new_contest_defs_load(tmp_dir);
 
   if (g_failures == 0) {
     printf("All regression tests passed.\n");

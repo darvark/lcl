@@ -2,6 +2,12 @@ cmake_minimum_required(VERSION 3.10)
 
 project(logger C CXX)
 
+if (NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
+set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "RelWithDebInfo" "MinSizeRel")
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -39,6 +45,7 @@ add_executable(logger
     db.c
     suggestion.c
     qso.c
+    qtc.c
     config.c
     cty.c
     contest.c
@@ -94,6 +101,7 @@ add_executable(regression_tests
     cty.c
     contest.c
     qso.c
+    qtc.c
     db.c
     export.c
     stats.c
@@ -121,12 +129,14 @@ add_executable(unit_tests
     tests/unit/unit_tests.c
     app_controller.c
     cat.c
+    cw_keys.c
     db.c
     suggestion.c
     config.c
     contest.c
     cty.c
     qso.c
+    qtc.c
     export.c
     stats.c
     maidenhead.c

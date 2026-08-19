@@ -187,6 +187,13 @@ int cat_stop_morse_slot(int slot);
 int cat_connect_cw_keyer(const char *device, const char *line, int wpm);
 
 /*
+ * Update the active CW keyer speed immediately.
+ *
+ * @param wpm New speed in WPM, clamped to 5..60.
+ */
+void cat_set_cw_wpm(int wpm);
+
+/*
  * Close the dedicated CW keyer serial port and stop any transmission.
  */
 void cat_disconnect_cw_keyer(void);

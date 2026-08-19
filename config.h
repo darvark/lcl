@@ -22,6 +22,7 @@ typedef struct {
   char cat_parity[16];
   char cat_handshake[16];
   int cat_mode_from_rig;
+  int cat_auto_connect;
 
   int cat2_model;
   char cat2_device[128];
@@ -40,6 +41,7 @@ typedef struct {
   char cw_device[128];
   char cw_keyer_line[8];  /* "DTR" or "RTS" */
   int cw_wpm;
+  int cw_auto_connect;
 
 } Config;
 

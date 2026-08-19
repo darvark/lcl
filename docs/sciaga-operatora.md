@@ -13,13 +13,16 @@ Krótka ściąga do codziennej pracy z programem.
 | Klawisz | Co robi |
 | --- | --- |
 | `F1..F10` | wysyłają wiadomości CW z `cw_keys.ini` |
-| `Ctrl+F1` | krótka pomoc |
+| `Ctrl+F1` | okno dokumentacji (README + docs) |
 | `Ctrl+F2` | nowy log + wybór zawodów |
 | `Ctrl+F3` | otwarcie nazwanego logu |
 | `Ctrl+F4` | eksport ADIF/CSV |
 | `Ctrl+F5` | pokaż/ukryj DXCluster |
 | `Ctrl+F6` | przelicz statystyki |
 | `Ctrl+F7` | aktualizacja `wl_cty.dat` |
+| `Ctrl+F8` | konfiguracja zawodów |
+| `Ctrl+F9` | pokaż/ukryj panel CAT/CW |
+| `Ctrl+Up / Ctrl+Down` | poprzedni/następny spot w bandmapie + strojenie |
 | `Ctrl+F10` | wyjście |
 | `Ctrl+K` | ręczny keyer CW |
 
@@ -85,6 +88,13 @@ Ważne:
 - brak CAT: sprawdź `CAT_*` albo `CAT2_*`
 - zła wymiana contestowa: sprawdź `CONTEST_DEF_FILE`, `EXCHANGE_SENT`, `CONTEST_TX_EXCHANGE`
 - brak CW: sprawdź `CW_DEVICE`, `CW_KEYER_LINE`, `cw_keys.ini`
+
+## UI pod ręką
+
+- wszystkie akcje są zebrane w jednym menu `Menu`
+- `Menu -> Show CAT/CW Config` (lub `Ctrl+F9`) pokazuje lub ukrywa panel konfiguracji CAT/CW
+- bandmapa (lista spotów z bieżącego pasma) jest pod tabelą DXCluster, podwójne kliknięcie ustawia QRG
+- obok `Run/S&P` stale widać lampki `CAT ON/OFF` i `CW ON/OFF` (CW pod CAT)
 
 ## Gdzie szukać pełnych opisów
 

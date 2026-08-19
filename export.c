@@ -1,6 +1,52 @@
 #include "export.h"
 #include "db.h"
 #include "qso.h"
+#include "qtc.h"
+
+static int text_contains_token_ci(const char *text, const char *token) {
+  if (!text || !text[0] || !token || !token[0])
+    return 0;
+
+  char up_text[96] = {0};
+  char up_token[32] = {0};
+  snprintf(up_text, sizeof(up_text), "%s", text);
+  snprintf(up_token, sizeof(up_token), "%s", token);
+
+  for (size_t i = 0; up_text[i]; i++) {
+    if (up_text[i] >= 'a' && up_text[i] <= 'z')
+      up_text[i] = (char)(up_text[i] - 'a' + 'A');
+  }
+
+  for (size_t i = 0; up_token[i]; i++) {
+    if (up_token[i] >= 'a' && up_token[i] <= 'z')
+      up_token[i] = (char)(up_token[i] - 'a' + 'A');
+  }
+
+  return strstr(up_text, up_token) != NULL;
+}
+
+static int qtc_export_allowed(const ContestDefinition *definition) {
+  if (definition) {
+    const int qtc_by_def = definition->qtc_sender_side[0] &&
+                           strcmp(definition->qtc_sender_side, "NONE") != 0;
+    const int qtc_by_name =
+        text_contains_token_ci(definition->name, "WAE") ||
+        text_contains_token_ci(definition->cabrillo_name, "WAEDC");
+    if (qtc_by_def || qtc_by_name)
+      return 1;
+  }
+
+  for (int i = 0; i < qso_count; i++) {
+    const QSO *q = &logbook[i];
+    if (q->invalid)
+      continue;
+    if (text_contains_token_ci(q->contest_id, "WAE") ||
+        text_contains_token_ci(q->contest_id, "WAEDC"))
+      return 1;
+  }
+
+  return 0;
+}
 
 static const char *cabrillo_mode_from_qso_mode(const char *mode) {
   if (!mode || !mode[0])
@@ -179,6 +225,126 @@ int export_cabrillo(const char *filename, const ContestDefinition *definition,
 
   fprintf(f, "END-OF-LOG:\n");
 
+  fclose(f);
+  return 0;
+}
+
+/*
+ * Export QTC bundles to Cabrillo QTC: lines appended to an open file.
+ *
+ * Format per WAE Cabrillo spec:
+ *   QTC: freq mode date time sender_call serial/count receiver_call
+ *        date time call exch
+ *
+ * @param f          Open writable file handle.
+ * @param definition Contest definition for mode resolution.
+ * @param station_call Local station callsign.
+ * @return Nothing.
+ */
+static void export_cabrillo_qtc_lines(FILE *f,
+                                      const ContestDefinition *definition,
+                                      const char *station_call) {
+  if (!f || !station_call || qtc_bundle_count == 0)
+    return;
+
+  if (!qtc_export_allowed(definition))
+    return;
+
+  /* Determine the CW/SSB mode string from the contest definition. */
+  const char *mode = (definition && definition->mode[0])
+                         ? cabrillo_mode_from_qso_mode(definition->mode)
+                         : "CW";
+
+  for (int i = 0; i < qtc_bundle_count; i++) {
+    const QTCBundle *b = &qtc_bundles[i];
+
+    if (b->record_count <= 0)
+      continue;
+
+    for (int j = 0; j < b->record_count; j++) {
+      const QTCRecord *r = &b->records[j];
+
+      /*
+       * Cabrillo QTC line format:
+       * QTC: freq  mode  YYYYMMDD  HHMM  sender  NR/TOT  receiver
+       *      YYYYMMDD  HHMM  call  exch
+       *
+       * Frequency is left as 0 when not recorded in the bundle.
+       */
+      fprintf(f,
+              "QTC: %5d %-2s %4.4s-%2.2s-%2.2s %4.4s %-13s %d/%d"
+              " %-13s %4.4s-%2.2s-%2.2s %4.4s %-13s %s\n",
+              0,
+              mode,
+              b->records[0].date, b->records[0].date + 4,
+              b->records[0].date + 6,
+              b->records[0].time,
+              b->sent ? station_call : b->sender_call,
+              b->bundle_nr, b->record_count,
+              b->sent ? b->receiver_call : station_call,
+              r->date, r->date + 4, r->date + 6,
+              r->time,
+              r->call,
+              r->exch[0] ? r->exch : "000");
+    }
+  }
+}
+
+/*
+ * Export the current logbook and QTC bundles to Cabrillo format.
+ */
+int export_cabrillo_with_qtc(const char *filename,
+                             const ContestDefinition *definition,
+                             const char *station_call) {
+  if (!filename || !filename[0] || !definition || !station_call ||
+      !station_call[0])
+    return -1;
+
+  FILE *f = fopen(filename, "w");
+  if (!f)
+    return -1;
+
+  fprintf(f, "START-OF-LOG: 3.0\n");
+  fprintf(f, "CONTEST: %s\n",
+          definition->cabrillo_name[0] ? definition->cabrillo_name : "GENERAL");
+  fprintf(f, "CALLSIGN: %s\n", station_call);
+  fprintf(f, "CATEGORY-OPERATOR: %s\n",
+          definition->category_operator[0] ? definition->category_operator
+                                           : "SINGLE-OP");
+  fprintf(f, "CATEGORY-BAND: %s\n",
+          definition->category_band[0] ? definition->category_band : "ALL");
+  fprintf(f, "CATEGORY-POWER: %s\n",
+          definition->category_power[0] ? definition->category_power : "LOW");
+  fprintf(f, "CATEGORY-MODE: %s\n",
+          definition->mode[0] ? definition->mode : "MIXED");
+  if (definition->category_overlay[0])
+    fprintf(f, "CATEGORY-OVERLAY: %s\n", definition->category_overlay);
+  if (definition->station_location[0])
+    fprintf(f, "LOCATION: %s\n", definition->station_location);
+  if (definition->operators[0])
+    fprintf(f, "OPERATORS: %s\n", definition->operators);
+
+  for (int i = 0; i < qso_count; i++) {
+    QSO *q = &logbook[i];
+    char sent_fallback[16] = {0};
+
+    if (q->invalid)
+      continue;
+
+    const char *sent = cabrillo_sent_exchange_for_qso(
+        q, definition, i, sent_fallback, sizeof(sent_fallback));
+    const char *recv = q->exchange_recv[0] ? q->exchange_recv : "000";
+
+    fprintf(f,
+            "QSO: %5d %-2s %4.4s-%2.2s-%2.2s %4.4s %-13s %-3s %-6s %-13s %-3s %-6s\n",
+            q->freq, cabrillo_mode_from_qso_mode(q->mode), q->date,
+            q->date + 4, q->date + 6, q->utc, station_call, q->rst, sent,
+            q->call, q->rst, recv);
+  }
+
+  export_cabrillo_qtc_lines(f, definition, station_call);
+
+  fprintf(f, "END-OF-LOG:\n");
   fclose(f);
   return 0;
 }

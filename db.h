@@ -2,6 +2,7 @@
 #define DB_H
 
 #include "qso.h"
+#include "qtc.h"
 
 typedef struct {
 	long long id;
@@ -84,6 +85,23 @@ int db_load_call_history(char history[][32], int max_history, int *out_count);
 int db_append_call_history(const char *call);
 
 /*
+ * Store the contest definition path associated with the active logbook.
+ *
+ * @param path Contest file path or empty string to clear the association.
+ * @return 0 on success, or -1 on failure.
+ */
+int db_set_current_logbook_contest_path(const char *path);
+
+/*
+ * Read the contest definition path associated with the active logbook.
+ *
+ * @param out Destination buffer for the path.
+ * @param out_size Destination buffer size.
+ * @return 0 on success, or -1 on failure.
+ */
+int db_get_current_logbook_contest_path(char *out, size_t out_size);
+
+/*
  * Import call history entries from a text file.
  *
  * @param path Path to the file to import.
@@ -161,5 +179,24 @@ int db_export_csv(const char *filename);
  * @return 0 on success, or -1 on failure.
  */
 int db_export_adif(const char *filename);
+
+/*
+ * Insert a QTC bundle into the database for the current logbook.
+ *
+ * @param bundle  Fully populated bundle (db_id will be set on success).
+ * @param out_id  Optional destination for the inserted row id.
+ * @return 0 on success, or -1 on failure.
+ */
+int db_insert_qtc_bundle(const QTCBundle *bundle, long long *out_id);
+
+/*
+ * Load QTC bundles for the current logbook into memory.
+ *
+ * @param out        Destination array for loaded bundles.
+ * @param max_items  Maximum number of bundles to load.
+ * @param out_count  Optional output count of loaded items.
+ * @return 0 on success, or -1 on failure.
+ */
+int db_load_qtc_bundles(QTCBundle *out, int max_items, int *out_count);
 
 #endif

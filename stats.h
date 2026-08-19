@@ -19,6 +19,10 @@ typedef struct {
   int contest_mults;
   int contest_score;
 
+  /* QTC-specific counters (non-zero only when contest uses QTC). */
+  int qtc_records;  /* total individual QTC records logged */
+  int qtc_points;   /* qtc_records * points_per_qtc        */
+
 } Statistics;
 
 extern Statistics stats;

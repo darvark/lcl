@@ -58,6 +58,21 @@ typedef struct {
   ContestMultiplierType multiplier_type;
   int bonus_points;
 
+  /*
+   * QTC traffic exchange configuration (WAE and similar contests).
+   *
+   * qtc_sender_side identifies which geographic side originates QTC traffic:
+   *   "NONE"  – QTC not supported (default)
+   *   "EU"    – European stations send QTC to DX
+   *   "DX"    – DX stations send QTC to EU
+   *   "BOTH"  – either side may send QTC
+   *
+   * points_per_qtc is added to the total score for each individual QTC
+   * record successfully exchanged (default 1 when QTC is enabled).
+   */
+  char qtc_sender_side[8];
+  int  points_per_qtc;
+
   ContestFieldDef fields[CONTEST_DEF_MAX_FIELDS];
   int field_count;
 } ContestDefinition;

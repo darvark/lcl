@@ -20,6 +20,7 @@ static char cat_slot_status[CAT_SLOT_COUNT][128] = {"CAT[1] idle",
 
 #ifdef HAVE_HAMLIB
 static RIG *active_rigs[CAT_SLOT_COUNT] = {NULL, NULL};
+static char active_rig_devices[CAT_SLOT_COUNT][128] = {{0}, {0}};
 static int hamlib_ready = 0;
 #endif
 
@@ -33,6 +34,42 @@ static void cat_set_status(const char *text) {
   snprintf(cat_status, sizeof(cat_status), "%s", text);
   pthread_mutex_unlock(&cat_mutex);
 }
+
+#ifdef HAVE_HAMLIB
+static void cat_disconnect_slot_locked_with_reason(int slot, const char *reason) {
+  if (!cat_slot_valid(slot))
+    return;
+
+  if (active_rigs[slot]) {
+    rig_close(active_rigs[slot]);
+    rig_cleanup(active_rigs[slot]);
+    active_rigs[slot] = NULL;
+  }
+
+  active_rig_devices[slot][0] = '\0';
+
+  if (reason && reason[0]) {
+    snprintf(cat_slot_status[slot], sizeof(cat_slot_status[slot]),
+             "CAT[%d] disconnected (%s)", slot + 1, reason);
+    snprintf(cat_status, sizeof(cat_status), "CAT[%d] disconnected (%s)",
+             slot + 1, reason);
+  } else {
+    snprintf(cat_slot_status[slot], sizeof(cat_slot_status[slot]),
+             "CAT[%d] disconnected", slot + 1);
+    snprintf(cat_status, sizeof(cat_status), "CAT[%d] disconnected", slot + 1);
+  }
+}
+
+static int cat_slot_device_present(int slot) {
+  if (!cat_slot_valid(slot))
+    return 0;
+
+  if (!active_rig_devices[slot][0])
+    return 1;
+
+  return access(active_rig_devices[slot], F_OK) == 0 ? 1 : 0;
+}
+#endif
 
 #ifdef HAVE_HAMLIB
 static vfo_t cat_map_vfo(CatVfo vfo) {
@@ -212,6 +249,7 @@ int cat_connect_slot(int slot, const CatConnectionParams *params) {
     rig_close(active_rigs[slot]);
     rig_cleanup(active_rigs[slot]);
     active_rigs[slot] = NULL;
+    active_rig_devices[slot][0] = '\0';
   }
 
   RIG *rig = rig_init((rig_model_t)params->model);
@@ -245,6 +283,8 @@ int cat_connect_slot(int slot, const CatConnectionParams *params) {
   }
 
   active_rigs[slot] = rig;
+  snprintf(active_rig_devices[slot], sizeof(active_rig_devices[slot]), "%s",
+           params->device[0] ? params->device : "");
 
   snprintf(cat_slot_status[slot], sizeof(cat_slot_status[slot]),
            "CAT[%d] connected (%.96s)", slot + 1,
@@ -273,16 +313,7 @@ void cat_disconnect_slot(int slot) {
 
 #ifdef HAVE_HAMLIB
   pthread_mutex_lock(&cat_mutex);
-
-  if (active_rigs[slot]) {
-    rig_close(active_rigs[slot]);
-    rig_cleanup(active_rigs[slot]);
-    active_rigs[slot] = NULL;
-  }
-
-  snprintf(cat_slot_status[slot], sizeof(cat_slot_status[slot]),
-           "CAT[%d] disconnected", slot + 1);
-  snprintf(cat_status, sizeof(cat_status), "CAT[%d] disconnected", slot + 1);
+  cat_disconnect_slot_locked_with_reason(slot, NULL);
   pthread_mutex_unlock(&cat_mutex);
 #else
   cat_set_status("CAT unavailable (built without Hamlib)");
@@ -330,14 +361,20 @@ int cat_get_frequency_khz_slot_vfo(int slot, CatVfo vfo, int *out_khz) {
     return -1;
   }
 
-  freq_t freq_hz = 0;
-  const int rc = rig_get_freq(active_rigs[slot], cat_map_vfo(vfo), &freq_hz);
-  pthread_mutex_unlock(&cat_mutex);
-
-  if (rc != RIG_OK) {
-    cat_set_status_fmt("CAT read frequency failed", rc);
+  if (!cat_slot_device_present(slot)) {
+    cat_disconnect_slot_locked_with_reason(slot, "device lost");
+    pthread_mutex_unlock(&cat_mutex);
     return -1;
   }
+
+  freq_t freq_hz = 0;
+  const int rc = rig_get_freq(active_rigs[slot], cat_map_vfo(vfo), &freq_hz);
+  if (rc != RIG_OK)
+    cat_disconnect_slot_locked_with_reason(slot, rigerror(rc));
+  pthread_mutex_unlock(&cat_mutex);
+
+  if (rc != RIG_OK)
+    return -1;
 
   *out_khz = (int)((freq_hz + 500.0) / 1000.0);
   return 0;
@@ -370,16 +407,22 @@ int cat_get_mode_label_slot_vfo(int slot, CatVfo vfo, char *out,
     return -1;
   }
 
+  if (!cat_slot_device_present(slot)) {
+    cat_disconnect_slot_locked_with_reason(slot, "device lost");
+    pthread_mutex_unlock(&cat_mutex);
+    return -1;
+  }
+
   rmode_t mode = 0;
   pbwidth_t width = 0;
   const int rc = rig_get_mode(active_rigs[slot], cat_map_vfo(vfo), &mode,
                               &width);
+  if (rc != RIG_OK)
+    cat_disconnect_slot_locked_with_reason(slot, rigerror(rc));
   pthread_mutex_unlock(&cat_mutex);
 
-  if (rc != RIG_OK) {
-    cat_set_status_fmt("CAT read mode failed", rc);
+  if (rc != RIG_OK)
     return -1;
-  }
 
   char mode_text[32] = {0};
   snprintf(mode_text, sizeof(mode_text), "%s", rig_strrmode(mode));
@@ -415,14 +458,20 @@ int cat_set_frequency_khz_slot_vfo(int slot, CatVfo vfo, int freq_khz) {
     return -1;
   }
 
-  const freq_t freq_hz = (freq_t)freq_khz * 1000.0;
-  const int rc = rig_set_freq(active_rigs[slot], cat_map_vfo(vfo), freq_hz);
-  pthread_mutex_unlock(&cat_mutex);
-
-  if (rc != RIG_OK) {
-    cat_set_status_fmt("CAT set frequency failed", rc);
+  if (!cat_slot_device_present(slot)) {
+    cat_disconnect_slot_locked_with_reason(slot, "device lost");
+    pthread_mutex_unlock(&cat_mutex);
     return -1;
   }
+
+  const freq_t freq_hz = (freq_t)freq_khz * 1000.0;
+  const int rc = rig_set_freq(active_rigs[slot], cat_map_vfo(vfo), freq_hz);
+  if (rc != RIG_OK)
+    cat_disconnect_slot_locked_with_reason(slot, rigerror(rc));
+  pthread_mutex_unlock(&cat_mutex);
+
+  if (rc != RIG_OK)
+    return -1;
 
   return 0;
 #else
@@ -442,13 +491,19 @@ int cat_set_active_vfo_slot(int slot, CatVfo vfo) {
     return -1;
   }
 
-  const int rc = rig_set_vfo(active_rigs[slot], cat_map_vfo(vfo));
-  pthread_mutex_unlock(&cat_mutex);
-
-  if (rc != RIG_OK) {
-    cat_set_status_fmt("CAT set VFO failed", rc);
+  if (!cat_slot_device_present(slot)) {
+    cat_disconnect_slot_locked_with_reason(slot, "device lost");
+    pthread_mutex_unlock(&cat_mutex);
     return -1;
   }
+
+  const int rc = rig_set_vfo(active_rigs[slot], cat_map_vfo(vfo));
+  if (rc != RIG_OK)
+    cat_disconnect_slot_locked_with_reason(slot, rigerror(rc));
+  pthread_mutex_unlock(&cat_mutex);
+
+  if (rc != RIG_OK)
+    return -1;
 
   return 0;
 #else
@@ -469,14 +524,20 @@ int cat_get_active_vfo_slot(int slot, CatVfo *out_vfo) {
     return -1;
   }
 
-  vfo_t vfo = RIG_VFO_CURR;
-  const int rc = rig_get_vfo(active_rigs[slot], &vfo);
-  pthread_mutex_unlock(&cat_mutex);
-
-  if (rc != RIG_OK) {
-    cat_set_status_fmt("CAT read VFO failed", rc);
+  if (!cat_slot_device_present(slot)) {
+    cat_disconnect_slot_locked_with_reason(slot, "device lost");
+    pthread_mutex_unlock(&cat_mutex);
     return -1;
   }
+
+  vfo_t vfo = RIG_VFO_CURR;
+  const int rc = rig_get_vfo(active_rigs[slot], &vfo);
+  if (rc != RIG_OK)
+    cat_disconnect_slot_locked_with_reason(slot, rigerror(rc));
+  pthread_mutex_unlock(&cat_mutex);
+
+  if (rc != RIG_OK)
+    return -1;
 
   *out_vfo = cat_unmap_vfo(vfo);
   return 0;
@@ -504,13 +565,19 @@ int cat_send_morse_slot(int slot, const char *text) {
     return -1;
   }
 
-  const int rc = rig_send_morse(active_rigs[slot], RIG_VFO_CURR, text);
-  pthread_mutex_unlock(&cat_mutex);
-
-  if (rc != RIG_OK) {
-    cat_set_status_fmt("CW send failed", rc);
+  if (!cat_slot_device_present(slot)) {
+    cat_disconnect_slot_locked_with_reason(slot, "device lost");
+    pthread_mutex_unlock(&cat_mutex);
     return -1;
   }
+
+  const int rc = rig_send_morse(active_rigs[slot], RIG_VFO_CURR, text);
+  if (rc != RIG_OK)
+    cat_disconnect_slot_locked_with_reason(slot, rigerror(rc));
+  pthread_mutex_unlock(&cat_mutex);
+
+  if (rc != RIG_OK)
+    return -1;
 
   return 0;
 #else
@@ -535,13 +602,19 @@ int cat_stop_morse_slot(int slot) {
     return -1;
   }
 
-  const int rc = rig_stop_morse(active_rigs[slot], RIG_VFO_CURR);
-  pthread_mutex_unlock(&cat_mutex);
-
-  if (rc != RIG_OK) {
-    cat_set_status_fmt("CW stop failed", rc);
+  if (!cat_slot_device_present(slot)) {
+    cat_disconnect_slot_locked_with_reason(slot, "device lost");
+    pthread_mutex_unlock(&cat_mutex);
     return -1;
   }
+
+  const int rc = rig_stop_morse(active_rigs[slot], RIG_VFO_CURR);
+  if (rc != RIG_OK)
+    cat_disconnect_slot_locked_with_reason(slot, rigerror(rc));
+  pthread_mutex_unlock(&cat_mutex);
+
+  if (rc != RIG_OK)
+    return -1;
 
   return 0;
 #else
@@ -554,6 +627,7 @@ int cat_stop_morse_slot(int slot) {
 #define CW_QUEUE_SIZE 512
 
 static int cw_fd = -1;
+static char cw_device_path[128] = {0};
 static int cw_use_dtr = 1;
 static int cw_wpm = 20;
 static char cw_status[128] = "CW keyer idle";
@@ -563,6 +637,7 @@ static int cw_queue_len = 0;
 static pthread_mutex_t cw_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t cw_cond = PTHREAD_COND_INITIALIZER;
 static pthread_t cw_thread;
+static int cw_thread_created = 0;
 static volatile int cw_thread_running = 0;
 static volatile int cw_abort_flag = 0;
 
@@ -598,11 +673,13 @@ static int cw_sleep_ms(int ms) {
   return 0;
 }
 
-static void cw_key(int down) {
+static int cw_key(int down) {
   if (cw_fd < 0)
-    return;
+    return -1;
   int bit = cw_use_dtr ? TIOCM_DTR : TIOCM_RTS;
-  ioctl(cw_fd, down ? TIOCMBIS : TIOCMBIC, &bit);
+  if (ioctl(cw_fd, down ? TIOCMBIS : TIOCMBIC, &bit) != 0)
+    return -1;
+  return 0;
 }
 
 static int cw_send_char(char c) {
@@ -617,12 +694,17 @@ static int cw_send_char(char c) {
 
   for (const char *p = code; *p; p++) {
     if (cw_abort_flag) {
-      cw_key(0);
+      (void)cw_key(0);
       return -1;
     }
-    cw_key(1);
-    if (cw_sleep_ms(*p == '-' ? 3 * dot : dot) < 0) { cw_key(0); return -1; }
-    cw_key(0);
+    if (cw_key(1) != 0)
+      return -2;
+    if (cw_sleep_ms(*p == '-' ? 3 * dot : dot) < 0) {
+      (void)cw_key(0);
+      return -1;
+    }
+    if (cw_key(0) != 0)
+      return -2;
     if (cw_sleep_ms(dot) < 0) return -1; /* inter-element gap */
   }
   return cw_sleep_ms(2 * dot); /* char gap = 3T; already waited 1T above */
@@ -645,10 +727,48 @@ static void *cw_thread_func(void *arg) {
     pthread_mutex_unlock(&cw_mutex);
 
     cw_abort_flag = 0;
-    cw_send_char(c);
+    const int rc = cw_send_char(c);
+    if (rc == -2) {
+      pthread_mutex_lock(&cw_mutex);
+      cw_queue_len = 0;
+      cw_thread_running = 0;
+      pthread_mutex_unlock(&cw_mutex);
+
+      if (cw_fd >= 0) {
+        close(cw_fd);
+        cw_fd = -1;
+      }
+      cw_device_path[0] = '\0';
+
+      pthread_mutex_lock(&cat_mutex);
+      snprintf(cw_status, sizeof(cw_status), "%s",
+               "CW keyer: disconnected (device lost)");
+      pthread_mutex_unlock(&cat_mutex);
+      break;
+    }
   }
-  cw_key(0);
+  (void)cw_key(0);
   return NULL;
+}
+
+void cat_set_cw_wpm(int wpm) {
+  if (wpm < 1)
+    wpm = 1;
+  if (wpm > 60)
+    wpm = 60;
+
+  cw_wpm = wpm;
+  pthread_mutex_lock(&cat_mutex);
+  if (cw_fd >= 0) {
+    char dev[32] = {0};
+    const char *line_name = cw_use_dtr ? "DTR" : "RTS";
+    const char *device_name = cw_device_path[0] ? cw_device_path : "serial";
+    snprintf(dev, sizeof(dev), "%.*s", (int)(sizeof(dev) - 1), device_name);
+    snprintf(cw_status, sizeof(cw_status),
+             "CW keyer: %s via %s @ %d WPM",
+             dev, line_name, cw_wpm);
+  }
+  pthread_mutex_unlock(&cat_mutex);
 }
 
 int cat_connect_cw_keyer(const char *device, const char *line, int wpm) {
@@ -670,12 +790,24 @@ int cat_connect_cw_keyer(const char *device, const char *line, int wpm) {
   ioctl(fd, TIOCMBIC, &bit);
 
   cw_fd = fd;
+  snprintf(cw_device_path, sizeof(cw_device_path), "%s", device);
   cw_use_dtr = (strcmp(line, "RTS") != 0);
-  cw_wpm = (wpm >= 5 && wpm <= 60) ? wpm : 20;
+  cw_wpm = (wpm >= 1 && wpm <= 60) ? wpm : 20;
   cw_abort_flag = 0;
   cw_queue_len = 0;
   cw_thread_running = 1;
-  pthread_create(&cw_thread, NULL, cw_thread_func, NULL);
+  if (pthread_create(&cw_thread, NULL, cw_thread_func, NULL) != 0) {
+    close(fd);
+    cw_fd = -1;
+    cw_device_path[0] = '\0';
+    cw_thread_running = 0;
+    pthread_mutex_lock(&cat_mutex);
+    snprintf(cw_status, sizeof(cw_status), "%s",
+             "CW keyer: cannot start worker thread");
+    pthread_mutex_unlock(&cat_mutex);
+    return -1;
+  }
+  cw_thread_created = 1;
 
   pthread_mutex_lock(&cat_mutex);
   snprintf(cw_status, sizeof(cw_status), "CW keyer: %s via %s @ %d WPM",
@@ -685,7 +817,7 @@ int cat_connect_cw_keyer(const char *device, const char *line, int wpm) {
 }
 
 void cat_disconnect_cw_keyer(void) {
-  if (!cw_thread_running && cw_fd < 0)
+  if (!cw_thread_created && cw_fd < 0)
     return;
 
   cw_abort_flag = 1;
@@ -695,13 +827,16 @@ void cat_disconnect_cw_keyer(void) {
   pthread_cond_signal(&cw_cond);
   pthread_mutex_unlock(&cw_mutex);
 
-  if (cw_thread_running == 0)
+  if (cw_thread_created && !pthread_equal(pthread_self(), cw_thread)) {
     pthread_join(cw_thread, NULL);
+    cw_thread_created = 0;
+  }
 
   if (cw_fd >= 0) {
     close(cw_fd);
     cw_fd = -1;
   }
+  cw_device_path[0] = '\0';
 
   pthread_mutex_lock(&cat_mutex);
   snprintf(cw_status, sizeof(cw_status), "%s", "CW keyer: disconnected");
@@ -728,6 +863,31 @@ int cat_cw_send(const char *text) {
 
   if (cw_fd < 0) {
     pthread_mutex_unlock(&cw_mutex);
+    return -1;
+  }
+
+  if (cw_device_path[0] && access(cw_device_path, F_OK) != 0) {
+    cw_abort_flag = 1;
+    cw_queue_len = 0;
+    cw_thread_running = 0;
+    pthread_cond_signal(&cw_cond);
+    pthread_mutex_unlock(&cw_mutex);
+
+    if (cw_thread_created && !pthread_equal(pthread_self(), cw_thread)) {
+      pthread_join(cw_thread, NULL);
+      cw_thread_created = 0;
+    }
+
+    if (cw_fd >= 0) {
+      close(cw_fd);
+      cw_fd = -1;
+    }
+    cw_device_path[0] = '\0';
+
+    pthread_mutex_lock(&cat_mutex);
+    snprintf(cw_status, sizeof(cw_status), "%s",
+             "CW keyer: disconnected (device lost)");
+    pthread_mutex_unlock(&cat_mutex);
     return -1;
   }
 

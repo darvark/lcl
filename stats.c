@@ -1,8 +1,10 @@
 #include "stats.h"
 
 #include "config.h"
+#include "qtc.h"
 
 #include <ctype.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -16,25 +18,12 @@ static ContestDefinition scoring_def;
 /*
  * Cache for multiplier keys (e.g. DXCC, BAND+DXCC).
  */
-static char mult_list[MAX_QSO][96];
+static char mult_list[MAX_QSO * 2][96];
 static int mult_count = 0;
 
 /*
- * Check whether a DXCC country already exists in the current set.
- *
- * @param country Country name to search for.
- * @return 1 if present, otherwise 0.
- */
-static int dxcc_exists(const char *country) {
-  for (int i = 0; i < dxcc_count; i++) {
-    if (strcmp(dxcc_list[i], country) == 0)
-      return 1;
-  }
-  return 0;
-}
-
-/*
- * Add a DXCC country to the current set if it is valid and new.
+ * Add a DXCC country candidate to the current set.
+ * Deduplication is handled in a batch at the end of stats_update.
  *
  * @param country Country name to add.
  * @return Nothing.
@@ -44,21 +33,74 @@ static void dxcc_add(const char *country) {
     return;
   if (strcmp(country, "UNKNOWN") == 0)
     return;
+  if (dxcc_count >= MAX_QSO)
+    return;
 
-  for (int i = 0; i < dxcc_count; i++)
-    if (strcmp(dxcc_list[i], country) == 0)
-      return;
-
-  strcpy(dxcc_list[dxcc_count++], country);
+  snprintf(dxcc_list[dxcc_count++], sizeof(dxcc_list[0]), "%s", country);
 }
 
-static int mult_exists(const char *key) {
-  for (int i = 0; i < mult_count; i++) {
-    if (strcmp(mult_list[i], key) == 0)
-      return 1;
+/* qsort comparator for fixed-size string buffers. */
+static int compare_fixed_strings(const void *a, const void *b) {
+  return strcmp((const char *)a, (const char *)b);
+}
+
+/*
+ * Sort and deduplicate a list of fixed-size keys in-place.
+ *
+ * @param list List of fixed-size key buffers.
+ * @param count Number of valid entries.
+ * @return Number of unique keys after deduplication.
+ */
+static int unique_sorted_string_count(char list[][96], int count) {
+  if (count <= 0)
+    return 0;
+
+  qsort(list, (size_t)count, sizeof(list[0]), compare_fixed_strings);
+
+  int write = 1;
+  for (int i = 1; i < count; i++) {
+    if (strcmp(list[i], list[write - 1]) != 0) {
+      if (write != i)
+        snprintf(list[write], sizeof(list[0]), "%s", list[i]);
+      write++;
+    }
   }
 
-  return 0;
+  return write;
+}
+
+/*
+ * Sort and deduplicate DXCC list collected during stats scan.
+ *
+ * @return Number of unique DXCC entities.
+ */
+static int unique_sorted_dxcc_count(void) {
+  if (dxcc_count <= 0)
+    return 0;
+
+  qsort(dxcc_list, (size_t)dxcc_count, sizeof(dxcc_list[0]),
+        compare_fixed_strings);
+
+  int write = 1;
+  for (int i = 1; i < dxcc_count; i++) {
+    if (strcmp(dxcc_list[i], dxcc_list[write - 1]) != 0) {
+      if (write != i)
+        snprintf(dxcc_list[write], sizeof(dxcc_list[0]), "%s", dxcc_list[i]);
+      write++;
+    }
+  }
+
+  return write;
+}
+
+/* Append one multiplier candidate key (dedup happens in batch later). */
+static void mult_add(const char *key) {
+  if (!key || !key[0])
+    return;
+  if (mult_count >= (int)(sizeof(mult_list) / sizeof(mult_list[0])))
+    return;
+
+  snprintf(mult_list[mult_count++], sizeof(mult_list[0]), "%s", key);
 }
 
 static int is_sp_callsign(const char *call) {
@@ -106,7 +148,11 @@ static int build_callsign_prefix(const char *call, char *out,
   return out[0] != 0;
 }
 
-static void maybe_add_multiplier(const QSO *q) {
+/*
+ * Build multiplier key(s) for one QSO according to active contest rules.
+ * Keys are appended as candidates and deduplicated after full scan.
+ */
+static void maybe_add_multiplier(const QSO *q, int own_is_sp) {
   if (!q)
     return;
 
@@ -151,19 +197,14 @@ static void maybe_add_multiplier(const QSO *q) {
   case CONTEST_MULT_DXCC_PLUS_ZONE_PER_BAND:
     if (!q->country[0] || strcmp(q->country, "UNKNOWN") == 0)
       return;
-    if (mult_count < MAX_QSO) {
-      snprintf(key, sizeof(key), "D|%s|%s", q->band, q->country);
-      if (!mult_exists(key))
-        snprintf(mult_list[mult_count++], sizeof(mult_list[0]), "%s", key);
-    }
-    if (q->cq_zone > 0 && mult_count < MAX_QSO) {
+    snprintf(key, sizeof(key), "D|%s|%s", q->band, q->country);
+    mult_add(key);
+    if (q->cq_zone > 0) {
       snprintf(key, sizeof(key), "Z|%s|%d", q->band, q->cq_zone);
-      if (!mult_exists(key))
-        snprintf(mult_list[mult_count++], sizeof(mult_list[0]), "%s", key);
+      mult_add(key);
     }
     return;
   case CONTEST_MULT_SPDX: {
-    const int own_is_sp = is_sp_callsign(config.station_call);
     const int qso_is_sp = strcmp(q->country, "Poland") == 0;
 
     if (own_is_sp) {
@@ -191,11 +232,7 @@ static void maybe_add_multiplier(const QSO *q) {
     break;
   }
 
-  if (mult_count >= MAX_QSO)
-    return;
-
-  if (!mult_exists(key))
-    snprintf(mult_list[mult_count++], sizeof(mult_list[0]), "%s", key);
+  mult_add(key);
 }
 
 /*
@@ -224,6 +261,9 @@ void stats_set_contest_definition(const ContestDefinition *definition) {
  */
 void stats_update(void) {
   reset_stats();
+  const int own_is_sp = (scoring_def.multiplier_type == CONTEST_MULT_SPDX)
+                            ? is_sp_callsign(config.station_call)
+                            : 0;
 
   for (int i = 0; i < qso_count; i++) {
     QSO *q = &logbook[i];
@@ -254,17 +294,31 @@ void stats_update(void) {
     else
       stats.contest_qso_points += scoring_def.points_per_qso;
 
-    maybe_add_multiplier(q);
+    maybe_add_multiplier(q, own_is_sp);
   }
+
+  dxcc_count = unique_sorted_dxcc_count();
+  mult_count = unique_sorted_string_count(mult_list, mult_count);
 
   stats.total_dxcc = dxcc_count;
 
   stats.contest_mults = mult_count;
+
+  /* QTC points (WAE and similar contests). */
+  if (scoring_def.points_per_qtc > 0) {
+    stats.qtc_records = qtc_total_records();
+    stats.qtc_points  = stats.qtc_records * scoring_def.points_per_qtc;
+  } else {
+    stats.qtc_records = 0;
+    stats.qtc_points  = 0;
+  }
+
   if (scoring_def.multiplier_type == CONTEST_MULT_NONE) {
-    stats.contest_score = stats.contest_qso_points + scoring_def.bonus_points;
+    stats.contest_score = stats.contest_qso_points + stats.qtc_points +
+                          scoring_def.bonus_points;
   } else {
     const int mult = stats.contest_mults > 0 ? stats.contest_mults : 1;
-    stats.contest_score =
-        stats.contest_qso_points * mult + scoring_def.bonus_points;
+    stats.contest_score = (stats.contest_qso_points + stats.qtc_points) * mult +
+                          scoring_def.bonus_points;
   }
 }

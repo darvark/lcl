@@ -6,6 +6,7 @@ The application uses shared controller/core logic, with Qt providing the user in
 
 Dodatkowa dokumentacja:
 
+- [docs/architektura.md](docs/architektura.md)
 - [docs/konfiguracja-i-zawody.md](docs/konfiguracja-i-zawody.md)
 - [docs/klawiszologia.md](docs/klawiszologia.md)
 - [docs/przykladowe-konfiguracje.md](docs/przykladowe-konfiguracje.md)
@@ -101,12 +102,21 @@ Contest support is split cleanly: `contest.c` loads DXLog-like definitions, `app
 - Displays DXCC, CQ zone, and ITU zone information while typing a callsign
 - Shows a dedicated callsign suggestions panel in the top-right corner with all matching history entries
 - Connects to a DXCluster server, shows received spots in the cluster window, and stops the cluster worker cleanly when the app exits
+- Shows a bandmap list for current band (spots sorted by frequency) with quick tuning on double-click
+- Bandmap automatically suppresses near-duplicate entries for the same callsign on very close frequencies
 - Tracks simple statistics
 - Stores the QSO logbook and call history in SQLite
 - Supports archived and named logbooks inside the same SQLite database
 - Exports log data to CSV and ADIF files
 - Exports contest logs to Cabrillo using a DXLog-like contest definition file
+- Imports raw DXLog contest definitions and normalizes them to the local contest format
+- Supports WAE-style QTC exchange rules with configurable sender side and points-per-QTC scoring
 - Supports SO1R, SO2V, and SO2R operating techniques in configuration
+- Restores the saved contest definition automatically when an archived or named logbook is reopened
+- Persists the contest-definition path per logbook and rehydrates the active contest state without manual re-selection
+- Stores the received exchange in the QSO row and preserves the next serial value from the existing log instead of UI state
+- Updates CW keyer speed immediately with a live runtime control in the main window
+- Uses one top-level menu with grouped actions (instead of multiple menu groups and toolbar buttons)
 
 ## Features
 
@@ -118,16 +128,23 @@ Contest support is split cleanly: `contest.c` loads DXLog-like definitions, `app
 - Callsign history suggestions with multi-match list view (top-right panel)
 - Local DXCC lookup from a CTY database
 - DXCluster status and spot display, with a stop-safe shutdown path
+- Bandmap navigation from keyboard (`Ctrl+Up`/`Ctrl+Down`) and frequency tune on spot activation
 - Invalid QSO marking for export exclusion
 - CSV/ADIF export support, including comments and custom ADIF filename
 - Cabrillo export support (`exportcab`) with category metadata from contest definition
 - DXLog-like contest definition parser (`contest <file>`) with field declarations
+- Raw DXLog import flow that converts legacy definitions into the normalized local contest format
+- QTC scoring support for WAE-style contests via `QTC_SENDER` and `POINTS_PER_QTC`
 - Dual Hamlib CAT profiles for SO2R (`CAT_*` + `CAT2_*`)
+- Permanent CAT/CW connection badges near RUN/S&P controls (`CAT ON/OFF`, `CW ON/OFF`)
+- CAT/CW configuration panel visibility toggle from menu (`Show CAT/CW Config`)
+- Global shortcut `Ctrl+F9` for CAT/CW panel show/hide toggle
 - One-key CTY database update from the internet
 - SQLite-backed logbook and call-history storage with `LOGGER_DB_PATH` override
 - New clean log action to truncate the current SQLite logbook and history
 - Independent named logbooks stored in SQLite, with selection by ID or name
 - New-log flow with optional contest preset selection in the Qt UI
+- Contest configuration dialog with save-to-file flow and dedicated shortcut (`Ctrl+F8`)
 
 ## Requirements
 
@@ -256,6 +273,11 @@ Most important operational rules:
 
 - `F1..F10` send CW messages defined in `cw_keys.ini`
 - `Ctrl+F2` creates a new log and can immediately assign a contest preset
+- `Ctrl+F8` opens the contest configuration dialog
+- `Ctrl+F9` shows or hides CAT/CW configuration panel
+- `Ctrl+Up` and `Ctrl+Down` move to previous/next spot on current-band bandmap and tune frequency
+- `Menu -> Show CAT/CW Config` shows or hides CAT/CW configuration panel
+- CAT and CW link state is always visible as two lamp-style badges near RUN/S&P
 - `Space` moves between visible input fields, it does not insert a literal space into the entry line
 - in contest mode you enter `Call` and received `Exchange`, while sent exchange is generated from the contest definition
 - callsign suggestions are shown only while editing the first field and can be accepted with `Tab` or `Space`

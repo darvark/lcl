@@ -1,5 +1,7 @@
 #include "db.h"
 
+#include "qtc.h"
+
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -51,6 +53,8 @@ static int set_current_logbook_id(int id);
 static int set_previous_logbook_id(int id);
 static int get_previous_logbook_id(int *out_id);
 static int ensure_logbook_context(void);
+static int get_named_logbook_contest_path(int logbook_id, char *out, size_t out_size);
+static int set_named_logbook_contest_path(int logbook_id, const char *path);
 
 /*
  * Bind a text value or SQL NULL-equivalent empty string.
@@ -109,6 +113,49 @@ static int get_current_logbook_id(int *out_id) {
     return -1;
 
   return meta_get_int("current_logbook_id", out_id);
+}
+
+static int get_named_logbook_contest_path(int logbook_id, char *out,
+                                         size_t out_size) {
+  if (!out || out_size == 0)
+    return -1;
+
+  out[0] = 0;
+  if (logbook_id <= 0)
+    return -1;
+
+  sqlite3_stmt *stmt = NULL;
+  if (prepare_stmt(&stmt,
+                   "SELECT contest_definition_path FROM named_logbooks WHERE id = ? LIMIT 1;") != SQLITE_OK)
+    return -1;
+
+  sqlite3_bind_int(stmt, 1, logbook_id);
+  int rc = -1;
+  if (sqlite3_step(stmt) == SQLITE_ROW) {
+    const unsigned char *path = sqlite3_column_text(stmt, 0);
+    if (path) {
+      snprintf(out, out_size, "%s", (const char *)path);
+      rc = 0;
+    }
+  }
+  sqlite3_finalize(stmt);
+  return rc;
+}
+
+static int set_named_logbook_contest_path(int logbook_id, const char *path) {
+  if (logbook_id <= 0)
+    return -1;
+
+  sqlite3_stmt *stmt = NULL;
+  if (prepare_stmt(&stmt,
+                   "UPDATE named_logbooks SET contest_definition_path = ? WHERE id = ?;") != SQLITE_OK)
+    return -1;
+
+  bind_text_or_null(stmt, 1, path);
+  sqlite3_bind_int(stmt, 2, logbook_id);
+  int rc = sqlite3_step(stmt) == SQLITE_DONE ? 0 : -1;
+  sqlite3_finalize(stmt);
+  return rc;
 }
 
 /*
@@ -431,6 +478,37 @@ static int ensure_open(void) {
           ");") != SQLITE_OK)
     return -1;
 
+  /* QTC bundle header table. */
+  if (exec_sql(
+          "CREATE TABLE IF NOT EXISTS qtc_bundles ("
+          "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+          "logbook_id INTEGER NOT NULL DEFAULT 1,"
+          "sender_call TEXT NOT NULL DEFAULT '',"
+          "receiver_call TEXT NOT NULL DEFAULT '',"
+          "bundle_nr INTEGER NOT NULL DEFAULT 1,"
+          "record_count INTEGER NOT NULL DEFAULT 0,"
+          "sent INTEGER NOT NULL DEFAULT 1"
+          ");") != SQLITE_OK)
+    return -1;
+
+  /* QTC individual record table. */
+  if (exec_sql(
+          "CREATE TABLE IF NOT EXISTS qtc_records ("
+          "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+          "bundle_id INTEGER NOT NULL,"
+          "seq_nr INTEGER NOT NULL DEFAULT 0,"
+          "date TEXT NOT NULL DEFAULT '',"
+          "time TEXT NOT NULL DEFAULT '',"
+          "call TEXT NOT NULL DEFAULT '',"
+          "exch TEXT NOT NULL DEFAULT ''"
+          ");") != SQLITE_OK)
+    return -1;
+
+  if (!table_has_column("named_logbooks", "contest_definition_path")) {
+    if (exec_sql_checked("ALTER TABLE named_logbooks ADD COLUMN contest_definition_path TEXT NOT NULL DEFAULT '';") != 0)
+      return -1;
+  }
+
   if (!table_has_column("qso", "logbook_id")) {
     if (exec_sql_checked("ALTER TABLE qso ADD COLUMN logbook_id INTEGER NOT NULL DEFAULT 1;") != 0)
       return -1;
@@ -644,27 +722,40 @@ int db_load_qsos(QSO *logbook, int max_qso, long long *ids, int *out_count) {
     QSO *q = &logbook[count];
     memset(q, 0, sizeof(*q));
 
+    const unsigned char *date_col = sqlite3_column_text(stmt, 1);
+    const unsigned char *utc_col = sqlite3_column_text(stmt, 2);
+    const unsigned char *call_col = sqlite3_column_text(stmt, 3);
+    const unsigned char *band_col = sqlite3_column_text(stmt, 5);
+    const unsigned char *mode_col = sqlite3_column_text(stmt, 6);
+    const unsigned char *rst_col = sqlite3_column_text(stmt, 7);
+    const unsigned char *comments_col = sqlite3_column_text(stmt, 8);
+    const unsigned char *sent_col = sqlite3_column_text(stmt, 9);
+    const unsigned char *recv_col = sqlite3_column_text(stmt, 10);
+    const unsigned char *operator_mode_col = sqlite3_column_text(stmt, 11);
+    const unsigned char *contest_id_col = sqlite3_column_text(stmt, 12);
+    const unsigned char *country_col = sqlite3_column_text(stmt, 15);
+
     q->db_id = sqlite3_column_int64(stmt, 0);
-    snprintf(q->date, sizeof(q->date), "%s", (const char *)sqlite3_column_text(stmt, 1));
-    snprintf(q->utc, sizeof(q->utc), "%s", (const char *)sqlite3_column_text(stmt, 2));
-    snprintf(q->call, sizeof(q->call), "%s", (const char *)sqlite3_column_text(stmt, 3));
+    snprintf(q->date, sizeof(q->date), "%s", date_col ? (const char *)date_col : "");
+    snprintf(q->utc, sizeof(q->utc), "%s", utc_col ? (const char *)utc_col : "");
+    snprintf(q->call, sizeof(q->call), "%s", call_col ? (const char *)call_col : "");
     q->freq = sqlite3_column_int(stmt, 4);
-    snprintf(q->band, sizeof(q->band), "%s", (const char *)sqlite3_column_text(stmt, 5));
-    snprintf(q->mode, sizeof(q->mode), "%s", (const char *)sqlite3_column_text(stmt, 6));
-    snprintf(q->rst, sizeof(q->rst), "%s", (const char *)sqlite3_column_text(stmt, 7));
-    snprintf(q->comments, sizeof(q->comments), "%s", (const char *)sqlite3_column_text(stmt, 8));
+    snprintf(q->band, sizeof(q->band), "%s", band_col ? (const char *)band_col : "");
+    snprintf(q->mode, sizeof(q->mode), "%s", mode_col ? (const char *)mode_col : "");
+    snprintf(q->rst, sizeof(q->rst), "%s", rst_col ? (const char *)rst_col : "");
+    snprintf(q->comments, sizeof(q->comments), "%s", comments_col ? (const char *)comments_col : "");
     snprintf(q->exchange_sent, sizeof(q->exchange_sent), "%s",
-         (const char *)sqlite3_column_text(stmt, 9));
+             sent_col ? (const char *)sent_col : "");
     snprintf(q->exchange_recv, sizeof(q->exchange_recv), "%s",
-         (const char *)sqlite3_column_text(stmt, 10));
+             recv_col ? (const char *)recv_col : "");
     snprintf(q->operator_mode, sizeof(q->operator_mode), "%s",
-         (const char *)sqlite3_column_text(stmt, 11));
+             operator_mode_col ? (const char *)operator_mode_col : "");
     snprintf(q->contest_id, sizeof(q->contest_id), "%s",
-         (const char *)sqlite3_column_text(stmt, 12));
+             contest_id_col ? (const char *)contest_id_col : "");
     q->radio_nr = sqlite3_column_int(stmt, 13);
     q->points = sqlite3_column_int(stmt, 14);
     snprintf(q->country, sizeof(q->country), "%s",
-         (const char *)sqlite3_column_text(stmt, 15));
+             country_col ? (const char *)country_col : "");
     q->cq_zone = sqlite3_column_int(stmt, 16);
     q->itu_zone = sqlite3_column_int(stmt, 17);
     q->invalid = sqlite3_column_int(stmt, 18) != 0;
@@ -898,6 +989,31 @@ int db_append_call_history(const char *call) {
   sqlite3_finalize(stmt);
 
   return rc == SQLITE_DONE ? 0 : -1;
+}
+
+int db_set_current_logbook_contest_path(const char *path) {
+  if (db_init() != 0)
+    return -1;
+
+  int logbook_id = 0;
+  if (get_current_logbook_id(&logbook_id) != 0 || logbook_id <= 0)
+    return -1;
+
+  return set_named_logbook_contest_path(logbook_id, path);
+}
+
+int db_get_current_logbook_contest_path(char *out, size_t out_size) {
+  if (!out || out_size == 0)
+    return -1;
+
+  if (db_init() != 0)
+    return -1;
+
+  int logbook_id = 0;
+  if (get_current_logbook_id(&logbook_id) != 0 || logbook_id <= 0)
+    return -1;
+
+  return get_named_logbook_contest_path(logbook_id, out, out_size);
 }
 
 /*
@@ -1310,4 +1426,165 @@ int db_export_adif(const char *filename) {
 
   fclose(f);
   return rc;
+}
+
+/* ------------------------------------------------------------------ */
+/* QTC persistence                                                      */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Insert a QTC bundle header and its records into the database.
+ *
+ * @param bundle  Bundle to persist.
+ * @param out_id  Optional destination for the inserted bundle row id.
+ * @return 0 on success, or -1 on failure.
+ */
+int db_insert_qtc_bundle(const QTCBundle *bundle, long long *out_id) {
+  if (!bundle)
+    return -1;
+
+  if (db_init() != 0)
+    return -1;
+
+  int logbook_id = 1;
+  get_current_logbook_id(&logbook_id);
+
+  sqlite3_stmt *stmt = NULL;
+  if (prepare_stmt(&stmt,
+                   "INSERT INTO qtc_bundles "
+                   "(logbook_id, sender_call, receiver_call, bundle_nr, "
+                   " record_count, sent) "
+                   "VALUES (?, ?, ?, ?, ?, ?);") != SQLITE_OK)
+    return -1;
+
+  sqlite3_bind_int(stmt, 1, logbook_id);
+  bind_text_or_null(stmt, 2, bundle->sender_call);
+  bind_text_or_null(stmt, 3, bundle->receiver_call);
+  sqlite3_bind_int(stmt, 4, bundle->bundle_nr);
+  sqlite3_bind_int(stmt, 5, bundle->record_count);
+  sqlite3_bind_int(stmt, 6, bundle->sent ? 1 : 0);
+
+  int rc = sqlite3_step(stmt);
+  sqlite3_finalize(stmt);
+
+  if (rc != SQLITE_DONE)
+    return -1;
+
+  long long bundle_id = sqlite3_last_insert_rowid(db);
+  if (out_id)
+    *out_id = bundle_id;
+
+  /* Insert individual QTC records. */
+  for (int i = 0; i < bundle->record_count; i++) {
+    const QTCRecord *r = &bundle->records[i];
+    sqlite3_stmt *rstmt = NULL;
+    if (prepare_stmt(&rstmt,
+                     "INSERT INTO qtc_records "
+                     "(bundle_id, seq_nr, date, time, call, exch) "
+                     "VALUES (?, ?, ?, ?, ?, ?);") != SQLITE_OK)
+      return -1;
+
+    sqlite3_bind_int64(rstmt, 1, bundle_id);
+    sqlite3_bind_int(rstmt, 2, i);
+    bind_text_or_null(rstmt, 3, r->date);
+    bind_text_or_null(rstmt, 4, r->time);
+    bind_text_or_null(rstmt, 5, r->call);
+    bind_text_or_null(rstmt, 6, r->exch);
+
+    int rrc = sqlite3_step(rstmt);
+    sqlite3_finalize(rstmt);
+
+    if (rrc != SQLITE_DONE)
+      return -1;
+  }
+
+  return 0;
+}
+
+/*
+ * Load QTC bundles for the current logbook from the database.
+ *
+ * @param out        Destination array.
+ * @param max_items  Maximum items to load.
+ * @param out_count  Optional output count.
+ * @return 0 on success, or -1 on failure.
+ */
+int db_load_qtc_bundles(QTCBundle *out, int max_items, int *out_count) {
+  if (!out || max_items <= 0)
+    return -1;
+
+  if (out_count)
+    *out_count = 0;
+
+  if (db_init() != 0)
+    return -1;
+
+  int logbook_id = 1;
+  get_current_logbook_id(&logbook_id);
+
+  sqlite3_stmt *stmt = NULL;
+  if (prepare_stmt(&stmt,
+                   "SELECT id, sender_call, receiver_call, bundle_nr, "
+                   "       record_count, sent "
+                   "FROM qtc_bundles "
+                   "WHERE logbook_id = ? "
+                   "ORDER BY id ASC;") != SQLITE_OK)
+    return -1;
+
+  sqlite3_bind_int(stmt, 1, logbook_id);
+
+  int count = 0;
+  while (sqlite3_step(stmt) == SQLITE_ROW && count < max_items) {
+    QTCBundle *b = &out[count];
+    memset(b, 0, sizeof(*b));
+
+    b->db_id = sqlite3_column_int64(stmt, 0);
+    const char *sender  = (const char *)sqlite3_column_text(stmt, 1);
+    const char *recvr   = (const char *)sqlite3_column_text(stmt, 2);
+    b->bundle_nr        = sqlite3_column_int(stmt, 3);
+    b->record_count     = sqlite3_column_int(stmt, 4);
+    b->sent             = sqlite3_column_int(stmt, 5);
+
+    if (sender)
+      snprintf(b->sender_call, sizeof(b->sender_call), "%s", sender);
+    if (recvr)
+      snprintf(b->receiver_call, sizeof(b->receiver_call), "%s", recvr);
+
+    /* Load per-record rows. */
+    sqlite3_stmt *rstmt = NULL;
+    if (prepare_stmt(&rstmt,
+                     "SELECT seq_nr, date, time, call, exch "
+                     "FROM qtc_records WHERE bundle_id = ? "
+                     "ORDER BY seq_nr ASC;") == SQLITE_OK) {
+      sqlite3_bind_int64(rstmt, 1, b->db_id);
+
+      while (sqlite3_step(rstmt) == SQLITE_ROW) {
+        int seq = sqlite3_column_int(rstmt, 0);
+        if (seq < 0 || seq >= QTC_MAX_RECORDS_PER_BUNDLE)
+          continue;
+
+        QTCRecord *r = &b->records[seq];
+        const char *d = (const char *)sqlite3_column_text(rstmt, 1);
+        const char *t = (const char *)sqlite3_column_text(rstmt, 2);
+        const char *c = (const char *)sqlite3_column_text(rstmt, 3);
+        const char *e = (const char *)sqlite3_column_text(rstmt, 4);
+
+        if (d) snprintf(r->date, sizeof(r->date), "%s", d);
+        if (t) snprintf(r->time, sizeof(r->time), "%s", t);
+        if (c) snprintf(r->call, sizeof(r->call), "%s", c);
+        if (e) snprintf(r->exch, sizeof(r->exch), "%s", e);
+      }
+
+      sqlite3_finalize(rstmt);
+    }
+
+    count++;
+  }
+
+  sqlite3_finalize(stmt);
+
+  if (out_count)
+    *out_count = count;
+
+  return 0;
 }
