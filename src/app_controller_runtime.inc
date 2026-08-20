@@ -48,6 +48,18 @@ static void render_sync_status(void) {
   memset(&sync_state, 0, sizeof(sync_state));
   net_sync_get_status(&sync_state);
 
+  if (config.net_enabled && !sync_state.connected) {
+    snprintf(status_text, sizeof(status_text),
+             "NET OFFLINE - local queue: %d failed=%d fs=%d", pending, failed,
+             sync_state.failure_streak);
+    snprintf(info_text, sizeof(info_text),
+             "station=%.20s retry=%d err=%.48s",
+             sync_state.station_id[0] ? sync_state.station_id : "-",
+             sync_state.reconnect_count,
+             sync_state.last_error[0] ? sync_state.last_error : "-");
+    return;
+  }
+
   snprintf(status_text, sizeof(status_text),
            "SYNC pending=%d failed=%d connected=%d tls=%d retry=%d fs=%d",
            pending, failed, sync_state.connected ? 1 : 0,
@@ -104,6 +116,8 @@ static void stop_net_poll_loop(void) {
 static int process_command(const char *cmd) {
   char command[32] = {0};
   char arg[192] = {0};
+  char normalized_command[32] = {0};
+  char normalized_arg[192] = {0};
 
   if (!cmd || !cmd[0])
     return 0;
@@ -124,15 +138,44 @@ static int process_command(const char *cmd) {
 
   snprintf(arg, sizeof(arg), "%s", p);
   trim_whitespace_in_place(arg);
+  snprintf(normalized_command, sizeof(normalized_command), "%s", command);
+  snprintf(normalized_arg, sizeof(normalized_arg), "%s", arg);
 
-  if (strcmp(command, "export") == 0) {
+  if (strcmp(command, "netsync") == 0) {
+    if (strcmp(arg, "catchup") == 0)
+      snprintf(normalized_arg, sizeof(normalized_arg), "%s", "sync");
+    else if (strcmp(arg, "on") != 0 && strcmp(arg, "off") != 0 &&
+             strcmp(arg, "status") != 0 && strcmp(arg, "sync") != 0) {
+      snprintf(status_text, sizeof(status_text),
+               "Usage: netsync on|off|status|catchup");
+      return 1;
+    }
+
+    snprintf(normalized_command, sizeof(normalized_command), "%s", "net");
+  } else if (strcmp(command, "netserver") == 0) {
+    if (strcmp(arg, "start") == 0) {
+      snprintf(config.net_role, sizeof(config.net_role), "%s", "server");
+      snprintf(normalized_command, sizeof(normalized_command), "%s", "net");
+      snprintf(normalized_arg, sizeof(normalized_arg), "%s", "on");
+    } else if (strcmp(arg, "stop") == 0) {
+      snprintf(normalized_command, sizeof(normalized_command), "%s", "net");
+      snprintf(normalized_arg, sizeof(normalized_arg), "%s", "off");
+    } else {
+      snprintf(status_text, sizeof(status_text),
+               "Usage: netserver start|stop");
+      return 1;
+    }
+  }
+
+  if (strcmp(normalized_command, "export") == 0) {
     if (export_with_optional_adif(cmd) != 0)
       snprintf(status_text, sizeof(status_text), "Export failed");
 
     return 1;
   }
 
-  if (strcmp(command, "newlog") == 0 || strcmp(command, "clear") == 0) {
+  if (strcmp(normalized_command, "newlog") == 0 ||
+      strcmp(normalized_command, "clear") == 0) {
     if (arg[0])
       create_new_named_log(arg);
     else
@@ -141,26 +184,28 @@ static int process_command(const char *cmd) {
     return 1;
   }
 
-  if (strcmp(command, "prevlog") == 0 || strcmp(command, "openprev") == 0 ||
-      strcmp(command, "previous") == 0) {
+    if (strcmp(normalized_command, "prevlog") == 0 ||
+      strcmp(normalized_command, "openprev") == 0 ||
+      strcmp(normalized_command, "previous") == 0) {
     open_previous_log();
     return 1;
   }
 
-  if (strcmp(command, "logs") == 0) {
+  if (strcmp(normalized_command, "logs") == 0) {
     list_named_logs();
     return 1;
   }
 
-  if (strcmp(command, "sync") == 0 || strcmp(command, "syncstatus") == 0) {
-    if (strcmp(command, "sync") == 0)
+  if (strcmp(normalized_command, "sync") == 0 ||
+      strcmp(normalized_command, "syncstatus") == 0) {
+    if (strcmp(normalized_command, "sync") == 0)
       (void)net_sync_poll_once();
     render_sync_status();
     return 1;
   }
 
-  if (strcmp(command, "net") == 0) {
-    if (strcmp(arg, "on") == 0) {
+  if (strcmp(normalized_command, "net") == 0) {
+    if (strcmp(normalized_arg, "on") == 0) {
       config.net_enabled = 1;
       if (net_sync_start() == 0) {
         start_net_poll_loop();
@@ -171,7 +216,7 @@ static int process_command(const char *cmd) {
       return 1;
     }
 
-    if (strcmp(arg, "off") == 0) {
+    if (strcmp(normalized_arg, "off") == 0) {
       config.net_enabled = 0;
       stop_net_poll_loop();
       net_sync_stop();
@@ -179,19 +224,19 @@ static int process_command(const char *cmd) {
       return 1;
     }
 
-    if (strcmp(arg, "status") == 0) {
+    if (strcmp(normalized_arg, "status") == 0) {
       render_sync_status();
       return 1;
     }
 
-    if (strcmp(arg, "sync") == 0) {
+    if (strcmp(normalized_arg, "sync") == 0) {
       (void)net_sync_poll_once();
       render_sync_status();
       return 1;
     }
 
-    if (strncmp(arg, "role ", 5) == 0) {
-      const char *role = arg + 5;
+    if (strncmp(normalized_arg, "role ", 5) == 0) {
+      const char *role = normalized_arg + 5;
       if (strcmp(role, "client") == 0 || strcmp(role, "server") == 0) {
         if (config.net_enabled) {
           stop_net_poll_loop();
@@ -221,12 +266,12 @@ static int process_command(const char *cmd) {
     return 1;
   }
 
-  if (strcmp(command, "openlog") == 0) {
+  if (strcmp(normalized_command, "openlog") == 0) {
     open_named_log_selector(arg);
     return 1;
   }
 
-  if (strcmp(command, "invalid") == 0) {
+  if (strcmp(normalized_command, "invalid") == 0) {
     if (qso_count > 0) {
       qso_mark_invalid(qso_count - 1);
 
@@ -236,7 +281,7 @@ static int process_command(const char *cmd) {
     return 1;
   }
 
-  if (strcmp(command, "contest") == 0) {
+  if (strcmp(normalized_command, "contest") == 0) {
     if (!arg[0]) {
       snprintf(status_text, sizeof(status_text), "Usage: contest <file>");
     } else if ((strncmp(arg, "import", 6) == 0 &&
@@ -326,14 +371,14 @@ static int process_command(const char *cmd) {
     return 1;
   }
 
-  if (strcmp(command, "exportcab") == 0) {
+  if (strcmp(normalized_command, "exportcab") == 0) {
     const char *cab_file = arg[0] ? arg : "log.cbr";
     if (export_cabrillo_with_filename(cab_file) != 0)
       snprintf(status_text, sizeof(status_text), "Cabrillo export failed");
     return 1;
   }
 
-  if (strcmp(command, "technique") == 0) {
+  if (strcmp(normalized_command, "technique") == 0) {
     if (!arg[0]) {
       snprintf(status_text, sizeof(status_text), "Technique: %s",
                contest_technique_to_text(config.contest_technique));

@@ -23,11 +23,13 @@ static pthread_mutex_t sync_mutex = PTHREAD_MUTEX_INITIALIZER;
 static NetSyncStatus sync_status;
 
 #define NET_SYNC_BATCH_MAX 16
+#define NET_SYNC_PUSH_DRAIN_MAX 8
 
 static int sync_failure_streak = 0;
 static time_t sync_next_attempt_utc = 0;
 static time_t sync_last_heartbeat_utc = 0;
 static int sync_reconnect_count = 0;
+static unsigned int sync_rng_state = 0;
 
 static void net_sync_format_utc(time_t when, char *out, size_t out_size) {
   if (!out || out_size < 2) {
@@ -68,6 +70,16 @@ static int net_sync_backoff_seconds(int failure_streak) {
   if (delay_ms > max_ms)
     delay_ms = max_ms;
 
+  if (sync_rng_state == 0)
+    sync_rng_state = (unsigned int)(time(NULL) ^ (unsigned int)getpid());
+
+  int jitter_percent = 80 + (int)(rand_r(&sync_rng_state) % 41);
+  delay_ms = (delay_ms * jitter_percent) / 100;
+  if (delay_ms < min_ms)
+    delay_ms = min_ms;
+  if (delay_ms > max_ms)
+    delay_ms = max_ms;
+
   return (int)((delay_ms + 999) / 1000);
 }
 
@@ -79,24 +91,70 @@ static int net_sync_retry_delay_for_entry(const SyncOutboxEntry *entry) {
   return net_sync_backoff_seconds(streak);
 }
 
-static int parse_serial_ack(const char *text, int *out_serial) {
-  if (!text || !out_serial)
+static int response_is_error(const char *frame) {
+  NetMessageType mt = NET_MSG_UNKNOWN;
+  if (!frame || net_protocol_detect_type(frame, &mt) != 0)
+    return 1;
+  return mt == NET_MSG_ERROR;
+}
+
+static int response_is_unsupported_protocol_error(const char *frame) {
+  if (!response_is_error(frame))
+    return 0;
+
+  char code[64] = {0};
+  if (net_protocol_parse_error_code(frame, code, sizeof(code)) != 0)
+    return 0;
+
+  return strcmp(code, "ERROR_UNSUPPORTED_PROTOCOL") == 0;
+}
+
+static int net_sync_send_hello_and_expect_ack(NetTransport *transport,
+                                              const char *station_id,
+                                              char *out_error,
+                                              size_t out_error_size) {
+  if (!transport || !station_id || !station_id[0])
     return -1;
 
-  const char *key = strstr(text, "\"serial\":");
-  if (!key)
+  char frame[1024] = {0};
+  if (net_protocol_encode_hello(station_id, "logger", net_sync_auth_token(),
+                                frame, sizeof(frame)) != 0 ||
+      net_protocol_send_framed_io(transport, net_transport_write_cb, frame) !=
+          0)
     return -1;
 
-  key += strlen("\"serial\":");
-  while (*key == ' ' || *key == '\t')
-    key++;
-
-  char *endptr = NULL;
-  long v = strtol(key, &endptr, 10);
-  if (endptr == key)
+  char hello_ack[2048] = {0};
+  if (net_protocol_recv_framed_io_limited(transport, net_transport_read_cb,
+                                          hello_ack, sizeof(hello_ack),
+                                          (size_t)config.net_max_frame_bytes) !=
+      0)
     return -1;
 
-  *out_serial = (int)v;
+  if (net_protocol_validate_protocol_version(hello_ack) != 0) {
+    if (out_error && out_error_size > 1)
+      snprintf(out_error, out_error_size, "ERROR_UNSUPPORTED_PROTOCOL");
+    return -1;
+  }
+
+  if (response_is_error(hello_ack)) {
+    if (out_error && out_error_size > 1)
+      snprintf(out_error, out_error_size,
+               "%s", response_is_unsupported_protocol_error(hello_ack)
+                         ? "ERROR_UNSUPPORTED_PROTOCOL"
+                         : "HELLO server error");
+    return -1;
+  }
+
+  int hello_accepted = 0;
+  long long hello_server_seq = 0;
+  if (net_protocol_parse_hello_ack(hello_ack, &hello_accepted,
+                                   &hello_server_seq) != 0 ||
+      !hello_accepted) {
+    if (out_error && out_error_size > 1)
+      snprintf(out_error, out_error_size, "HELLO rejected");
+    return -1;
+  }
+
   return 0;
 }
 
@@ -141,17 +199,6 @@ static int net_connect_tcp(const char *host, int port) {
 }
 
 /*
- * Send one complete frame through a connected socket.
- *
- * @param fd Connected socket.
- * @param frame Newline-delimited frame text.
- * @return 0 on success, or -1 on failure.
- */
-static int net_send_frame(int fd, const char *frame) {
-  return net_protocol_send_framed(fd, frame);
-}
-
-/*
  * Parse a server response and extract last_global_seq if present.
  *
  * @param text Server frame text.
@@ -182,6 +229,30 @@ static int parse_last_global_seq(const char *text, long long *out_seq) {
 
   *out_seq = value;
   return 1;
+}
+
+static int apply_broadcast_frame(const char *frame, long long *inout_last_seq) {
+  if (!frame || !inout_last_seq)
+    return -1;
+
+  SyncLogOpEntry op;
+  memset(&op, 0, sizeof(op));
+  if (net_protocol_parse_op_broadcast(frame, &op) != 0)
+    return -1;
+
+  long long applied_seq = 0;
+  int rc = db_sync_apply_remote_op(op.op_id, op.station_id, op.station_seq,
+                                   op.logbook_id, op.op_type, op.entity_id,
+                                   op.payload_json, op.op_utc, &applied_seq);
+  if (rc < 0)
+    return -1;
+
+  if (applied_seq > *inout_last_seq)
+    *inout_last_seq = applied_seq;
+  if (op.global_seq > *inout_last_seq)
+    *inout_last_seq = op.global_seq;
+
+  return 0;
 }
 
 /*
@@ -263,6 +334,7 @@ int net_sync_start(void) {
   sync_next_attempt_utc = 0;
   sync_last_heartbeat_utc = 0;
   sync_reconnect_count = 0;
+  sync_rng_state = (unsigned int)(time(NULL) ^ (unsigned int)getpid());
   sync_status.running = 1;
   sync_status.tls_enabled = config.net_tls ? 1 : 0;
   sync_status.reconnect_count = 0;
@@ -304,38 +376,149 @@ void net_sync_stop(void) {
   net_server_stop();
 }
 
-int net_sync_reserve_serial_remote(int *out_serial) {
-  if (!out_serial)
+int net_sync_reserve_serial_remote_ex(int *out_serial,
+                                      char *out_reservation_id,
+                                      size_t out_reservation_id_size) {
+  if (!out_serial || !out_reservation_id || out_reservation_id_size < 2)
     return -1;
 
   *out_serial = 0;
+  out_reservation_id[0] = 0;
 
   if (!config.net_enabled || strcasecmp(config.net_role, "client") != 0)
+    return -1;
+
+  char station_id[32] = {0};
+  if (db_sync_get_or_create_station_id(station_id, sizeof(station_id)) != 0)
     return -1;
 
   int sock = net_connect_tcp(config.net_server_host, config.net_server_port);
   if (sock < 0)
     return -1;
 
-  char frame[512] = {0};
-  char req_id[32] = {0};
-  snprintf(req_id, sizeof(req_id), "req-%lld", (long long)time(NULL));
-
-  if (net_protocol_encode_reserve_serial(req_id, 120, frame,
-                                         sizeof(frame)) != 0 ||
-      net_send_frame(sock, frame) != 0) {
+  NetTransport transport;
+  char transport_error[128] = {0};
+  if (net_transport_init_client(&transport, sock, config.net_server_host,
+                                config.net_tls,
+                                config.net_tls_peer_fingerprint,
+                                transport_error,
+                                sizeof(transport_error)) != 0) {
     close(sock);
     return -1;
   }
 
-  char response[1024] = {0};
-  ssize_t n = recv(sock, response, sizeof(response) - 1, 0);
-  close(sock);
-  if (n <= 0)
+  int rc = -1;
+  do {
+    char hello_error[64] = {0};
+    if (net_sync_send_hello_and_expect_ack(&transport, station_id,
+                                           hello_error,
+                                           sizeof(hello_error)) != 0)
+      break;
+
+    char frame[512] = {0};
+    char req_id[32] = {0};
+    snprintf(req_id, sizeof(req_id), "req-%lld", (long long)time(NULL));
+
+    if (net_protocol_encode_reserve_serial(req_id, 120, frame,
+                                           sizeof(frame)) != 0 ||
+        net_protocol_send_framed_io(&transport, net_transport_write_cb,
+                                    frame) != 0)
+      break;
+
+    char response[2048] = {0};
+    if (net_protocol_recv_framed_io_limited(&transport, net_transport_read_cb,
+                                            response, sizeof(response),
+                                            (size_t)config.net_max_frame_bytes) !=
+        0)
+      break;
+
+    if (net_protocol_validate_protocol_version(response) != 0)
+      break;
+
+    if (response_is_error(response))
+      break;
+
+    char ack_req_id[32] = {0};
+    int serial = 0;
+    char expires_utc[32] = {0};
+    if (net_protocol_parse_reserve_serial_ack(
+            response, ack_req_id, sizeof(ack_req_id), out_reservation_id,
+            out_reservation_id_size, &serial, expires_utc,
+            sizeof(expires_utc)) != 0 ||
+        serial <= 0 || strcmp(ack_req_id, req_id) != 0)
+      break;
+
+    *out_serial = serial;
+    rc = 0;
+  } while (0);
+
+  net_transport_close(&transport);
+  return rc;
+}
+
+int net_sync_reserve_serial_remote(int *out_serial) {
+  char reservation_id[64] = {0};
+  return net_sync_reserve_serial_remote_ex(out_serial, reservation_id,
+                                           sizeof(reservation_id));
+}
+
+int net_sync_commit_serial_remote(const char *reservation_id,
+                                  const char *qso_uid) {
+  if (!reservation_id || !reservation_id[0])
     return -1;
 
-  response[n] = 0;
-  return parse_serial_ack(response, out_serial);
+  if (!config.net_enabled || strcasecmp(config.net_role, "client") != 0)
+    return -1;
+
+  char station_id[32] = {0};
+  if (db_sync_get_or_create_station_id(station_id, sizeof(station_id)) != 0)
+    return -1;
+
+  int sock = net_connect_tcp(config.net_server_host, config.net_server_port);
+  if (sock < 0)
+    return -1;
+
+  NetTransport transport;
+  char transport_error[128] = {0};
+  if (net_transport_init_client(&transport, sock, config.net_server_host,
+                                config.net_tls,
+                                config.net_tls_peer_fingerprint,
+                                transport_error,
+                                sizeof(transport_error)) != 0) {
+    close(sock);
+    return -1;
+  }
+
+  int rc = -1;
+  do {
+    char hello_error[64] = {0};
+    if (net_sync_send_hello_and_expect_ack(&transport, station_id,
+                                           hello_error,
+                                           sizeof(hello_error)) != 0)
+      break;
+
+    char frame[512] = {0};
+    if (net_protocol_encode_commit_serial(reservation_id, qso_uid, frame,
+                                          sizeof(frame)) != 0 ||
+        net_protocol_send_framed_io(&transport, net_transport_write_cb,
+                                    frame) != 0)
+      break;
+
+    char response[2048] = {0};
+    if (net_protocol_recv_framed_io_limited(&transport, net_transport_read_cb,
+                                            response, sizeof(response),
+                                            (size_t)config.net_max_frame_bytes) !=
+        0)
+      break;
+
+    if (net_protocol_validate_protocol_version(response) != 0)
+      break;
+
+    rc = response_is_error(response) ? -1 : 0;
+  } while (0);
+
+  net_transport_close(&transport);
+  return rc;
 }
 
 int net_sync_poll_once(void) {
@@ -474,6 +657,34 @@ int net_sync_poll_once(void) {
     return -1;
   }
 
+  if (net_protocol_validate_protocol_version(hello_ack) != 0) {
+    net_transport_close(&transport);
+    sync_failure_streak++;
+    sync_next_attempt_utc = now + net_sync_backoff_seconds(sync_failure_streak);
+
+    pthread_mutex_lock(&sync_mutex);
+    sync_status.connected = 0;
+    sync_status.failure_streak = sync_failure_streak;
+    snprintf(sync_status.last_error, sizeof(sync_status.last_error),
+             "ERROR_UNSUPPORTED_PROTOCOL");
+    pthread_mutex_unlock(&sync_mutex);
+    return -1;
+  }
+
+  if (response_is_unsupported_protocol_error(hello_ack)) {
+    net_transport_close(&transport);
+    sync_failure_streak++;
+    sync_next_attempt_utc = now + net_sync_backoff_seconds(sync_failure_streak);
+
+    pthread_mutex_lock(&sync_mutex);
+    sync_status.connected = 0;
+    sync_status.failure_streak = sync_failure_streak;
+    snprintf(sync_status.last_error, sizeof(sync_status.last_error),
+             "ERROR_UNSUPPORTED_PROTOCOL");
+    pthread_mutex_unlock(&sync_mutex);
+    return -1;
+  }
+
   int hello_accepted = 0;
   long long hello_server_seq = 0;
   if (net_protocol_parse_hello_ack(hello_ack, &hello_accepted,
@@ -495,7 +706,8 @@ int net_sync_poll_once(void) {
   if (hello_server_seq > last_seq)
     last_seq = hello_server_seq;
 
-  if (net_protocol_encode_pull_ops(last_seq, 200, frame, sizeof(frame)) != 0 ||
+  if (net_protocol_encode_catchup_request(last_seq, 200, frame,
+                                          sizeof(frame)) != 0 ||
       net_protocol_send_framed_io(&transport, net_transport_write_cb,
                   frame) != 0) {
     net_transport_close(&transport);
@@ -506,7 +718,7 @@ int net_sync_poll_once(void) {
     sync_status.connected = 0;
     sync_status.failure_streak = sync_failure_streak;
     snprintf(sync_status.last_error, sizeof(sync_status.last_error),
-             "send PULL_OPS failed");
+             "send CATCHUP_REQUEST failed");
     pthread_mutex_unlock(&sync_mutex);
     return -1;
   }
@@ -517,10 +729,39 @@ int net_sync_poll_once(void) {
 
   char response[16384] = {0};
   int recv_ok = 0;
-  if (net_protocol_recv_framed_io_limited(&transport, net_transport_read_cb,
-                                          response, sizeof(response),
-                                          (size_t)config.net_max_frame_bytes) ==
-      0) {
+  for (;;) {
+    if (net_protocol_recv_framed_io_limited(&transport, net_transport_read_cb,
+                                            response, sizeof(response),
+                                            (size_t)config.net_max_frame_bytes) !=
+        0)
+      break;
+
+    if (net_protocol_validate_protocol_version(response) != 0) {
+      recv_ok = 0;
+      pthread_mutex_lock(&sync_mutex);
+      snprintf(sync_status.last_error, sizeof(sync_status.last_error),
+               "ERROR_UNSUPPORTED_PROTOCOL");
+      pthread_mutex_unlock(&sync_mutex);
+      break;
+    }
+
+    if (response_is_unsupported_protocol_error(response)) {
+      recv_ok = 0;
+      pthread_mutex_lock(&sync_mutex);
+      snprintf(sync_status.last_error, sizeof(sync_status.last_error),
+               "ERROR_UNSUPPORTED_PROTOCOL");
+      pthread_mutex_unlock(&sync_mutex);
+      break;
+    }
+
+    NetMessageType mt = NET_MSG_UNKNOWN;
+    (void)net_protocol_detect_type(response, &mt);
+    if (mt == NET_MSG_OP_BROADCAST) {
+      if (apply_broadcast_frame(response, &last_seq) == 0)
+        (void)db_sync_set_last_global_seq(last_seq);
+      continue;
+    }
+
     recv_ok = 1;
 
     long long parsed_last_seq = last_seq;
@@ -544,6 +785,8 @@ int net_sync_poll_once(void) {
         last_seq = max_global_seq;
       }
     }
+
+    break;
   }
 
   SyncOutboxEntry pending_ops[NET_SYNC_BATCH_MAX];
@@ -582,11 +825,42 @@ int net_sync_poll_once(void) {
   }
 
   memset(response, 0, sizeof(response));
-  if (net_protocol_recv_framed_io_limited(&transport, net_transport_read_cb,
-                                          response, sizeof(response),
-                                          (size_t)config.net_max_frame_bytes) ==
-      0) {
+  int got_terminal_ack = 0;
+  for (int spin = 0; spin < NET_SYNC_PUSH_DRAIN_MAX; spin++) {
+    if (net_protocol_recv_framed_io_limited(&transport, net_transport_read_cb,
+                                            response, sizeof(response),
+                                            (size_t)config.net_max_frame_bytes) !=
+        0)
+      break;
+
+    if (net_protocol_validate_protocol_version(response) != 0) {
+      recv_ok = 0;
+      pthread_mutex_lock(&sync_mutex);
+      snprintf(sync_status.last_error, sizeof(sync_status.last_error),
+               "ERROR_UNSUPPORTED_PROTOCOL");
+      pthread_mutex_unlock(&sync_mutex);
+      break;
+    }
+
+    if (response_is_unsupported_protocol_error(response)) {
+      recv_ok = 0;
+      pthread_mutex_lock(&sync_mutex);
+      snprintf(sync_status.last_error, sizeof(sync_status.last_error),
+               "ERROR_UNSUPPORTED_PROTOCOL");
+      pthread_mutex_unlock(&sync_mutex);
+      break;
+    }
+
+    NetMessageType mt = NET_MSG_UNKNOWN;
+    (void)net_protocol_detect_type(response, &mt);
+    if (mt == NET_MSG_OP_BROADCAST) {
+      if (apply_broadcast_frame(response, &last_seq) == 0)
+        (void)db_sync_set_last_global_seq(last_seq);
+      continue;
+    }
+
     recv_ok = 1;
+    got_terminal_ack = 1;
     (void)apply_acked_op_ids(response);
 
     long long parsed_seq = 0;
@@ -595,7 +869,11 @@ int net_sync_poll_once(void) {
       (void)db_sync_set_last_global_seq(parsed_seq);
       last_seq = parsed_seq;
     }
+    break;
   }
+
+  if (sent_count > 0 && !got_terminal_ack)
+    recv_ok = 0;
 
   if (sent_count > 0) {
     for (int i = 0; i < sent_count; i++) {

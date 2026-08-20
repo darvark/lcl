@@ -942,6 +942,28 @@ static void test_net_protocol_frames(void) {
                 "PULL_OPS frame should map to PULL_OPS enum");
 
   memset(frame, 0, sizeof(frame));
+  expect_int_eq(net_protocol_encode_catchup_request(77, 25, frame,
+                                                    sizeof(frame)),
+                0, "CATCHUP_REQUEST frame should encode");
+  expect_true(strstr(frame, "\"type\":\"CATCHUP_REQUEST\"") != NULL,
+              "CATCHUP_REQUEST frame should contain message type");
+  expect_int_eq(net_protocol_detect_type(frame, &type), 0,
+                "CATCHUP_REQUEST frame type detection should succeed");
+  expect_int_eq((int)type, (int)NET_MSG_CATCHUP_REQUEST,
+                "CATCHUP_REQUEST frame should map to CATCHUP_REQUEST enum");
+
+  char wrong_ver[2048] = {0};
+  snprintf(wrong_ver, sizeof(wrong_ver), "%s", frame);
+  char *pver = strstr(wrong_ver, "\"protocol_version\":1");
+  if (pver)
+    memcpy(pver + strlen("\"protocol_version\":"), "2", 1);
+  char *pver_legacy = strstr(wrong_ver, "\"protocol_ver\":1");
+  if (pver_legacy)
+    memcpy(pver_legacy + strlen("\"protocol_ver\":"), "2", 1);
+  expect_int_eq(net_protocol_validate_protocol_version(wrong_ver), -1,
+                "protocol version mismatch should be rejected");
+
+  memset(frame, 0, sizeof(frame));
   expect_int_eq(net_protocol_encode_heartbeat(frame, sizeof(frame)), 0,
                 "HEARTBEAT frame should encode");
   expect_int_eq(net_protocol_detect_type(frame, &type), 0,
@@ -971,6 +993,36 @@ static void test_net_protocol_frames(void) {
                 "APPEND_OPS frame type detection should succeed");
   expect_int_eq((int)type, (int)NET_MSG_APPEND_OPS,
                 "APPEND_OPS frame should map to APPEND_OPS enum");
+
+    memset(frame, 0, sizeof(frame));
+    expect_int_eq(net_protocol_encode_commit_serial("rsv-123", "q-123", frame,
+                            sizeof(frame)),
+          0, "COMMIT_SERIAL frame should encode");
+    expect_true(strstr(frame, "\"type\":\"COMMIT_SERIAL\"") != NULL,
+          "COMMIT_SERIAL frame should contain message type");
+    expect_int_eq(net_protocol_detect_type(frame, &type), 0,
+          "COMMIT_SERIAL frame type detection should succeed");
+    expect_int_eq((int)type, (int)NET_MSG_COMMIT_SERIAL,
+          "COMMIT_SERIAL frame should map to COMMIT_SERIAL enum");
+
+    const char *reserve_ack =
+      "{\"type\":\"RESERVE_SERIAL_ACK\",\"request_id\":\"req-1\",\"reservation_id\":\"rsv-1\",\"serial\":42,\"expires_utc\":\"2026-01-01T00:10:00Z\"}";
+    char parsed_request_id[32] = {0};
+    char parsed_reservation_id[64] = {0};
+    int parsed_serial = 0;
+    char parsed_expires[32] = {0};
+    expect_int_eq(net_protocol_parse_reserve_serial_ack(
+            reserve_ack, parsed_request_id,
+            sizeof(parsed_request_id), parsed_reservation_id,
+            sizeof(parsed_reservation_id), &parsed_serial,
+            parsed_expires, sizeof(parsed_expires)),
+          0, "RESERVE_SERIAL_ACK parser should succeed");
+    expect_str_eq(parsed_request_id, "req-1",
+          "RESERVE_SERIAL_ACK should parse request_id");
+    expect_str_eq(parsed_reservation_id, "rsv-1",
+          "RESERVE_SERIAL_ACK should parse reservation_id");
+    expect_int_eq(parsed_serial, 42,
+          "RESERVE_SERIAL_ACK should parse serial");
 }
 
 typedef struct {
@@ -1082,13 +1134,23 @@ static void *mock_sync_server_thread(void *arg) {
   }
 
   if (strstr(frame, "\"type\":\"APPEND_OPS\"")) {
-    snprintf(response, sizeof(response),
-             "{\"type\":\"APPEND_ACK\",\"accepted_ops\":[%s],\"rejected_ops\":[],\"last_acked_station_seq\":1,\"server_global_seq\":%lld}",
-             ctx->acked_json[0] ? ctx->acked_json : "", ctx->ack_last_global_seq);
+    char accepted_json[256] = {0};
+    snprintf(accepted_json, sizeof(accepted_json), "[%s]",
+             ctx->acked_json[0] ? ctx->acked_json : "");
+    if (net_protocol_encode_append_ack(accepted_json, "[]", 1,
+                                       ctx->ack_last_global_seq, response,
+                                       sizeof(response)) != 0) {
+      close(cli);
+      close(srv);
+      return NULL;
+    }
   } else {
-    snprintf(response, sizeof(response),
-             "{\"type\":\"ACK\",\"acked\":[],\"last_global_seq\":%lld}",
-             ctx->ack_last_global_seq);
+    if (net_protocol_encode_ack_empty(ctx->ack_last_global_seq, response,
+                                      sizeof(response)) != 0) {
+      close(cli);
+      close(srv);
+      return NULL;
+    }
   }
   (void)net_protocol_send_framed(cli, response);
 
@@ -1153,8 +1215,9 @@ static void test_net_sync_mock_server_roundtrip(const char *tmp_dir) {
   expect_true(server.ok == 1, "mock server should accept one client session");
   expect_true(strstr(server.received, "\"type\":\"HELLO\"") != NULL,
               "client should send HELLO frame");
-  expect_true(strstr(server.received, "\"type\":\"PULL_OPS\"") != NULL,
-              "client should send PULL_OPS frame");
+  expect_true(strstr(server.received, "\"type\":\"CATCHUP_REQUEST\"") !=
+                  NULL,
+              "client should send CATCHUP_REQUEST frame");
   expect_true(strstr(server.received, "\"type\":\"APPEND_OPS\"") != NULL,
               "client should send APPEND_OPS frame");
   expect_true(strstr(server.received, ops[0].op_id) != NULL,
@@ -1432,6 +1495,14 @@ static void test_db_sync_apply_remote_op_and_pull(const char *tmp_dir) {
                 0, "duplicate remote op should be idempotent");
   expect_true(gseq_dup == gseq1,
               "duplicate apply should return same global_seq");
+
+  long long gseq_conflict = 0;
+  expect_int_eq(db_sync_apply_remote_op("op-remote-2", "st-remote", 7, 1,
+                                        "QSO_INSERT", "q-remote-2", payload,
+                                        "2026-01-01T01:00:01Z",
+                                        &gseq_conflict),
+                DB_SYNC_APPLY_STATION_SEQ_CONFLICT,
+                "same station_id+station_seq with different op_id should conflict");
 
   qso_init();
   expect_int_eq(qso_count, 1, "remote apply should materialize one QSO");
@@ -2135,6 +2206,30 @@ static void test_net_command_on_off_role_status(const char *tmp_dir) {
     expect_true(strstr(state.status, "SYNC") != NULL,
                 "net status should render sync summary");
 
+  send_controller_text("netsync status");
+  app_controller_get_render_state(&state);
+  if (state.status)
+    expect_true(strstr(state.status, "SYNC") != NULL,
+                "netsync status alias should render sync summary");
+
+  send_controller_text("netsync catchup");
+  app_controller_get_render_state(&state);
+  if (state.status)
+    expect_true(strstr(state.status, "SYNC") != NULL,
+                "netsync catchup alias should poll and render sync summary");
+
+  send_controller_text("netserver stop");
+  app_controller_get_render_state(&state);
+  if (state.status)
+    expect_true(strstr(state.status, "NET disabled") != NULL,
+                "netserver stop alias should disable network");
+
+  send_controller_text("netserver start");
+  app_controller_get_render_state(&state);
+  if (state.status)
+    expect_true(strstr(state.status, "NET enabled") != NULL,
+                "netserver start alias should enable network in server role");
+
   send_controller_text("net off");
   app_controller_get_render_state(&state);
   if (state.status)
@@ -2143,6 +2238,74 @@ static void test_net_command_on_off_role_status(const char *tmp_dir) {
 
   app_controller_shutdown();
   chdir("..");
+}
+
+static void test_netsync_offline_queue_status(const char *tmp_dir) {
+  AppRenderState state;
+  char case_dir[512];
+  snprintf(case_dir, sizeof(case_dir), "%s/netsync_offline_case", tmp_dir);
+  expect_int_eq(mkdir(case_dir, 0777), 0,
+                "create isolated directory for netsync offline test");
+  expect_int_eq(chdir(case_dir), 0,
+                "chdir to netsync offline test directory");
+  set_test_db_path(case_dir);
+  expect_int_eq(write_text_file("logger.conf", "CONTEST_DEF_FILE=\n"), 0,
+                "write empty logger.conf for netsync offline test");
+
+  int saved_net_enabled = config.net_enabled;
+  char saved_role[16];
+  char saved_host[128];
+  int saved_port = config.net_server_port;
+  snprintf(saved_role, sizeof(saved_role), "%s", config.net_role);
+  snprintf(saved_host, sizeof(saved_host), "%s", config.net_server_host);
+
+  app_controller_init();
+
+  snprintf(config.net_role, sizeof(config.net_role), "%s", "client");
+  snprintf(config.net_server_host, sizeof(config.net_server_host), "%s",
+           "127.0.0.1");
+  config.net_server_port = 1;
+
+  send_controller_text("netsync on");
+  send_controller_text("netsync catchup");
+  send_controller_text("netsync status");
+  app_controller_get_render_state(&state);
+  expect_true(state.status != NULL, "netsync status should set status text");
+  if (state.status)
+    expect_true(strstr(state.status, "NET OFFLINE - local queue:") != NULL,
+                "netsync status should report offline queue diagnostics");
+
+  send_controller_text("netsync off");
+
+  app_controller_shutdown();
+
+  config.net_enabled = saved_net_enabled;
+  snprintf(config.net_role, sizeof(config.net_role), "%s", saved_role);
+  snprintf(config.net_server_host, sizeof(config.net_server_host), "%s",
+           saved_host);
+  config.net_server_port = saved_port;
+
+  chdir("..");
+}
+
+static void test_qso_status_includes_sync_pending_when_net_enabled(void) {
+  int saved_net_enabled = config.net_enabled;
+  char saved_role[16] = {0};
+  snprintf(saved_role, sizeof(saved_role), "%s", config.net_role);
+
+  config.net_enabled = 1;
+  snprintf(config.net_role, sizeof(config.net_role), "%s", "client");
+
+  qso_init();
+
+  char status[128] = {0};
+  int idx = qso_add("SP9SYNC 7020 599", status, sizeof(status));
+  expect_true(idx >= 0, "sync-pending status QSO should be created");
+  expect_true(strstr(status, "SYNC:PENDING:") != NULL,
+              "QSO status should include sync pending suffix when net is enabled");
+
+  config.net_enabled = saved_net_enabled;
+  snprintf(config.net_role, sizeof(config.net_role), "%s", saved_role);
 }
 
 static void test_qso_add_mark_and_stats(void) {
@@ -3867,6 +4030,8 @@ int main(void) {
   test_named_log_commands(tmp_dir);
   test_syncstatus_command_reports_failed_queue(tmp_dir);
   test_net_command_on_off_role_status(tmp_dir);
+  test_netsync_offline_queue_status(tmp_dir);
+  test_qso_status_includes_sync_pending_when_net_enabled();
   test_contest_preset_from_build_dir_uses_defined_settings();
   test_missing_default_contest_file_is_nonfatal();
   test_openlog_restores_saved_contest_definition(tmp_dir);

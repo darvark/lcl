@@ -1,6 +1,8 @@
 #ifndef NET_SYNC_H
 #define NET_SYNC_H
 
+#include <stddef.h>
+
 typedef struct {
   int running;
   int connected;
@@ -26,6 +28,13 @@ int net_sync_poll_once(void);
 
 /* Reserve serial from central server (client mode). */
 int net_sync_reserve_serial_remote(int *out_serial);
+int net_sync_reserve_serial_remote_ex(int *out_serial,
+                                      char *out_reservation_id,
+                                      size_t out_reservation_id_size);
+
+/* Commit already reserved serial after QSO is persisted locally. */
+int net_sync_commit_serial_remote(const char *reservation_id,
+                                  const char *qso_uid);
 
 /* Read current synchronization status snapshot. */
 void net_sync_get_status(NetSyncStatus *out);

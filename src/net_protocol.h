@@ -6,6 +6,8 @@
 
 #include "db.h"
 
+#define NET_PROTOCOL_VERSION 1
+
 typedef enum {
   NET_MSG_UNKNOWN = 0,
   NET_MSG_HELLO = 1,
@@ -19,7 +21,10 @@ typedef enum {
   NET_MSG_RESERVE_SERIAL = 9,
   NET_MSG_RESERVE_SERIAL_ACK = 10,
   NET_MSG_COMMIT_SERIAL = 11,
-  NET_MSG_APPEND_ACK = 12
+  NET_MSG_APPEND_ACK = 12,
+  NET_MSG_CATCHUP_REQUEST = 13,
+  NET_MSG_CATCHUP_BATCH = 14,
+  NET_MSG_OP_BROADCAST = 15
 } NetMessageType;
 
 typedef struct {
@@ -50,6 +55,8 @@ int net_protocol_encode_hello_ack(int accepted,
                                   size_t out_size);
 int net_protocol_encode_pull_ops(long long from_global_seq, int limit,
                                  char *out, size_t out_size);
+int net_protocol_encode_catchup_request(long long from_global_seq, int limit,
+                                        char *out, size_t out_size);
 int net_protocol_encode_append_ops(const SyncOutboxEntry *ops, int op_count,
                                    char *out, size_t out_size);
 int net_protocol_encode_heartbeat(char *out, size_t out_size);
@@ -63,6 +70,11 @@ int net_protocol_encode_append_ack(const char *accepted_json,
 int net_protocol_encode_pull_ops_resp(const SyncLogOpEntry *ops, int op_count,
                                       long long last_global_seq, int has_more,
                                       char *out, size_t out_size);
+int net_protocol_encode_catchup_batch(const SyncLogOpEntry *ops, int op_count,
+                                      long long last_global_seq, int has_more,
+                                      char *out, size_t out_size);
+int net_protocol_encode_op_broadcast(const SyncLogOpEntry *op, char *out,
+                                     size_t out_size);
 int net_protocol_encode_reserve_serial(const char *request_id, int ttl_sec,
                                        char *out, size_t out_size);
 int net_protocol_encode_reserve_serial_ack(const char *request_id,
@@ -70,14 +82,26 @@ int net_protocol_encode_reserve_serial_ack(const char *request_id,
                                            int serial,
                                            const char *expires_utc,
                                            char *out, size_t out_size);
+int net_protocol_encode_commit_serial(const char *reservation_id,
+                                      const char *qso_uid,
+                                      char *out, size_t out_size);
 
 int net_protocol_parse_append_ops(const char *frame, NetAppendOp *out,
                                   int max_items, int *out_count);
 int net_protocol_parse_pull_ops_resp(const char *frame, SyncLogOpEntry *out,
                                      int max_items, int *out_count,
                                      long long *out_last_global_seq);
+int net_protocol_parse_op_broadcast(const char *frame, SyncLogOpEntry *out);
 int net_protocol_parse_reserve_serial(const char *frame, char *request_id,
                                       size_t request_id_size, int *ttl_sec);
+int net_protocol_parse_reserve_serial_ack(const char *frame,
+                                          char *request_id,
+                                          size_t request_id_size,
+                                          char *reservation_id,
+                                          size_t reservation_id_size,
+                                          int *serial,
+                                          char *expires_utc,
+                                          size_t expires_utc_size);
 int net_protocol_parse_commit_serial(const char *frame, char *reservation_id,
                                      size_t reservation_id_size,
                                      char *qso_uid, size_t qso_uid_size);
@@ -85,6 +109,10 @@ int net_protocol_parse_hello_meta(const char *frame, NetSessionMeta *out);
 int net_protocol_parse_hello_ack(const char *frame, int *out_accepted,
                                  long long *out_server_global_seq);
 int net_protocol_parse_station_meta(const char *frame, NetSessionMeta *out);
+int net_protocol_parse_protocol_version(const char *frame, int *out_version);
+int net_protocol_validate_protocol_version(const char *frame);
+int net_protocol_parse_error_code(const char *frame, char *out,
+                                  size_t out_size);
 
 int net_protocol_send_framed_io(void *ctx, NetProtocolWriteFn write_fn,
                                 const char *json_frame);

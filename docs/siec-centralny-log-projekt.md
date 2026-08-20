@@ -226,6 +226,13 @@ Pole wymagane w kazdym komunikacie:
 
 - protocol_version: 1
 
+Uwagi implementacyjne (kompatybilnosc):
+
+- Aktualna implementacja emituje oba pola: protocol_version oraz protocol_ver,
+  aby pozostac zgodna z istniejacymi klientami.
+- Walidacja po obu stronach akceptuje protocol_version albo protocol_ver,
+  ale wartosc musi byc rowna 1.
+
 W przypadku niezgodnosci wersji:
 
 - server odpowiada ERROR_UNSUPPORTED_PROTOCOL,
@@ -316,6 +323,12 @@ body:
 
 - from_global_seq_exclusive
 - max_batch_size
+
+Uwagi implementacyjne:
+
+- W kodzie utrzymano rowniez kompatybilne PULL_OPS/PULL_OPS_RESP.
+- CATCHUP_REQUEST/CATCHUP_BATCH sa jawnie obslugiwane jako rownowazna
+  warstwa catch-up.
 
 ### CATCHUP_BATCH (server -> client)
 

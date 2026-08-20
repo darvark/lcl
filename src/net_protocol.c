@@ -94,6 +94,10 @@ static int json_get_bool(const char *json, const char *key, int *out) {
   return -1;
 }
 
+static int json_get_obj_i64(const char *obj, const char *key, long long *out) {
+  return json_get_i64(obj, key, out);
+}
+
 static int find_ops_array(const char *frame, const char **out_start,
                           const char **out_end) {
   if (!frame || !out_start || !out_end)
@@ -173,8 +177,9 @@ static int net_protocol_wrap(const char *type, const char *station_id,
   const char *token = auth_token ? auth_token : "";
 
   int n = snprintf(out, out_size,
-                   "{\"protocol_ver\":1,\"msg_id\":\"%s\",\"type\":\"%s\",\"station_id\":\"%s\",\"auth_token\":\"%s\",\"payload\":%s}",
-                   msg_id, type, sid, token, payload_json);
+                   "{\"protocol_ver\":%d,\"protocol_version\":%d,\"msg_id\":\"%s\",\"type\":\"%s\",\"station_id\":\"%s\",\"auth_token\":\"%s\",\"payload\":%s}",
+                   NET_PROTOCOL_VERSION, NET_PROTOCOL_VERSION, msg_id, type,
+                   sid, token, payload_json);
   return (n > 0 && (size_t)n < out_size) ? 0 : -1;
 }
 
@@ -323,6 +328,27 @@ int net_protocol_encode_pull_ops(long long from_global_seq, int limit,
   return net_protocol_wrap("PULL_OPS", "", "", payload, out, out_size);
 }
 
+int net_protocol_encode_catchup_request(long long from_global_seq, int limit,
+                                        char *out, size_t out_size) {
+  if (!out || out_size < 8 || from_global_seq < 0)
+    return -1;
+
+  if (limit < 1)
+    limit = 1;
+  if (limit > 1000)
+    limit = 1000;
+
+  char payload[128] = {0};
+  int n = snprintf(payload, sizeof(payload),
+                   "{\"from_global_seq\":%lld,\"limit\":%d}",
+                   from_global_seq, limit);
+  if (n <= 0 || (size_t)n >= sizeof(payload))
+    return -1;
+
+  return net_protocol_wrap("CATCHUP_REQUEST", "", "", payload, out,
+                           out_size);
+}
+
 int net_protocol_encode_append_ops(const SyncOutboxEntry *ops, int op_count,
                                    char *out, size_t out_size) {
   if (!ops || op_count < 1 || !out || out_size < 24)
@@ -423,6 +449,60 @@ int net_protocol_encode_pull_ops_resp(const SyncLogOpEntry *ops, int op_count,
   return net_protocol_wrap("PULL_OPS_RESP", "", "", payload, out, out_size);
 }
 
+int net_protocol_encode_catchup_batch(const SyncLogOpEntry *ops, int op_count,
+                                      long long last_global_seq, int has_more,
+                                      char *out, size_t out_size) {
+  if (!out || out_size < 24)
+    return -1;
+
+  if (!ops || op_count < 0)
+    op_count = 0;
+
+  char payload[16384] = {0};
+  int n = snprintf(payload, sizeof(payload), "{\"ops\":[");
+  if (n <= 0 || (size_t)n >= sizeof(payload))
+    return -1;
+
+  size_t used = (size_t)n;
+  for (int i = 0; i < op_count; i++) {
+    const SyncLogOpEntry *e = &ops[i];
+    n = snprintf(payload + used, sizeof(payload) - used,
+                 "%s{\"global_seq\":%lld,\"op_id\":\"%s\",\"station_id\":\"%s\",\"station_seq\":%lld,\"logbook_id\":%d,\"op_type\":\"%s\",\"entity_id\":\"%s\",\"payload\":%s,\"op_utc\":\"%s\"}",
+                 i == 0 ? "" : ",", e->global_seq, e->op_id, e->station_id,
+                 e->station_seq, e->logbook_id, e->op_type, e->entity_id,
+                 e->payload_json[0] ? e->payload_json : "{}", e->op_utc);
+    if (n <= 0 || (size_t)n >= sizeof(payload) - used)
+      return -1;
+    used += (size_t)n;
+  }
+
+  n = snprintf(payload + used, sizeof(payload) - used,
+               "],\"last_global_seq\":%lld,\"has_more\":%s}",
+               last_global_seq, has_more ? "true" : "false");
+  if (n <= 0 || (size_t)n >= sizeof(payload) - used)
+    return -1;
+
+  return net_protocol_wrap("CATCHUP_BATCH", "", "", payload, out, out_size);
+}
+
+int net_protocol_encode_op_broadcast(const SyncLogOpEntry *op, char *out,
+                                     size_t out_size) {
+  if (!op || !op->op_id[0] || !op->station_id[0] || !op->op_type[0] ||
+      !op->entity_id[0] || !out || out_size < 24)
+    return -1;
+
+  char payload[4096] = {0};
+  int n = snprintf(payload, sizeof(payload),
+                   "{\"global_seq\":%lld,\"op_id\":\"%s\",\"station_id\":\"%s\",\"station_seq\":%lld,\"logbook_id\":%d,\"op_type\":\"%s\",\"entity_id\":\"%s\",\"payload\":%s,\"op_utc\":\"%s\"}",
+                   op->global_seq, op->op_id, op->station_id, op->station_seq,
+                   op->logbook_id, op->op_type, op->entity_id,
+                   op->payload_json[0] ? op->payload_json : "{}", op->op_utc);
+  if (n <= 0 || (size_t)n >= sizeof(payload))
+    return -1;
+
+  return net_protocol_wrap("OP_BROADCAST", "", "", payload, out, out_size);
+}
+
 int net_protocol_encode_reserve_serial(const char *request_id, int ttl_sec,
                                        char *out, size_t out_size) {
   if (!request_id || !request_id[0] || !out || out_size < 24)
@@ -459,6 +539,22 @@ int net_protocol_encode_reserve_serial_ack(const char *request_id,
 
   return net_protocol_wrap("RESERVE_SERIAL_ACK", "", "", payload, out,
                            out_size);
+}
+
+int net_protocol_encode_commit_serial(const char *reservation_id,
+                                      const char *qso_uid,
+                                      char *out, size_t out_size) {
+  if (!reservation_id || !reservation_id[0] || !out || out_size < 24)
+    return -1;
+
+  char payload[256] = {0};
+  int n = snprintf(payload, sizeof(payload),
+                   "{\"reservation_id\":\"%s\",\"qso_uid\":\"%s\"}",
+                   reservation_id, qso_uid ? qso_uid : "");
+  if (n <= 0 || (size_t)n >= sizeof(payload))
+    return -1;
+
+  return net_protocol_wrap("COMMIT_SERIAL", "", "", payload, out, out_size);
 }
 
 int net_protocol_parse_station_meta(const char *frame, NetSessionMeta *out) {
@@ -648,6 +744,65 @@ int net_protocol_parse_pull_ops_resp(const char *frame, SyncLogOpEntry *out,
   return 0;
 }
 
+int net_protocol_parse_op_broadcast(const char *frame, SyncLogOpEntry *out) {
+  if (!frame || !out)
+    return -1;
+
+  memset(out, 0, sizeof(*out));
+
+  long long logbook_id = 1;
+  if (json_get_obj_i64(frame, "global_seq", &out->global_seq) != 0)
+    return -1;
+  if (json_get_string(frame, "op_id", out->op_id, sizeof(out->op_id)) != 0)
+    return -1;
+  if (json_get_string(frame, "station_id", out->station_id,
+                      sizeof(out->station_id)) != 0)
+    return -1;
+  if (json_get_obj_i64(frame, "station_seq", &out->station_seq) != 0)
+    return -1;
+  (void)json_get_obj_i64(frame, "logbook_id", &logbook_id);
+  out->logbook_id = (int)logbook_id;
+  if (json_get_string(frame, "op_type", out->op_type, sizeof(out->op_type)) !=
+      0)
+    return -1;
+  if (json_get_string(frame, "entity_id", out->entity_id,
+                      sizeof(out->entity_id)) != 0)
+    return -1;
+  (void)json_get_string(frame, "op_utc", out->op_utc, sizeof(out->op_utc));
+
+  const char *payload = strstr(frame, "\"payload\":");
+  if (payload) {
+    payload += strlen("\"payload\":");
+    while (*payload == ' ' || *payload == '\t')
+      payload++;
+    if (*payload == '{') {
+      int depth = 0;
+      const char *p = payload;
+      while (*p) {
+        if (*p == '{')
+          depth++;
+        else if (*p == '}') {
+          depth--;
+          if (depth == 0) {
+            size_t len = (size_t)(p - payload + 1);
+            if (len >= sizeof(out->payload_json))
+              len = sizeof(out->payload_json) - 1;
+            memcpy(out->payload_json, payload, len);
+            out->payload_json[len] = 0;
+            break;
+          }
+        }
+        p++;
+      }
+    }
+  }
+
+  if (!out->payload_json[0])
+    snprintf(out->payload_json, sizeof(out->payload_json), "{}");
+
+  return 0;
+}
+
 int net_protocol_parse_reserve_serial(const char *frame, char *request_id,
                                       size_t request_id_size, int *ttl_sec) {
   if (!frame || !request_id || request_id_size < 2 || !ttl_sec)
@@ -664,6 +819,41 @@ int net_protocol_parse_reserve_serial(const char *frame, char *request_id,
     ttl = 120;
 
   *ttl_sec = (int)ttl;
+  return 0;
+}
+
+int net_protocol_parse_reserve_serial_ack(const char *frame,
+                                          char *request_id,
+                                          size_t request_id_size,
+                                          char *reservation_id,
+                                          size_t reservation_id_size,
+                                          int *serial,
+                                          char *expires_utc,
+                                          size_t expires_utc_size) {
+  if (!frame || !request_id || request_id_size < 2 || !reservation_id ||
+      reservation_id_size < 2 || !serial || !expires_utc ||
+      expires_utc_size < 2)
+    return -1;
+
+  request_id[0] = 0;
+  reservation_id[0] = 0;
+  expires_utc[0] = 0;
+  *serial = 0;
+
+  if (json_get_string(frame, "request_id", request_id, request_id_size) != 0)
+    return -1;
+  if (json_get_string(frame, "reservation_id", reservation_id,
+                      reservation_id_size) != 0)
+    return -1;
+  if (json_get_string(frame, "expires_utc", expires_utc, expires_utc_size) !=
+      0)
+    return -1;
+
+  long long serial_ll = 0;
+  if (json_get_i64(frame, "serial", &serial_ll) != 0 || serial_ll <= 0)
+    return -1;
+
+  *serial = (int)serial_ll;
   return 0;
 }
 
@@ -685,6 +875,38 @@ int net_protocol_parse_commit_serial(const char *frame, char *reservation_id,
   return 0;
 }
 
+int net_protocol_parse_protocol_version(const char *frame, int *out_version) {
+  if (!frame || !out_version)
+    return -1;
+
+  long long version = 0;
+  if (json_get_i64(frame, "protocol_version", &version) != 0 &&
+      json_get_i64(frame, "protocol_ver", &version) != 0)
+    return -1;
+
+  if (version < 0 || version > 1000000)
+    return -1;
+
+  *out_version = (int)version;
+  return 0;
+}
+
+int net_protocol_validate_protocol_version(const char *frame) {
+  int version = 0;
+  if (net_protocol_parse_protocol_version(frame, &version) != 0)
+    return -1;
+  return version == NET_PROTOCOL_VERSION ? 0 : -1;
+}
+
+int net_protocol_parse_error_code(const char *frame, char *out,
+                                  size_t out_size) {
+  if (!frame || !out || out_size < 2)
+    return -1;
+
+  out[0] = 0;
+  return json_get_string(frame, "code", out, out_size);
+}
+
 int net_protocol_detect_type(const char *frame, NetMessageType *out_type) {
   if (!frame || !out_type)
     return -1;
@@ -699,10 +921,16 @@ int net_protocol_detect_type(const char *frame, NetMessageType *out_type) {
     *out_type = NET_MSG_HEARTBEAT;
   else if (strstr(frame, "\"type\":\"APPEND_OPS\""))
     *out_type = NET_MSG_APPEND_OPS;
+  else if (strstr(frame, "\"type\":\"CATCHUP_REQUEST\""))
+    *out_type = NET_MSG_CATCHUP_REQUEST;
   else if (strstr(frame, "\"type\":\"PULL_OPS\""))
     *out_type = NET_MSG_PULL_OPS;
+  else if (strstr(frame, "\"type\":\"CATCHUP_BATCH\""))
+    *out_type = NET_MSG_CATCHUP_BATCH;
   else if (strstr(frame, "\"type\":\"PULL_OPS_RESP\""))
     *out_type = NET_MSG_PULL_OPS_RESP;
+  else if (strstr(frame, "\"type\":\"OP_BROADCAST\""))
+    *out_type = NET_MSG_OP_BROADCAST;
   else if (strstr(frame, "\"type\":\"APPEND_ACK\""))
     *out_type = NET_MSG_APPEND_ACK;
   else if (strstr(frame, "\"type\":\"ACK\""))

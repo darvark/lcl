@@ -123,6 +123,26 @@ static void sanitize_text(char *dst, size_t dst_size, const char *src) {
   sanitize_comments(dst, dst_size, src);
 }
 
+static void append_sync_pending_status(char *status, size_t status_size) {
+  if (!status || status_size < 4 || !config.net_enabled)
+    return;
+
+  int pending = 0;
+  if (db_sync_get_pending_outbox_count(&pending) != 0)
+    pending = -1;
+
+  size_t used = strlen(status);
+  if (used >= status_size - 1)
+    return;
+
+  if (pending >= 0) {
+    (void)snprintf(status + used, status_size - used, " SYNC:PENDING:%d",
+                   pending);
+  } else {
+    (void)snprintf(status + used, status_size - used, " SYNC:PENDING:?");
+  }
+}
+
 /*
  * Populate synchronization defaults for a newly created local QSO.
  */
@@ -352,6 +372,7 @@ int qso_add(const char *line, char *status, size_t status_size) {
   qso_count++;
 
   snprintf(status, status_size, "QSO OK");
+  append_sync_pending_status(status, status_size);
   return qso_count - 1;
 }
 
@@ -448,6 +469,7 @@ int qso_add_fields(const char *call, int freq_khz, const char *rst,
   qso_count++;
 
   snprintf(status, status_size, "QSO OK");
+  append_sync_pending_status(status, status_size);
   return qso_count - 1;
 }
 
@@ -469,12 +491,16 @@ int qso_add_contest_fields(const char *call, int freq_khz, const char *rst,
   sanitize_text(q->operator_mode, sizeof(q->operator_mode), operator_mode);
   sanitize_text(q->contest_id, sizeof(q->contest_id), contest_id);
 
+  char serial_reservation_id[64] = {0};
+
   if (config.net_enabled && strcasecmp(config.net_role, "client") == 0 &&
       (!q->exchange_sent[0] || strcmp(q->exchange_sent, "0") == 0 ||
        strcmp(q->exchange_sent, "-") == 0)) {
     int reserved_serial = 0;
-    if (net_sync_reserve_serial_remote(&reserved_serial) == 0 &&
-        reserved_serial > 0) {
+    if (net_sync_reserve_serial_remote_ex(
+            &reserved_serial, serial_reservation_id,
+            sizeof(serial_reservation_id)) == 0 &&
+        reserved_serial > 0 && serial_reservation_id[0]) {
       snprintf(q->exchange_sent, sizeof(q->exchange_sent), "%d",
                reserved_serial);
     }
@@ -498,14 +524,19 @@ int qso_add_contest_fields(const char *call, int freq_khz, const char *rst,
     points = 0;
   q->points = points;
 
-  db_update_qso_contest_fields(q->db_id, q->exchange_sent, q->exchange_recv,
-                               q->operator_mode, q->contest_id, q->radio_nr,
-                               q->points);
+  int updated = db_update_qso_contest_fields(
+      q->db_id, q->exchange_sent, q->exchange_recv, q->operator_mode,
+      q->contest_id, q->radio_nr, q->points);
   touch_sync_metadata(q);
+
+  if (updated == 0 && serial_reservation_id[0]) {
+    (void)net_sync_commit_serial_remote(serial_reservation_id, q->qso_uid);
+  }
 
   snprintf(status, status_size, "QSO OK TX:%s RX:%s",
            q->exchange_sent[0] ? q->exchange_sent : "-",
            q->exchange_recv[0] ? q->exchange_recv : "-");
+  append_sync_pending_status(status, status_size);
   return idx;
 }
 

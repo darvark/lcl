@@ -224,6 +224,15 @@ typedef struct {
 	char op_utc[32];
 } SyncLogOpEntry;
 
+#define DB_SYNC_APPLY_CHANGED 1
+#define DB_SYNC_APPLY_ALREADY_PRESENT 0
+#define DB_SYNC_APPLY_ERR (-1)
+#define DB_SYNC_APPLY_STATION_SEQ_CONFLICT (-2)
+
+#define DB_SYNC_COMMIT_OK 0
+#define DB_SYNC_COMMIT_NOT_FOUND 1
+#define DB_SYNC_COMMIT_ERR (-1)
+
 /*
  * Ensure and return local station id used by synchronization layer.
  *
@@ -335,8 +344,11 @@ int db_sync_get_next_expected_station_seq(const char *station_id,
 /*
  * Apply one remote synchronization operation idempotently.
  *
- * @return 1 when operation changed state, 0 when already applied,
- *         or -1 on failure.
+ * @return DB_SYNC_APPLY_CHANGED when operation changed state,
+ *         DB_SYNC_APPLY_ALREADY_PRESENT when already applied,
+ *         DB_SYNC_APPLY_STATION_SEQ_CONFLICT when station_seq is already
+ *         owned by a different op_id for the same station_id,
+ *         or DB_SYNC_APPLY_ERR on failure.
  */
 int db_sync_apply_remote_op(const char *op_id, const char *station_id,
 						 long long station_seq, int logbook_id,
@@ -360,6 +372,14 @@ int db_sync_reserve_serial(int logbook_id, const char *station_id,
 			   char *out_reservation_id, size_t out_reservation_id_size,
 			   int *out_serial, char *out_expires_utc,
 			   size_t out_expires_utc_size);
+
+/*
+ * Commit reservation after QSO write on the client side.
+ *
+ * @return DB_SYNC_COMMIT_OK when committed,
+ *         DB_SYNC_COMMIT_NOT_FOUND when reservation is missing/expired,
+ *         or DB_SYNC_COMMIT_ERR on database error.
+ */
 int db_sync_commit_serial(const char *reservation_id, const char *qso_uid);
 int db_sync_expire_serial_reservations(void);
 

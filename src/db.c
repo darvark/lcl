@@ -30,6 +30,7 @@ extern int sqlite3_bind_text(sqlite3_stmt *stmt, int idx, const char *value, int
 extern int sqlite3_bind_int(sqlite3_stmt *stmt, int idx, int value);
 extern int sqlite3_bind_int64(sqlite3_stmt *stmt, int idx, long long value);
 extern long long sqlite3_last_insert_rowid(sqlite3 *db);
+extern int sqlite3_changes(sqlite3 *db);
 extern void sqlite3_free(void *ptr);
 extern int sqlite3_reset(sqlite3_stmt *stmt);
 extern int sqlite3_clear_bindings(sqlite3_stmt *stmt);
@@ -1169,6 +1170,8 @@ static int ensure_open(void) {
   exec_sql_checked("CREATE INDEX IF NOT EXISTS idx_qso_last_modified ON qso(last_modified_utc);");
   exec_sql_checked("CREATE INDEX IF NOT EXISTS idx_log_outbox_status_retry ON log_outbox(status, next_retry_utc);");
   exec_sql_checked("CREATE INDEX IF NOT EXISTS idx_log_ops_station_seq ON log_ops(station_id, station_seq);");
+  if (exec_sql_checked("CREATE UNIQUE INDEX IF NOT EXISTS idx_log_ops_station_seq_unique ON log_ops(station_id, station_seq);") != 0)
+    return -1;
   exec_sql_checked("CREATE INDEX IF NOT EXISTS idx_serial_reservations_lookup ON serial_reservations(logbook_id, station_id, status);");
 
   if (exec_sql_checked(
@@ -2807,30 +2810,48 @@ int db_sync_apply_remote_op(const char *op_id, const char *station_id,
   if (prepare_stmt(&exists,
                    "SELECT global_seq FROM log_ops WHERE op_id = ? LIMIT 1;") !=
       SQLITE_OK)
-    return -1;
+    return DB_SYNC_APPLY_ERR;
   sqlite3_bind_text(exists, 1, op_id, -1, SQLITE_TRANSIENT);
 
   if (sqlite3_step(exists) == SQLITE_ROW) {
     if (out_global_seq)
       *out_global_seq = sqlite3_column_int64(exists, 0);
     sqlite3_finalize(exists);
-    return 0;
+    return DB_SYNC_APPLY_ALREADY_PRESENT;
   }
   sqlite3_finalize(exists);
+
+  sqlite3_stmt *conflict = NULL;
+  if (prepare_stmt(&conflict,
+                   "SELECT op_id FROM log_ops WHERE station_id = ? AND station_seq = ? LIMIT 1;") !=
+      SQLITE_OK)
+    return DB_SYNC_APPLY_ERR;
+
+  sqlite3_bind_text(conflict, 1, station_id, -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int64(conflict, 2, station_seq);
+
+  if (sqlite3_step(conflict) == SQLITE_ROW) {
+    const unsigned char *existing_op = sqlite3_column_text(conflict, 0);
+    if (!existing_op || strcmp((const char *)existing_op, op_id) != 0) {
+      sqlite3_finalize(conflict);
+      return DB_SYNC_APPLY_STATION_SEQ_CONFLICT;
+    }
+  }
+  sqlite3_finalize(conflict);
 
   int changed = 0;
   if (strncmp(op_type, "QSO_", 4) == 0) {
     if (sync_qso_upsert_from_payload(op_id, station_id, station_seq, logbook_id,
                                      payload_json, &changed) != 0)
-      return -1;
+      return DB_SYNC_APPLY_ERR;
   }
 
   sqlite3_stmt *ins = NULL;
   if (prepare_stmt(&ins,
-                   "INSERT OR IGNORE INTO log_ops "
+                   "INSERT INTO log_ops "
                    "(op_id, station_id, station_seq, logbook_id, op_type, entity_id, payload_json, op_utc) "
                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?);") != SQLITE_OK)
-    return -1;
+    return DB_SYNC_APPLY_ERR;
 
   sqlite3_bind_text(ins, 1, op_id, -1, SQLITE_TRANSIENT);
   sqlite3_bind_text(ins, 2, station_id, -1, SQLITE_TRANSIENT);
@@ -2844,7 +2865,7 @@ int db_sync_apply_remote_op(const char *op_id, const char *station_id,
   int rc = sqlite3_step(ins);
   sqlite3_finalize(ins);
   if (rc != SQLITE_DONE)
-    return -1;
+    return DB_SYNC_APPLY_ERR;
 
   sqlite3_stmt *sel = NULL;
   if (prepare_stmt(&sel,
@@ -2856,7 +2877,7 @@ int db_sync_apply_remote_op(const char *op_id, const char *station_id,
     sqlite3_finalize(sel);
   }
 
-  return changed ? 1 : 0;
+  return changed ? DB_SYNC_APPLY_CHANGED : DB_SYNC_APPLY_ALREADY_PRESENT;
 }
 
 int db_sync_pull_ops(long long from_global_seq, int limit, SyncLogOpEntry *out,
@@ -3052,10 +3073,10 @@ int db_sync_reserve_serial(int logbook_id, const char *station_id,
 
 int db_sync_commit_serial(const char *reservation_id, const char *qso_uid) {
   if (!reservation_id || !reservation_id[0])
-    return -1;
+    return DB_SYNC_COMMIT_ERR;
 
   if (db_init() != 0)
-    return -1;
+    return DB_SYNC_COMMIT_ERR;
 
   (void)db_sync_expire_serial_reservations();
 
@@ -3069,7 +3090,7 @@ int db_sync_commit_serial(const char *reservation_id, const char *qso_uid) {
                    "WHERE reservation_id = ? AND status = 'reserved' "
                    "AND (expires_utc = '' OR expires_utc >= CURRENT_TIMESTAMP);") !=
       SQLITE_OK)
-    return -1;
+    return DB_SYNC_COMMIT_ERR;
 
   sqlite3_bind_text(stmt, 1, consumed_utc, -1, SQLITE_TRANSIENT);
   sqlite3_bind_text(stmt, 2, qso_uid ? qso_uid : "", -1, SQLITE_TRANSIENT);
@@ -3077,8 +3098,10 @@ int db_sync_commit_serial(const char *reservation_id, const char *qso_uid) {
 
   int rc = sqlite3_step(stmt);
   sqlite3_finalize(stmt);
+  if (rc != SQLITE_DONE)
+    return DB_SYNC_COMMIT_ERR;
 
-  return rc == SQLITE_DONE ? 0 : -1;
+  return sqlite3_changes(db) > 0 ? DB_SYNC_COMMIT_OK : DB_SYNC_COMMIT_NOT_FOUND;
 }
 
 int db_sync_expire_serial_reservations(void) {
