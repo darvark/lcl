@@ -8,15 +8,25 @@
 #include "dxcluster.h"
 #include "export.h"
 #include "globals.h"
+#include "net_sync.h"
 #include "qso.h"
 #include "qtc.h"
 #include "suggestion.h"
 #include "stats.h"
 
 #include <errno.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <strings.h>
 #include <unistd.h>
+
+#ifndef LOGGER_SOURCE_DIR
+#define LOGGER_SOURCE_DIR "."
+#endif
+
+#ifndef LOGGER_BUILD_DIR
+#define LOGGER_BUILD_DIR "."
+#endif
 
 static char input_buffer[256];
 static int input_len = 0;

@@ -121,7 +121,19 @@ static void test_config_loading(const char *tmp_dir) {
       "DXC_PORT = 9000\n"
       "DXC_CALL = SP9XYZ\n"
       "CAT_MODE_FROM_RIG = 1\n"
-      "CONTEST_TX_EXCHANGE = 28\n";
+      "CONTEST_TX_EXCHANGE = 28\n"
+      "NET_STATION_ID = RUN1\n"
+      "NET_SHARED_KEY = secret123\n"
+      "NET_TLS_CERT_FILE = cert.pem\n"
+      "NET_TLS_KEY_FILE = key.pem\n"
+      "NET_TLS_PEER_FINGERPRINT = AA:BB:CC\n"
+      "NET_HEARTBEAT_SEC = 9\n"
+      "NET_RETRY_MIN_MS = 1500\n"
+      "NET_RETRY_MAX_MS = 5500\n"
+      "NET_TLS = 1\n"
+      "NET_RATE_LIMIT_WINDOW_SEC = 3\n"
+      "NET_RATE_LIMIT_BURST = 77\n"
+      "NET_MAX_FRAME_BYTES = 12000\n";
 
   expect_int_eq(write_text_file(conf_path, conf_text), 0,
                 "write test logger.conf");
@@ -137,6 +149,31 @@ static void test_config_loading(const char *tmp_dir) {
                 "config CAT mode-from-rig parsed");
   expect_str_eq(config.contest_tx_exchange, "28",
                 "config contest tx exchange parsed");
+  expect_str_eq(config.net_station_id, "RUN1",
+                "config NET_STATION_ID parsed");
+  expect_str_eq(config.net_shared_key, "secret123",
+                "config NET_SHARED_KEY parsed");
+  expect_str_eq(config.net_auth_token, "secret123",
+                "config shared key should mirror auth token");
+  expect_str_eq(config.net_tls_cert_file, "cert.pem",
+                "config NET_TLS_CERT_FILE parsed");
+  expect_str_eq(config.net_tls_key_file, "key.pem",
+                "config NET_TLS_KEY_FILE parsed");
+  expect_str_eq(config.net_tls_peer_fingerprint, "AA:BB:CC",
+                "config NET_TLS_PEER_FINGERPRINT parsed");
+  expect_int_eq(config.net_heartbeat_sec, 9,
+                "config NET_HEARTBEAT_SEC parsed");
+  expect_int_eq(config.net_retry_min_ms, 1500,
+                "config NET_RETRY_MIN_MS parsed");
+  expect_int_eq(config.net_retry_max_ms, 5500,
+                "config NET_RETRY_MAX_MS parsed");
+  expect_int_eq(config.net_tls, 1, "config NET_TLS parsed");
+  expect_int_eq(config.net_rate_limit_window_sec, 3,
+                "config NET_RATE_LIMIT_WINDOW_SEC parsed");
+  expect_int_eq(config.net_rate_limit_burst, 77,
+                "config NET_RATE_LIMIT_BURST parsed");
+  expect_int_eq(config.net_max_frame_bytes, 12000,
+                "config NET_MAX_FRAME_BYTES parsed");
 
   expect_int_eq(config_load("/definitely/missing/logger.conf"), -1,
                 "missing config should return -1");
@@ -162,6 +199,26 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
   config.cat_mode_from_rig = 1;
   snprintf(config.contest_tx_exchange, sizeof(config.contest_tx_exchange),
            "%s", "28");
+  snprintf(config.net_station_id, sizeof(config.net_station_id), "%s",
+           "RUN2");
+  snprintf(config.net_shared_key, sizeof(config.net_shared_key), "%s",
+           "secret999");
+  snprintf(config.net_auth_token, sizeof(config.net_auth_token), "%s",
+           "secret999");
+  snprintf(config.net_tls_cert_file, sizeof(config.net_tls_cert_file), "%s",
+           "saved_cert.pem");
+  snprintf(config.net_tls_key_file, sizeof(config.net_tls_key_file), "%s",
+           "saved_key.pem");
+  snprintf(config.net_tls_peer_fingerprint,
+           sizeof(config.net_tls_peer_fingerprint), "%s",
+           "11:22:33");
+  config.net_heartbeat_sec = 11;
+  config.net_retry_min_ms = 2000;
+  config.net_retry_max_ms = 12000;
+  config.net_tls = 1;
+  config.net_rate_limit_window_sec = 4;
+  config.net_rate_limit_burst = 88;
+  config.net_max_frame_bytes = 24000;
 
   expect_int_eq(config_save(conf_path), 0, "config_save should succeed");
 
@@ -174,6 +231,19 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
   config.cat_handshake[0] = 0;
   config.cat_mode_from_rig = 0;
   config.contest_tx_exchange[0] = 0;
+  config.net_station_id[0] = 0;
+  config.net_shared_key[0] = 0;
+  config.net_auth_token[0] = 0;
+  config.net_tls_cert_file[0] = 0;
+  config.net_tls_key_file[0] = 0;
+  config.net_tls_peer_fingerprint[0] = 0;
+  config.net_heartbeat_sec = 0;
+  config.net_retry_min_ms = 0;
+  config.net_retry_max_ms = 0;
+  config.net_tls = 0;
+  config.net_rate_limit_window_sec = 0;
+  config.net_rate_limit_burst = 0;
+  config.net_max_frame_bytes = 0;
 
   expect_int_eq(config_load(conf_path), 0,
                 "config_load should read saved config");
@@ -189,6 +259,29 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
                 "saved CAT mode-from-rig restored");
   expect_str_eq(config.contest_tx_exchange, "28",
                 "saved contest tx exchange restored");
+  expect_str_eq(config.net_station_id, "RUN2",
+                "saved NET_STATION_ID restored");
+  expect_str_eq(config.net_shared_key, "secret999",
+                "saved NET_SHARED_KEY restored");
+  expect_str_eq(config.net_tls_cert_file, "saved_cert.pem",
+                "saved NET_TLS_CERT_FILE restored");
+  expect_str_eq(config.net_tls_key_file, "saved_key.pem",
+                "saved NET_TLS_KEY_FILE restored");
+  expect_str_eq(config.net_tls_peer_fingerprint, "11:22:33",
+                "saved NET_TLS_PEER_FINGERPRINT restored");
+  expect_int_eq(config.net_heartbeat_sec, 11,
+                "saved NET_HEARTBEAT_SEC restored");
+  expect_int_eq(config.net_retry_min_ms, 2000,
+                "saved NET_RETRY_MIN_MS restored");
+  expect_int_eq(config.net_retry_max_ms, 12000,
+                "saved NET_RETRY_MAX_MS restored");
+  expect_int_eq(config.net_tls, 1, "saved NET_TLS restored");
+  expect_int_eq(config.net_rate_limit_window_sec, 4,
+                "saved NET_RATE_LIMIT_WINDOW_SEC restored");
+  expect_int_eq(config.net_rate_limit_burst, 88,
+                "saved NET_RATE_LIMIT_BURST restored");
+  expect_int_eq(config.net_max_frame_bytes, 24000,
+                "saved NET_MAX_FRAME_BYTES restored");
 }
 
 static void test_cty_loading_and_lookup(const char *tmp_dir) {

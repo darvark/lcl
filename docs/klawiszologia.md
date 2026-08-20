@@ -78,6 +78,15 @@ Jeśli dla danego klawisza nie ma definicji, program pokaże status `F<n>: brak 
 | `Esc` | zatrzymuje nadawanie CW i jednocześnie czyści aktywne pola wejściowe |
 | `Alt+W` | czyści pola `Call` i `Exchange` dla aktywnego radia |
 
+## Panel wiadomości CW (F1–F10)
+
+Między paskiem statusu a panelem DXCC wyświetlany jest rząd przycisków F1–F10.
+
+- każdy przycisk pokazuje rozwiniętą treść wiadomości dla aktualnego trybu RUN lub S&P,
+- kliknięcie przycisku wysyła wiadomość przez keyer CW — identycznie jak naciśnięcie klawisza `Fn`,
+- podczas aktualizacji CTY przyciski są wyłączone,
+- przyciski rozciągają się automatycznie do szerokości okna.
+
 ## Menu i widoczność paneli
 
 Aplikacja używa jednego menu głównego `Menu` z pogrupowanymi akcjami.
@@ -85,6 +94,8 @@ Aplikacja używa jednego menu głównego `Menu` z pogrupowanymi akcjami.
 Najważniejsze pozycje:
 
 - `Contest Config` - otwiera konfigurację zawodów (to samo co `Ctrl+F8`)
+- `Update CTY` - pobiera `wl_cty.dat` (to samo co `Ctrl+F7`)
+- `Update SCP (Check Partial)` - pobiera `MASTER.SCP` z supercheckpartial.com
 - `DX Cluster` - przełącza widoczność okna clustera
 - `Show CAT/CW Config` - pokazuje albo ukrywa panel konfiguracji CAT/CW (to samo co `Ctrl+F9`)
 
@@ -154,14 +165,24 @@ W tym trybie:
 - nadawana wymiana (`TX ...`) pochodzi z `EXCHANGE_SENT`
 - jeśli `EXCHANGE_SENT=#`, program zawsze generuje `1`, `2`, `3`... zgodnie z kolejnymi zapisanymi QSO
 
-## Podpowiedzi znaków
+## Podpowiedzi znaków i Check Partial (SCP)
+
+Panel "Suggestions / SCP" pojawia się w prawym górnym rogu tabeli logów i łączy dwa źródła:
+
+- **historia wywołań** (kolor ciemnożółty) — znaki wcześniej zalogowane w aktualnym sesji / historii,
+- **baza SCP** (`MASTER.SCP`, kolor ciemnozielony) — ~50 000 aktywnych znaków z ostatnich 24 miesięcy contestowych.
+
+Panel pojawia się gdy:
+
+- jest przynajmniej jedno trafienie z historii, LUB
+- w polu `Call` są co najmniej 2 znaki i SCP znalazł dopasowania.
 
 Podpowiedzi działają tylko podczas edycji pola `Call`.
 
 | Akcja | Efekt |
 | --- | --- |
-| wpisywanie znaku | odświeża listę dopasowań z historii |
-| `Up` / `Down` | zmienia zaznaczenie w liście sugestii |
+| wpisywanie znaku | odświeża listę dopasowań |
+| `Up` / `Down` | zmienia zaznaczenie w liście sugestii historii |
 | `Tab` | wstawia zaznaczoną sugestię bez przechodzenia do kolejnego pola |
 | `Space` | wstawia zaznaczoną sugestię i przechodzi do kolejnego pola |
 

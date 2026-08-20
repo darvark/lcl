@@ -1,6 +1,8 @@
 #ifndef DB_H
 #define DB_H
 
+#include <stddef.h>
+
 #include "qso.h"
 #include "qtc.h"
 
@@ -198,5 +200,167 @@ int db_insert_qtc_bundle(const QTCBundle *bundle, long long *out_id);
  * @return 0 on success, or -1 on failure.
  */
 int db_load_qtc_bundles(QTCBundle *out, int max_items, int *out_count);
+
+typedef struct {
+	char op_id[96];
+	long long station_seq;
+	int logbook_id;
+	char op_type[32];
+	char entity_id[64];
+	char payload_json[2048];
+	char op_utc[32];
+	int retry_count;
+} SyncOutboxEntry;
+
+typedef struct {
+	long long global_seq;
+	char op_id[96];
+	char station_id[32];
+	long long station_seq;
+	int logbook_id;
+	char op_type[32];
+	char entity_id[64];
+	char payload_json[2048];
+	char op_utc[32];
+} SyncLogOpEntry;
+
+/*
+ * Ensure and return local station id used by synchronization layer.
+ *
+ * @param out Destination buffer for station id.
+ * @param out_size Destination buffer size.
+ * @return 0 on success, or -1 on failure.
+ */
+int db_sync_get_or_create_station_id(char *out, size_t out_size);
+
+/*
+ * Persist explicit station id for this installation.
+ */
+int db_sync_set_station_id(const char *station_id);
+
+/*
+ * Allocate next local station sequence number for outbound operations.
+ *
+ * @param out_seq Destination for next sequence number.
+ * @return 0 on success, or -1 on failure.
+ */
+int db_sync_next_station_seq(long long *out_seq);
+
+/*
+ * Enqueue a synchronization operation into local outbox.
+ *
+ * @param op_id Stable unique operation identifier.
+ * @param station_seq Local monotonic sequence number.
+ * @param logbook_id Active logbook id.
+ * @param op_type Operation type label.
+ * @param entity_id Entity identifier (for example qso_uid).
+ * @param payload_json JSON payload string.
+ * @param op_utc UTC timestamp string.
+ * @return 0 on success, or -1 on failure.
+ */
+int db_sync_outbox_enqueue(const char *op_id, long long station_seq,
+						  int logbook_id, const char *op_type,
+						  const char *entity_id, const char *payload_json,
+						  const char *op_utc);
+
+/*
+ * Load a batch of pending/sent but unacked outbox operations.
+ *
+ * @param out Destination array.
+ * @param max_items Capacity of destination array.
+ * @param out_count Number of loaded items.
+ * @return 0 on success, or -1 on failure.
+ */
+int db_sync_outbox_load_pending(SyncOutboxEntry *out, int max_items,
+								int *out_count);
+
+/*
+ * Mark an outbox operation as sent.
+ *
+ * @param op_id Operation identifier.
+ * @return 0 on success, or -1 on failure.
+ */
+int db_sync_outbox_mark_sent(const char *op_id);
+
+/*
+ * Return operation to pending state and schedule next retry attempt.
+ *
+ * @param op_id Operation identifier.
+ * @param delay_seconds Delay before next retry in seconds.
+ * @return 0 on success, or -1 on failure.
+ */
+int db_sync_outbox_mark_retry(const char *op_id, int delay_seconds);
+
+/*
+ * Mark an outbox operation as acknowledged.
+ *
+ * @param op_id Operation identifier.
+ * @return 0 on success, or -1 on failure.
+ */
+int db_sync_outbox_mark_acked(const char *op_id);
+
+/*
+ * Count pending outbox operations.
+ *
+ * @param out_count Destination for pending count.
+ * @return 0 on success, or -1 on failure.
+ */
+int db_sync_get_pending_outbox_count(int *out_count);
+
+/*
+ * Count outbox operations marked as permanently failed.
+ *
+ * @param out_count Destination for failed count.
+ * @return 0 on success, or -1 on failure.
+ */
+int db_sync_get_failed_outbox_count(int *out_count);
+
+/*
+ * Read and persist last pulled global sequence cursor.
+ */
+int db_sync_get_last_global_seq(long long *out_seq);
+int db_sync_set_last_global_seq(long long seq);
+
+/*
+ * Read max global sequence currently present in log_ops.
+ */
+int db_sync_get_max_global_seq(long long *out_seq);
+
+/*
+ * Read next expected station sequence on server side for given station.
+ */
+int db_sync_get_next_expected_station_seq(const char *station_id,
+						      long long *out_seq);
+
+/*
+ * Apply one remote synchronization operation idempotently.
+ *
+ * @return 1 when operation changed state, 0 when already applied,
+ *         or -1 on failure.
+ */
+int db_sync_apply_remote_op(const char *op_id, const char *station_id,
+						 long long station_seq, int logbook_id,
+						 const char *op_type, const char *entity_id,
+						 const char *payload_json,
+						 const char *op_utc,
+						 long long *out_global_seq);
+
+/*
+ * Load a batch of applied operations after a global sequence cursor.
+ */
+int db_sync_pull_ops(long long from_global_seq, int limit, SyncLogOpEntry *out,
+				 int max_items, int *out_count,
+				 long long *out_last_global_seq);
+
+/*
+ * Reserve and commit central serial numbers.
+ */
+int db_sync_reserve_serial(int logbook_id, const char *station_id,
+			   const char *request_id, int ttl_sec,
+			   char *out_reservation_id, size_t out_reservation_id_size,
+			   int *out_serial, char *out_expires_utc,
+			   size_t out_expires_utc_size);
+int db_sync_commit_serial(const char *reservation_id, const char *qso_uid);
+int db_sync_expire_serial_reservations(void);
 
 #endif

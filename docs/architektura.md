@@ -32,6 +32,7 @@ flowchart LR
         Export[export.c\nCSV / ADIF / Cabrillo]
         Suggest[suggestion.c\ncall suggestions]
         CTY[cty.c\nDXCC / CQ / ITU mapping]
+        SCP[scp.c\nSuper Check Partial]
         Maiden[maidenhead.c\nlocator conversion]
     end
 
@@ -48,6 +49,7 @@ flowchart LR
         ContestDefs[contest_defs/*.conf]
         CTYDB[wl_cty.dat]
         CWKeys[cw_keys.ini]
+        SCPDB[MASTER.SCP]
     end
 
     Qt --> Cmd
@@ -61,6 +63,7 @@ flowchart LR
     App --> Export
     App --> Suggest
     App --> CTY
+    App --> SCP
     App --> Maiden
     App --> CAT
     App --> DXC
@@ -72,10 +75,18 @@ flowchart LR
     Config --> Conf
     Contest --> ContestDefs
     CTY --> CTYDB
+    SCP --> SCPDB
     CAT --> CWKeys
     DXC --> SQLite
     DB --> SQLite
 ```
+
+## Struktura kodu
+
+Wszystkie pliki źródłowe (`.c`, `.h`, `.cpp`, `.inc`) znajdują się w katalogu `src/`.
+Pliki runtime (`logger.conf`, `wl_cty.dat`, `MASTER.SCP`, `logger.db`) pozostają w katalogu roboczym.
+Testy są w `tests/regression/` i `tests/unit/`.
+Definicje zawodów są w `contest_defs/`.
 
 ## Przepływ danych
 
@@ -120,7 +131,9 @@ flowchart LR
 - automatyczne przełączanie pól po spacji,
 - podgląd aktualnej wysyłanej wymiany `EXCH` / `TX`,
 - aktywne radio i stan RUN/S&P,
-- widok statusu, DXCC, CQ / ITU, statystyk oraz sugestii wywołań,
+- widok statusu, DXCC, CQ / ITU, statystyk; panele DXCC i statystyki widoczne na dole kolumny,
+- panel wiadomości CW (F1–F10) między paskiem statusu a panelem DXCC; klawisze wyświetlane jako przyciski z rozwiniętym tekstem wiadomości; kliknięcie wysyła wiadomość przez keyer,
+- scalony panel "Suggestions / SCP" (prawy górny róg nad tabelą logów): podpowiedzi z historii wywołań (ciemny żółty) i trafienia z bazy SCP (ciemny zielony) w jednej liście,
 - obsługa dziennika i historii wywołań w SQLite,
 - nazwy logów i możliwość przełączania pomiędzy nimi,
 - automatyczne przywracanie definicji zawodów po otwarciu logu.
@@ -135,6 +148,13 @@ flowchart LR
 - przywracanie kolejnego numeru z logu, a nie z interfejsu,
 - etykieta pola wymiany ustawiona na `EXCH`,
 - walidacja pól wymiany zgodnie z definicją `FIELD` i nazwami pól typu `SERIAL`, `NR`, `ZONE`.
+
+### Super Check Partial (SCP)
+
+- moduł `scp.c` / `scp.h` ładuje plik `MASTER.SCP` (plain-text, jeden znak na linię),
+- wyszukiwanie substring (case-insensitive) w ~50 000 znakach z bazy contestowej,
+- pobieranie bazy przez curl/wget: `Menu → Update SCP (Check Partial)`,
+- wyniki scalane z historią wywołań w jednym panelu; maks. 60 trafień SCP wyświetlanych jednocześnie.
 
 ### CAT i DXCluster
 

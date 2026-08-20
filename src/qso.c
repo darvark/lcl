@@ -1,8 +1,11 @@
 #include "qso.h"
 
 #include "db.h"
+#include "config.h"
+#include "net_sync.h"
 
 #include <stdlib.h>
+#include <strings.h>
 
 static int qso_debug_enabled(void) {
   const char *value = getenv("LOGGER_DEBUG");
@@ -118,6 +121,53 @@ static void sanitize_comments(char *dst, size_t dst_size, const char *src) {
  */
 static void sanitize_text(char *dst, size_t dst_size, const char *src) {
   sanitize_comments(dst, dst_size, src);
+}
+
+/*
+ * Populate synchronization defaults for a newly created local QSO.
+ */
+static void fill_sync_defaults(QSO *q) {
+  if (!q)
+    return;
+
+  q->version = 1;
+
+  time_t now = time(NULL);
+  struct tm *utc = gmtime(&now);
+  if (utc)
+    strftime(q->last_modified_utc, sizeof(q->last_modified_utc),
+             "%Y-%m-%dT%H:%M:%SZ", utc);
+
+  if (db_sync_get_or_create_station_id(q->origin_station_id,
+                                       sizeof(q->origin_station_id)) != 0)
+    q->origin_station_id[0] = 0;
+
+  if (db_sync_next_station_seq(&q->origin_station_seq) != 0)
+    q->origin_station_seq = 0;
+
+  if (q->origin_station_id[0] && q->origin_station_seq > 0) {
+    const char *sid = q->origin_station_id;
+    size_t sid_len = strlen(sid);
+    const char *tail = sid_len > 8 ? sid + sid_len - 8 : sid;
+    snprintf(q->qso_uid, sizeof(q->qso_uid), "q-%s-%lld", tail,
+             q->origin_station_seq);
+  }
+}
+
+static void touch_sync_metadata(QSO *q) {
+  if (!q)
+    return;
+
+  if (q->version < 1)
+    q->version = 1;
+  else
+    q->version++;
+
+  time_t now = time(NULL);
+  struct tm *utc = gmtime(&now);
+  if (utc)
+    strftime(q->last_modified_utc, sizeof(q->last_modified_utc),
+             "%Y-%m-%dT%H:%M:%SZ", utc);
 }
 
 /* ------------------------------------------------ */
@@ -282,6 +332,7 @@ int qso_add(const char *line, char *status, size_t status_size) {
   detect_mode(f, q.mode);
 
   fill_utc(&q);
+  fill_sync_defaults(&q);
 
   const CtyEntry *cty = cty_lookup(call);
 
@@ -378,6 +429,7 @@ int qso_add_fields(const char *call, int freq_khz, const char *rst,
   }
 
   fill_utc(&q);
+  fill_sync_defaults(&q);
 
   const CtyEntry *cty = cty_lookup(call_buf);
   if (cty) {
@@ -417,6 +469,17 @@ int qso_add_contest_fields(const char *call, int freq_khz, const char *rst,
   sanitize_text(q->operator_mode, sizeof(q->operator_mode), operator_mode);
   sanitize_text(q->contest_id, sizeof(q->contest_id), contest_id);
 
+  if (config.net_enabled && strcasecmp(config.net_role, "client") == 0 &&
+      (!q->exchange_sent[0] || strcmp(q->exchange_sent, "0") == 0 ||
+       strcmp(q->exchange_sent, "-") == 0)) {
+    int reserved_serial = 0;
+    if (net_sync_reserve_serial_remote(&reserved_serial) == 0 &&
+        reserved_serial > 0) {
+      snprintf(q->exchange_sent, sizeof(q->exchange_sent), "%d",
+               reserved_serial);
+    }
+  }
+
   if (qso_debug_enabled()) {
     fprintf(stderr,
             "[debug] qso_add_contest_fields: call=%s sent=%s recv=%s mode=%s contest=%s\n",
@@ -438,6 +501,7 @@ int qso_add_contest_fields(const char *call, int freq_khz, const char *rst,
   db_update_qso_contest_fields(q->db_id, q->exchange_sent, q->exchange_recv,
                                q->operator_mode, q->contest_id, q->radio_nr,
                                q->points);
+  touch_sync_metadata(q);
 
   snprintf(status, status_size, "QSO OK TX:%s RX:%s",
            q->exchange_sent[0] ? q->exchange_sent : "-",
@@ -462,4 +526,5 @@ void qso_mark_invalid(int index) {
 
   logbook[index].invalid = !logbook[index].invalid;
   db_update_qso_invalid(logbook[index].db_id, logbook[index].invalid);
+  touch_sync_metadata(&logbook[index]);
 }

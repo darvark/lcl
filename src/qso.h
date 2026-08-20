@@ -9,6 +9,12 @@
 typedef struct {
   long long db_id;
 
+  char qso_uid[40];
+  char origin_station_id[32];
+  long long origin_station_seq;
+  int version;
+  char last_modified_utc[32];
+
   char date[9];
   char utc[5];
 

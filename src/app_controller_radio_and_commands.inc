@@ -534,11 +534,21 @@ static int resolve_contest_definition_path(const char *path, char *resolved,
 
   const char *prefixes[] = {"", "./", "../", "../../", "../../../",
                            "../../../../", "../../../../../"};
+  const char *roots[] = {LOGGER_SOURCE_DIR, LOGGER_BUILD_DIR,
+                         LOGGER_BUILD_DIR "/..", NULL};
   char candidate[1024];
   char cwd[1024] = {0};
 
   for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); i++) {
     snprintf(candidate, sizeof(candidate), "%s%s", prefixes[i], path);
+    if (access(candidate, R_OK) == 0) {
+      snprintf(resolved, resolved_size, "%s", candidate);
+      return 0;
+    }
+  }
+
+  for (size_t root_idx = 0; roots[root_idx]; root_idx++) {
+    snprintf(candidate, sizeof(candidate), "%s/%s", roots[root_idx], path);
     if (access(candidate, R_OK) == 0) {
       snprintf(resolved, resolved_size, "%s", candidate);
       return 0;
@@ -582,6 +592,15 @@ static int resolve_contest_definition_path(const char *path, char *resolved,
     snprintf(direct_path, sizeof(direct_path), "%s%s", contest_defs_prefix, path);
     for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); i++) {
       snprintf(candidate, sizeof(candidate), "%s%s", prefixes[i], direct_path);
+      if (access(candidate, R_OK) == 0) {
+        snprintf(resolved, resolved_size, "%s", candidate);
+        return 0;
+      }
+    }
+
+    for (size_t root_idx = 0; roots[root_idx]; root_idx++) {
+      snprintf(candidate, sizeof(candidate), "%s/%s", roots[root_idx],
+               direct_path);
       if (access(candidate, R_OK) == 0) {
         snprintf(resolved, resolved_size, "%s", candidate);
         return 0;

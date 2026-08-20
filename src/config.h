@@ -43,6 +43,25 @@ typedef struct {
   int cw_wpm;
   int cw_auto_connect;
 
+  int net_enabled;
+  char net_role[16];
+  char net_station_id[32];
+  char net_server_host[128];
+  int net_server_port;
+  char net_auth_token[128];
+  char net_shared_key[128];
+  char net_tls_cert_file[256];
+  char net_tls_key_file[256];
+  char net_tls_peer_fingerprint[128];
+  int net_sync_interval_ms;
+  int net_heartbeat_sec;
+  int net_retry_min_ms;
+  int net_retry_max_ms;
+  int net_tls;
+  int net_rate_limit_window_sec;
+  int net_rate_limit_burst;
+  int net_max_frame_bytes;
+
 } Config;
 
 extern Config config;
@@ -62,5 +81,11 @@ int config_load(const char *filename);
  * @return 0 on success, or -1 if the file cannot be written.
  */
 int config_save(const char *filename);
+
+/* Return path of the most recently loaded config, if any. */
+const char *config_loaded_path(void);
+
+/* Save configuration back to the active config file path. */
+int config_save_active(void);
 
 #endif

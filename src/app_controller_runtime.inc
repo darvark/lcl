@@ -1,3 +1,106 @@
+static int resolve_runtime_support_path(const char *path, char *resolved,
+                                        size_t resolved_size) {
+  if (!path || !path[0] || !resolved || resolved_size < 2)
+    return -1;
+
+  resolved[0] = 0;
+
+  const char *candidates[] = {
+      path,
+      "logger.conf",
+      "wl_cty.dat",
+      "./logger.conf",
+      "./wl_cty.dat",
+      "../logger.conf",
+      "../wl_cty.dat",
+      LOGGER_BUILD_DIR "/logger.conf",
+      LOGGER_BUILD_DIR "/wl_cty.dat",
+      LOGGER_SOURCE_DIR "/logger.conf",
+      LOGGER_SOURCE_DIR "/wl_cty.dat",
+      NULL};
+
+  for (size_t i = 0; candidates[i]; i++) {
+    const char *candidate = candidates[i];
+    if ((strcmp(path, "logger.conf") == 0 && strstr(candidate, "logger.conf")) ||
+        (strcmp(path, "wl_cty.dat") == 0 && strstr(candidate, "wl_cty.dat")) ||
+        strcmp(candidate, path) == 0) {
+      if (access(candidate, R_OK) == 0) {
+        snprintf(resolved, resolved_size, "%s", candidate);
+        return 0;
+      }
+    }
+  }
+
+  return -1;
+}
+
+static void render_sync_status(void) {
+  int pending = 0;
+  int failed = 0;
+
+  if (db_sync_get_pending_outbox_count(&pending) != 0 ||
+      db_sync_get_failed_outbox_count(&failed) != 0) {
+    snprintf(status_text, sizeof(status_text), "SYNC status unavailable");
+    return;
+  }
+
+  NetSyncStatus sync_state;
+  memset(&sync_state, 0, sizeof(sync_state));
+  net_sync_get_status(&sync_state);
+
+  snprintf(status_text, sizeof(status_text),
+           "SYNC pending=%d failed=%d connected=%d tls=%d retry=%d fs=%d",
+           pending, failed, sync_state.connected ? 1 : 0,
+           sync_state.tls_enabled ? 1 : 0, sync_state.reconnect_count,
+           sync_state.failure_streak);
+  snprintf(info_text, sizeof(info_text),
+           "station=%.20s seq=%lld hb=%.20s ok=%.20s err=%.32s",
+           sync_state.station_id[0] ? sync_state.station_id : "-",
+           sync_state.last_pulled_global_seq,
+           sync_state.last_heartbeat_utc[0] ? sync_state.last_heartbeat_utc : "-",
+           sync_state.last_success_utc[0] ? sync_state.last_success_utc : "-",
+           sync_state.last_error[0] ? sync_state.last_error : "-");
+}
+
+static int net_polling_running = 0;
+static pthread_t net_poll_thread;
+
+static void *net_poll_worker(void *arg) {
+  (void)arg;
+
+  while (net_polling_running) {
+    (void)db_sync_expire_serial_reservations();
+    (void)net_sync_poll_once();
+
+    int sleep_ms = config.net_sync_interval_ms;
+    if (sleep_ms < 100)
+      sleep_ms = 100;
+    if (sleep_ms > 60000)
+      sleep_ms = 60000;
+
+    usleep((useconds_t)sleep_ms * 1000U);
+  }
+
+  return NULL;
+}
+
+static void start_net_poll_loop(void) {
+  if (net_polling_running)
+    return;
+
+  net_polling_running = 1;
+  if (pthread_create(&net_poll_thread, NULL, net_poll_worker, NULL) != 0)
+    net_polling_running = 0;
+}
+
+static void stop_net_poll_loop(void) {
+  if (!net_polling_running)
+    return;
+
+  net_polling_running = 0;
+  pthread_join(net_poll_thread, NULL);
+}
+
 static int process_command(const char *cmd) {
   char command[32] = {0};
   char arg[192] = {0};
@@ -46,6 +149,75 @@ static int process_command(const char *cmd) {
 
   if (strcmp(command, "logs") == 0) {
     list_named_logs();
+    return 1;
+  }
+
+  if (strcmp(command, "sync") == 0 || strcmp(command, "syncstatus") == 0) {
+    if (strcmp(command, "sync") == 0)
+      (void)net_sync_poll_once();
+    render_sync_status();
+    return 1;
+  }
+
+  if (strcmp(command, "net") == 0) {
+    if (strcmp(arg, "on") == 0) {
+      config.net_enabled = 1;
+      if (net_sync_start() == 0) {
+        start_net_poll_loop();
+        snprintf(status_text, sizeof(status_text), "NET enabled");
+      } else {
+        snprintf(status_text, sizeof(status_text), "NET start failed");
+      }
+      return 1;
+    }
+
+    if (strcmp(arg, "off") == 0) {
+      config.net_enabled = 0;
+      stop_net_poll_loop();
+      net_sync_stop();
+      snprintf(status_text, sizeof(status_text), "NET disabled");
+      return 1;
+    }
+
+    if (strcmp(arg, "status") == 0) {
+      render_sync_status();
+      return 1;
+    }
+
+    if (strcmp(arg, "sync") == 0) {
+      (void)net_sync_poll_once();
+      render_sync_status();
+      return 1;
+    }
+
+    if (strncmp(arg, "role ", 5) == 0) {
+      const char *role = arg + 5;
+      if (strcmp(role, "client") == 0 || strcmp(role, "server") == 0) {
+        if (config.net_enabled) {
+          stop_net_poll_loop();
+          net_sync_stop();
+        }
+        snprintf(config.net_role, sizeof(config.net_role), "%s", role);
+        if (config.net_enabled) {
+          if (net_sync_start() == 0) {
+            start_net_poll_loop();
+            snprintf(status_text, sizeof(status_text), "NET role=%s", role);
+          } else {
+            snprintf(status_text, sizeof(status_text),
+                     "NET role switch failed");
+          }
+        } else {
+          snprintf(status_text, sizeof(status_text), "NET role=%s", role);
+        }
+      } else {
+        snprintf(status_text, sizeof(status_text),
+                 "Usage: net role client|server");
+      }
+      return 1;
+    }
+
+    snprintf(status_text, sizeof(status_text),
+             "Usage: net on|off|status|sync|role client|server");
     return 1;
   }
 
@@ -335,7 +507,14 @@ int app_controller_init(void) {
   stats_set_contest_definition(&active_contest_def);
   clear_callsign_suggestion();
 
-  if (config_load("logger.conf") != 0)
+  char config_path[512] = {0};
+  const char *runtime_logger_conf =
+      resolve_runtime_support_path("logger.conf", config_path,
+                                   sizeof(config_path)) == 0
+          ? config_path
+          : "logger.conf";
+
+  if (config_load(runtime_logger_conf) != 0)
     fprintf(stderr, "Cannot load logger.conf\n");
   else if (app_debug_enabled) {
     fprintf(stderr,
@@ -356,7 +535,14 @@ int app_controller_init(void) {
 
   stats_set_contest_definition(&active_contest_def);
 
-  cty_load("wl_cty.dat");
+  char cty_path[512] = {0};
+  const char *runtime_cty_path =
+      resolve_runtime_support_path("wl_cty.dat", cty_path,
+                                   sizeof(cty_path)) == 0
+          ? cty_path
+          : "wl_cty.dat";
+
+  cty_load(runtime_cty_path);
   qso_init();
   qtc_init();
   call_history_load_file("call_history.txt");
@@ -372,6 +558,17 @@ int app_controller_init(void) {
     update_display_info();
     return -1;
   }
+
+  if (config.net_enabled) {
+    if (net_sync_start() != 0) {
+      snprintf(status_text, sizeof(status_text), "Net sync start failed");
+      update_display_info();
+      return -1;
+    }
+
+    start_net_poll_loop();
+  }
+
   update_display_info();
 
   return 0;
@@ -383,6 +580,11 @@ int app_controller_init(void) {
  * @return Nothing.
  */
 void app_controller_shutdown(void) {
+  stop_net_poll_loop();
+
+  if (config.net_enabled)
+    net_sync_stop();
+
   dxcluster_stop();
   db_shutdown();
 }
@@ -486,7 +688,13 @@ AppControllerEvent app_controller_submit_command_text(const char *command_text) 
 
 void app_controller_complete_cty_update(int download_ok) {
   if (download_ok) {
-    int loaded = cty_load("wl_cty.dat");
+    char cty_path[512] = {0};
+    const char *runtime_cty_path =
+        resolve_runtime_support_path("wl_cty.dat", cty_path,
+                                     sizeof(cty_path)) == 0
+            ? cty_path
+            : "wl_cty.dat";
+    int loaded = cty_load(runtime_cty_path);
     if (loaded >= 0)
       snprintf(status_text, sizeof(status_text), "CTY updated (%d entries)",
                loaded);
@@ -505,7 +713,13 @@ void app_controller_complete_cty_update(int download_ok) {
  * @return Nothing.
  */
 void app_controller_perform_cty_update(void) {
-  const int download_ok = cty_download_latest("wl_cty.dat") == 0;
+  char cty_path[512] = {0};
+  const char *runtime_cty_path =
+      resolve_runtime_support_path("wl_cty.dat", cty_path,
+                                   sizeof(cty_path)) == 0
+          ? cty_path
+          : "wl_cty.dat";
+  const int download_ok = cty_download_latest(runtime_cty_path) == 0;
   app_controller_complete_cty_update(download_ok);
 }
 

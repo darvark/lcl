@@ -85,7 +85,7 @@ public:
     auto *suggest_layout = new QVBoxLayout(suggestions_frame_);
     suggest_layout->setContentsMargins(6, 6, 6, 6);
     suggest_layout->setSpacing(2);
-    auto *suggest_title = new QLabel("Call Suggestions", suggestions_frame_);
+    auto *suggest_title = new QLabel("Suggestions / SCP", suggestions_frame_);
     suggest_title->setObjectName("suggestTitle");
     suggestions_list_ = new QListWidget(suggestions_frame_);
     suggestions_list_->setFocusPolicy(Qt::NoFocus);
@@ -130,6 +130,15 @@ public:
     prepare_input(input_rst_r2_edit_);
     prepare_input(input_comments_r2_edit_);
 
+    {
+      QFont input_font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+      input_font.setPointSize(15);
+      input_call_r1_edit_->setFont(input_font);
+      input_rst_r1_edit_->setFont(input_font);
+      input_call_r2_edit_->setFont(input_font);
+      input_rst_r2_edit_->setFont(input_font);
+    }
+
     input_call_r1_edit_->setMinimumWidth(220);
     input_rst_r1_edit_->setMinimumWidth(140);
     input_comments_r1_edit_->setMinimumWidth(280);
@@ -169,13 +178,30 @@ public:
     status_layout->addWidget(info_label_, 1, Qt::AlignRight);
     left_layout->addWidget(status_panel_);
 
+    function_panel_ = new QFrame(central);
+    {
+      auto *function_layout = new QHBoxLayout(function_panel_);
+      function_layout->setContentsMargins(4, 2, 4, 2);
+      function_layout->setSpacing(3);
+      for (int i = 0; i < CW_KEY_COUNT; i++) {
+        fn_buttons_[i] = new QPushButton(QString("F%1").arg(i + 1), function_panel_);
+        fn_buttons_[i]->setFocusPolicy(Qt::NoFocus);
+        fn_buttons_[i]->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        connect(fn_buttons_[i], &QPushButton::clicked, this, [this, i]() {
+          on_cw_fn_key(i + 1);
+          refresh_ui();
+        });
+        function_layout->addWidget(fn_buttons_[i]);
+      }
+    }
+    left_layout->addWidget(function_panel_);
+
     dxcc_panel_ = new QFrame(central);
     auto *dxcc_layout = new QHBoxLayout(dxcc_panel_);
     dxcc_layout->setContentsMargins(8, 2, 8, 2);
     dxcc_label_ = new QLabel(dxcc_panel_);
     dxcc_label_->setWordWrap(false);
     dxcc_layout->addWidget(dxcc_label_);
-    left_layout->addWidget(dxcc_panel_);
 
     stats_panel_ = new QFrame(central);
     auto *stats_layout = new QHBoxLayout(stats_panel_);
@@ -183,7 +209,6 @@ public:
     stats_label_ = new QLabel(stats_panel_);
     stats_label_->setWordWrap(false);
     stats_layout->addWidget(stats_label_);
-    left_layout->addWidget(stats_panel_);
 
       op_panel_ = new QFrame(central);
         auto *op_layout = new QGridLayout(op_panel_);
@@ -361,6 +386,8 @@ public:
 
         cluster_group_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         left_layout->addWidget(cluster_group_, 1);
+    left_layout->addWidget(dxcc_panel_);
+    left_layout->addWidget(stats_panel_);
 
     bandmap2_group_ = new QGroupBox("Bandmap R2", central);
     bandmap2_group_->setObjectName("bandmapGroupR2");
@@ -396,18 +423,6 @@ public:
     main_splitter->setStretchFactor(2, 1);
     main_splitter->setSizes({170, 900, 170});
     root->addWidget(main_splitter);
-
-    function_panel_ = new QFrame(central);
-    auto *function_layout = new QVBoxLayout(function_panel_);
-    function_layout->setContentsMargins(8, 2, 8, 2);
-    function_layout->setSpacing(0);
-    function_label_ = new QLabel(function_panel_);
-    function_help_label_ = new QLabel(function_panel_);
-    function_label_->setWordWrap(false);
-    function_help_label_->setWordWrap(false);
-    function_layout->addWidget(function_label_);
-    function_layout->addWidget(function_help_label_);
-    left_layout->addWidget(function_panel_);
 
     apply_theme();
     apply_character_cell_layout();
@@ -457,6 +472,13 @@ public:
         refresh_ui();
       });
 
+            QAction *network_config_action = new QAction("Network Config", this);
+      network_config_action->setShortcut(QKeySequence("Ctrl+Shift+F9"));
+      connect(network_config_action, &QAction::triggered, this, [this]() {
+        prompt_network_configuration();
+        refresh_ui();
+      });
+
             QAction *contest_action = new QAction("Contest Config", this);
       contest_action->setShortcut(QKeySequence("Ctrl+F8"));
       connect(contest_action, &QAction::triggered, this, [this]() {
@@ -502,6 +524,11 @@ public:
       cty_action->setShortcut(QKeySequence("Ctrl+F7"));
       connect(cty_action, &QAction::triggered, this,
               [trigger_ctrl_key]() { trigger_ctrl_key(APP_KEY_F7); });
+
+      QAction *scp_action = new QAction("Update SCP (Check Partial)", this);
+      connect(scp_action, &QAction::triggered, this, [this]() {
+        start_scp_update_worker();
+      });
 
             QAction *cw_action = new QAction("CW Keyer", this);
       cw_action->setShortcut(QKeySequence("Ctrl+K"));
@@ -555,8 +582,10 @@ public:
       main_menu->addAction(export_action);
       main_menu->addSeparator();
       main_menu->addAction(station_config_action);
+      main_menu->addAction(network_config_action);
       main_menu->addAction(contest_action);
       main_menu->addAction(cty_action);
+      main_menu->addAction(scp_action);
       main_menu->addSeparator();
       main_menu->addAction(cluster_action);
       main_menu->addAction(stats_action);
@@ -590,6 +619,7 @@ public:
 
     /* try app dir (build), then CWD, then one level up (source tree) */
     reload_cw_maps_from_disk();
+    scp_load("MASTER.SCP");
 
     qtc_dialog_ = new QtcDialog(&cw_qtc_map_, this);
     qtc_history_dialog_ = new QtcHistoryDialog(this);
@@ -1037,6 +1067,118 @@ private:
       refresh_ui();
     }
 
+    void prompt_network_configuration() {
+      QDialog dialog(this);
+      dialog.setWindowTitle("Konfiguracja sieci");
+      dialog.setModal(true);
+      dialog.resize(620, 460);
+
+      auto *layout = new QVBoxLayout(&dialog);
+      auto *hint = new QLabel(
+          "Konfiguracja pracy sieciowej. Zmiany sa zapisywane do logger.conf.",
+          &dialog);
+      hint->setWordWrap(true);
+      layout->addWidget(hint);
+
+      auto *form = new QFormLayout();
+      form->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
+
+      auto *net_enabled_check = new QCheckBox(&dialog);
+      net_enabled_check->setChecked(config.net_enabled != 0);
+      form->addRow("NET_ENABLED:", net_enabled_check);
+
+      auto *station_name_edit =
+          new QLineEdit(QString::fromLatin1(config.net_station_id), &dialog);
+      station_name_edit->setPlaceholderText("np. RUN1");
+      form->addRow("NET_STATION_ID:", station_name_edit);
+
+      auto *role_combo = new QComboBox(&dialog);
+      role_combo->addItem("client", "client");
+      role_combo->addItem("server", "server");
+      const int role_index =
+          QString::fromLatin1(config.net_role).trimmed().compare("server", Qt::CaseInsensitive) == 0
+              ? 1
+              : 0;
+      role_combo->setCurrentIndex(role_index);
+      form->addRow("NET_ROLE:", role_combo);
+
+      auto *host_edit =
+          new QLineEdit(QString::fromLatin1(config.net_server_host), &dialog);
+      host_edit->setPlaceholderText("127.0.0.1 lub nazwa hosta");
+      form->addRow("NET_SERVER_HOST:", host_edit);
+
+      auto *port_spin = new QSpinBox(&dialog);
+      port_spin->setRange(1, 65535);
+      port_spin->setValue(config.net_server_port);
+      form->addRow("NET_SERVER_PORT:", port_spin);
+
+        auto *tls_check = new QCheckBox(&dialog);
+        tls_check->setChecked(config.net_tls != 0);
+        form->addRow("NET_TLS:", tls_check);
+
+        auto *shared_key_edit =
+          new QLineEdit(QString::fromLatin1(config.net_shared_key), &dialog);
+        shared_key_edit->setEchoMode(QLineEdit::PasswordEchoOnEdit);
+        shared_key_edit->setPlaceholderText("wspolny klucz autoryzacji");
+        form->addRow("NET_SHARED_KEY:", shared_key_edit);
+
+        auto *fingerprint_edit = new QLineEdit(
+          QString::fromLatin1(config.net_tls_peer_fingerprint), &dialog);
+        fingerprint_edit->setPlaceholderText(
+          "SHA-256 fingerprint serwera, np. AA:BB:CC:...");
+        form->addRow("NET_TLS_PEER_FINGERPRINT:", fingerprint_edit);
+
+      layout->addLayout(form);
+
+      auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+                                           Qt::Horizontal, &dialog);
+      connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+      connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+      layout->addWidget(buttons);
+
+      if (dialog.exec() != QDialog::Accepted)
+        return;
+
+      auto copy_field = [](char *dst, size_t dst_size, const QString &text) {
+        QByteArray bytes = text.trimmed().toLatin1();
+        std::snprintf(dst, dst_size, "%s", bytes.constData());
+      };
+
+      config.net_enabled = net_enabled_check->isChecked() ? 1 : 0;
+      copy_field(config.net_station_id, sizeof(config.net_station_id),
+                 station_name_edit->text());
+      copy_field(config.net_role, sizeof(config.net_role),
+                 role_combo->currentData().toString());
+      copy_field(config.net_server_host, sizeof(config.net_server_host),
+                 host_edit->text());
+      config.net_server_port = port_spin->value();
+      config.net_tls = tls_check->isChecked() ? 1 : 0;
+      copy_field(config.net_shared_key, sizeof(config.net_shared_key),
+                 shared_key_edit->text());
+      copy_field(config.net_auth_token, sizeof(config.net_auth_token),
+                 shared_key_edit->text());
+      copy_field(config.net_tls_peer_fingerprint,
+                 sizeof(config.net_tls_peer_fingerprint),
+                 fingerprint_edit->text());
+
+      if (config_save_active() != 0) {
+        QMessageBox::warning(this, "Konfiguracja sieci",
+                             "Nie mozna zapisac logger.conf.");
+        return;
+      }
+
+      const bool was_enabled = net_enabled_check->isChecked();
+      submit_command_text("net off");
+      if (was_enabled)
+        submit_command_text("net on");
+
+      QMessageBox::information(this, "Konfiguracja sieci",
+                               was_enabled
+                                   ? "Ustawienia sieci zapisane i sync zostal automatycznie zrestartowany."
+                                   : "Ustawienia sieci zapisane. Sync pozostaje wylaczony.");
+      refresh_ui();
+    }
+
     void prompt_contest_configuration() {
       ContestDefinition def;
       contest_definition_init_defaults(&def);
@@ -1347,10 +1489,17 @@ private:
       "QFrame { background: #95dceb; border: 1px solid #0e6a85; }"
       "QLabel { color: #0d2d3b; font-weight: bold; }");
     gap_panel_->setStyleSheet("QFrame { background: #95dceb; border: 0; }");
-    function_panel_->setStyleSheet("QFrame { background: #0f5ea4; color: #f4f8ff; font-weight: bold; }");
+    function_panel_->setStyleSheet(
+      "QFrame { background: #0f5ea4; }"
+      " QPushButton { background: #0e4a7a; color: #ffe66d; font-weight: bold;"
+      "   border: 1px solid #2a7ab0; border-radius: 3px; padding: 1px 3px; }"
+      " QPushButton:hover { background: #1565a0; }"
+      " QPushButton:pressed { background: #f3d24f; color: #111; }");
     suggestions_frame_->setStyleSheet(
         "QFrame { background: #95dceb; border: 1px solid #0e6a85; }"
-        "QLabel#suggestTitle { background: #0f5ea4; color: #f4f8ff; padding: 2px 6px; font-weight: bold; }");
+        "QLabel#suggestTitle { background: #0f5ea4; color: #f4f8ff; padding: 2px 6px; font-weight: bold; }"
+        "QListWidget { background: #9be2ef; border: 1px solid #0e6a85; }"
+        "QListWidget::item:selected { background: #f3d24f; color: #111; }");
     cluster_group_->setStyleSheet(
       "QGroupBox#clusterGroup::title { subcontrol-origin: margin; left: 10px; padding: 0 6px;"
       " color: #f4f8ff; background: #0f5ea4; }"
@@ -1465,7 +1614,7 @@ private:
     const int op_h = std::max(line_panel_h * 4 + 12, op_panel_->sizeHint().height() + 6);
     op_panel_->setFixedHeight(op_h);
     gap_panel_->setFixedHeight(line_panel_h / 2);
-    function_panel_->setFixedHeight(line_panel_h * 2);
+    function_panel_->setFixedHeight(line_panel_h);
   }
 
   void place_suggestions_panel() {
@@ -1474,7 +1623,7 @@ private:
 
     const int total_cols = std::max(1, log_group_->width() / std::max(1, cell_w_));
     const int suggest_cols = std::clamp(total_cols / 3, 24, 40);
-    const int suggest_rows = 8;
+    const int suggest_rows = 14;
     const int suggest_w = cols_to_px(suggest_cols, 14);
     const int suggest_h = (suggest_rows + 2) * (cell_h_ + 2) + 8;
     suggestions_frame_->setFixedSize(suggest_w, suggest_h);
@@ -1483,6 +1632,34 @@ private:
     const int y = 26;
     suggestions_frame_->move(x, y);
     suggestions_frame_->raise();
+  }
+
+  void place_scp_panel() { /* removed — merged into suggestions panel */ }
+
+  void start_scp_update_worker() {
+    if (scp_update_worker_running_)
+      return;
+    scp_update_worker_running_ = true;
+    std::thread([this]() {
+      const int ok = scp_download_latest("MASTER.SCP") == 0;
+      QMetaObject::invokeMethod(
+          this,
+          [this, ok]() {
+            scp_update_worker_running_ = false;
+            if (ok) {
+              scp_load("MASTER.SCP");
+              QMessageBox::information(this, "SCP Update",
+                QString("MASTER.SCP downloaded successfully.\n%1 callsigns loaded.")
+                    .arg(scp_count()));
+            } else {
+              QMessageBox::warning(this, "SCP Update",
+                "Failed to download MASTER.SCP.\n"
+                "Check your internet connection and try again.");
+            }
+            refresh_ui();
+          },
+          Qt::QueuedConnection);
+    }).detach();
   }
 
   void refresh_log_table() {
@@ -2003,7 +2180,20 @@ private:
   }
 
   void refresh_suggestions() {
-    if (!call_suggestion_available || call_suggestion_count <= 0) {
+    AppRenderState state;
+    app_controller_get_render_state(&state);
+    const char *partial = state.active_radio == 2
+                            ? state.input_call_r2
+                            : state.input_call_r1;
+
+    const bool has_history = call_suggestion_available && call_suggestion_count > 0;
+
+    char scp_results[SCP_SEARCH_MAX][SCP_CALL_LEN];
+    int scp_found = 0;
+    if (partial && partial[0] != '\0' && strlen(partial) >= 2 && scp_count() > 0)
+      scp_found = scp_search(partial, scp_results, SCP_SEARCH_MAX);
+
+    if (!has_history && scp_found == 0) {
       set_visible_if_changed(suggestions_frame_, false);
       set_stylesheet_if_changed(input_panel_,
                                 "QFrame { background: #9be2ef; border: 1px solid #0e6a85; }");
@@ -2013,25 +2203,50 @@ private:
 
     set_visible_if_changed(suggestions_frame_, true);
     place_suggestions_panel();
-
     set_stylesheet_if_changed(input_panel_,
-                              "QFrame { background: #f3d24f; border: 1px solid #0e6a85; }");
+      has_history ? "QFrame { background: #f3d24f; border: 1px solid #0e6a85; }"
+                  : "QFrame { background: #9be2ef; border: 1px solid #0e6a85; }");
 
     std::uint64_t signature = 1469598103934665603ULL;
     signature = hash_mix(signature, (std::uint64_t)call_suggestion_count);
     signature = hash_mix(signature, (std::uint64_t)call_suggestion_selected_index);
     for (int i = 0; i < call_suggestion_count; i++)
       signature = hash_cstr(signature, call_suggestion_matches[i]);
+    signature = hash_mix(signature, (std::uint64_t)scp_found);
+    if (partial)
+      signature = hash_cstr(signature, partial);
 
     if (signature != last_suggestions_signature_) {
       suggestions_list_->clear();
-      for (int i = 0; i < call_suggestion_count; i++)
-        suggestions_list_->addItem(call_suggestion_matches[i]);
+
+      /* History items — dark yellow */
+      for (int i = 0; i < call_suggestion_count; i++) {
+        auto *item = new QListWidgetItem(call_suggestion_matches[i]);
+        item->setForeground(QColor(0x82, 0x6a, 0x00));
+        suggestions_list_->addItem(item);
+      }
+
+      /* SCP items — dark green; skip duplicates already from history */
+      for (int i = 0; i < scp_found; i++) {
+        bool in_history = false;
+        for (int j = 0; j < call_suggestion_count; j++) {
+          if (strcasecmp(scp_results[i], call_suggestion_matches[j]) == 0) {
+            in_history = true;
+            break;
+          }
+        }
+        if (!in_history) {
+          auto *item = new QListWidgetItem(scp_results[i]);
+          item->setForeground(QColor(0x1b, 0x5e, 0x20));
+          suggestions_list_->addItem(item);
+        }
+      }
+
       last_suggestions_signature_ = signature;
     }
 
-    if (call_suggestion_selected_index >= 0 &&
-        call_suggestion_selected_index < suggestions_list_->count()) {
+    if (has_history && call_suggestion_selected_index >= 0 &&
+        call_suggestion_selected_index < call_suggestion_count) {
       suggestions_list_->setCurrentRow(call_suggestion_selected_index);
       suggestions_list_->scrollToItem(suggestions_list_->item(call_suggestion_selected_index));
     }
@@ -2466,7 +2681,6 @@ private:
     const int info_cols = panel_available_cols(status_panel_, 16) / 2;
     const int dxcc_cols = panel_available_cols(dxcc_panel_, 16);
     const int stats_cols = panel_available_cols(stats_panel_, 16);
-    const int func_cols = panel_available_cols(function_panel_, 16);
 
     set_text_if_changed(input_call_r1_edit_,
                         clip_cstr_to_cols(state.input_call_r1, input_call_cols_r1));
@@ -2520,6 +2734,30 @@ private:
         : QString("Status: %1").arg(state.status ? state.status : ""),
       std::max(1, status_cols)));
     QString info_text = QString("Info: %1").arg(state.info ? state.info : "");
+
+    NetSyncStatus sync_state;
+    std::memset(&sync_state, 0, sizeof(sync_state));
+    net_sync_get_status(&sync_state);
+
+    QString network_text;
+    if (!config.net_enabled) {
+      network_text = "NET: OFF | SYNC: OFF";
+    } else {
+      const QString station = QString::fromLatin1(
+          sync_state.station_id[0] ? sync_state.station_id : config.net_station_id);
+      const QString role = QString::fromLatin1(config.net_role[0] ? config.net_role : "client");
+      const QString net_state = sync_state.connected ? "ONLINE" : "OFFLINE";
+      const QString sync_state_text = sync_state.connected ? "OK" : "WAIT";
+      network_text = QString("NET: %1 %2 %3 | SYNC: %4 pending=%5")
+                         .arg(station.isEmpty() ? QString("-") : station)
+                         .arg(role)
+                         .arg(net_state)
+                         .arg(sync_state_text)
+                         .arg(sync_state.pending_outbox);
+    }
+
+    info_text = QString("%1 | %2").arg(info_text, network_text);
+
     if (contest_entry_mode) {
       const QString exchange_label =
         QString::fromLatin1(state.contest_exchange_label ? state.contest_exchange_label : "Exchange");
@@ -2611,24 +2849,38 @@ private:
                      .arg(state.radio2_freq_khz)
                      .arg(state.radio2_mode ? state.radio2_mode : ""));
 
-    if (cty_update_in_progress) {
-        set_text_if_changed(function_label_,
-          clip_to_cols("Fn: CTY update in progress... keyboard locked",
-                 std::max(1, func_cols)));
-      set_text_if_changed(function_help_label_,
-          clip_to_cols("Ctrl+Fn: unavailable during CTY update",
-                 std::max(1, func_cols)));
+    {
+      const int active_radio = state.active_radio;
+      const bool is_run = active_radio == 2 ? state.radio2_run : state.radio1_run;
+      const char *mode = active_radio == 2 ? state.radio2_mode : state.radio1_mode;
+      const char *rst  = (mode && std::strstr(mode, "CW")) ? "599" : "59";
+      const char *exch = state.contest_exchange_sent ? state.contest_exchange_sent : "";
+      const char *hiscall = active_radio == 2 ? state.input_call_r2 : state.input_call_r1;
+      for (int i = 0; i < CW_KEY_COUNT; i++) {
+        const char *tpl = cw_keys_get(&cw_key_map_, i + 1, is_run ? 1 : 0);
+        char expanded[256] = {0};
+        if (tpl && tpl[0])
+          cw_keys_expand(tpl, config.station_call, rst, exch, hiscall,
+                         expanded, sizeof(expanded));
+        const QString lbl = expanded[0]
+          ? QString("F%1: %2").arg(i + 1).arg(QString::fromLatin1(expanded).simplified())
+          : QString("F%1: —").arg(i + 1);
+        set_text_if_changed(fn_buttons_[i], lbl);
+        if (expanded[0])
+          fn_buttons_[i]->setToolTip(QString::fromLatin1(expanded).simplified());
+        fn_buttons_[i]->setEnabled(!cty_update_in_progress);
+      }
       set_stylesheet_if_changed(function_panel_,
-          "QFrame { background: #f3d24f; color: #111; font-weight: bold; }");
-    } else {
-        set_text_if_changed(function_label_, clip_to_cols(
-      build_fn_status_text(state),
-          std::max(1, func_cols)));
-      set_text_if_changed(function_help_label_, clip_to_cols(
-        "Ctrl+F1 Docs | Ctrl+F2 New Log | Ctrl+F3 Open Log | Ctrl+F4 Export | Ctrl+F5 DXCluster | Ctrl+F6 Stats | Ctrl+F7 Update CTY | Ctrl+F8 Contest | Ctrl+B Bandmap R1 | Ctrl+D Bandmap R2 | Ctrl+Up/Down Bandmap | Ctrl+L QTC | Ctrl+Shift+L QTC History | Ctrl+F10 Quit | Ctrl+K CW Keyer",
-          std::max(1, func_cols)));
-      set_stylesheet_if_changed(function_panel_,
-          "QFrame { background: #0f5ea4; color: #f4f8ff; font-weight: bold; }");
+        cty_update_in_progress
+          ? "QFrame { background: #f3d24f; }"
+            " QPushButton { background: #e0b030; color: #111; font-weight: bold;"
+            "   border: 1px solid #a07800; border-radius: 3px; padding: 1px 3px; }"
+            " QPushButton:disabled { color: #555; }"
+          : "QFrame { background: #0f5ea4; }"
+            " QPushButton { background: #0e4a7a; color: #ffe66d; font-weight: bold;"
+            "   border: 1px solid #2a7ab0; border-radius: 3px; padding: 1px 3px; }"
+            " QPushButton:hover { background: #1565a0; }"
+            " QPushButton:pressed { background: #f3d24f; color: #111; }");
     }
 
     refresh_log_table();
@@ -2644,7 +2896,6 @@ private:
     set_visible_if_changed(dxcc_panel_, true);
     set_visible_if_changed(stats_panel_, true);
     set_visible_if_changed(gap_panel_, true);
-    set_visible_if_changed(suggestions_frame_, call_suggestion_available != 0);
     set_visible_if_changed(cluster_group_, state.cluster_view);
     bandmap_group_->setMinimumWidth(bandmap_r1_visible_ ? 170 : 0);
     set_visible_if_changed(bandmap_group_, bandmap_r1_visible_);
@@ -2760,8 +3011,11 @@ private:
   QLabel *cw_status_r2_label_ = nullptr;
 
   QFrame *function_panel_ = nullptr;
-  QLabel *function_label_ = nullptr;
-  QLabel *function_help_label_ = nullptr;
+  std::array<QPushButton *, CW_KEY_COUNT> fn_buttons_{};
+
+  QFrame *scp_frame_ = nullptr;  /* unused — kept for linker compat */
+  QListWidget *scp_list_ = nullptr;
+  bool         scp_update_worker_running_ = false;
 
   CwKeyerDialog *cw_dialog_ = nullptr;
   CwMessagesConfigDialog *cw_messages_dialog_ = nullptr;

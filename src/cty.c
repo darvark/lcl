@@ -43,14 +43,15 @@ int cty_download_latest(const char *filename) {
   char cmd[512];
 
   snprintf(cmd, sizeof(cmd),
-           "curl -fsSLk --connect-timeout 10 --max-time 90 \"%s\" -o \"%s\"",
+           "command -v curl >/dev/null 2>&1 && curl -fsSLk --connect-timeout 10 --max-time 90 \"%s\" -o \"%s\"",
            CTY_URL, tmp_file);
 
   int status = system(cmd);
 
   if (!command_ok(status)) {
     snprintf(cmd, sizeof(cmd),
-             "wget -q -T 90 -O \"%s\" \"%s\"", tmp_file, CTY_URL);
+             "command -v wget >/dev/null 2>&1 && wget -q -T 90 -O \"%s\" \"%s\"",
+             tmp_file, CTY_URL);
     status = system(cmd);
   }
 

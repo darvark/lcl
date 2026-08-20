@@ -11,8 +11,6 @@
 
 #include "config.h"
 
-#define DXCLUSTER_TRAFFIC_LOG "dxcluster_traffic.txt"
-#define DXCLUSTER_TRAFFIC_MAX_SIZE (1024 * 1024)
 #define DXCLUSTER_CONNECT_TIMEOUT_SEC 30
 #define DXCLUSTER_RECONNECT_DELAY_SEC 120
 
@@ -21,7 +19,6 @@ int spot_count = 0;
 int spot_start = 0;
 char dxcluster_status[128] = "DXCluster idle";
 pthread_mutex_t dxcluster_mutex = PTHREAD_MUTEX_INITIALIZER;
-static FILE *dxcluster_log = NULL;
 
 static int worker_started = 0;
 static int retry_requested = 0;
@@ -60,18 +57,6 @@ static void dxcluster_debug_log(const char *fmt, ...) {
 }
 
 /* ------------------------------------------------ */
-
-/*
- * Close the DXCluster traffic log if it is open.
- *
- * @return Nothing.
- */
-static void dxcluster_close_log(void) {
-  if (dxcluster_log) {
-    fclose(dxcluster_log);
-    dxcluster_log = NULL;
-  }
-}
 
 /*
  * Close both ends of the stop pipe.
@@ -142,51 +127,6 @@ static void dxcluster_sleep_seconds(int timeout_sec) {
 }
 
 /*
- * Open the DXCluster traffic log if needed.
- *
- * @return Nothing.
- */
-static void dxcluster_open_log(void) {
-  if (dxcluster_log)
-    return;
-
-  dxcluster_log = fopen(DXCLUSTER_TRAFFIC_LOG, "a+");
-  if (!dxcluster_log)
-    return;
-
-  if (fseek(dxcluster_log, 0, SEEK_END) == 0) {
-    long size = ftell(dxcluster_log);
-    if (size > DXCLUSTER_TRAFFIC_MAX_SIZE) {
-      fclose(dxcluster_log);
-      dxcluster_log = fopen(DXCLUSTER_TRAFFIC_LOG, "w");
-    }
-  }
-}
-
-/*
- * Append a raw DXCluster line to the traffic log.
- *
- * @param line Text to log.
- * @return Nothing.
- */
-static void dxcluster_log_line(const char *line) {
-  if (!line)
-    return;
-
-  dxcluster_open_log();
-  if (!dxcluster_log)
-    return;
-
-  fprintf(dxcluster_log, "%s\n", line);
-  fflush(dxcluster_log);
-
-  if (ftell(dxcluster_log) >= DXCLUSTER_TRAFFIC_MAX_SIZE) {
-    fclose(dxcluster_log);
-    dxcluster_log = fopen(DXCLUSTER_TRAFFIC_LOG, "w");
-  }
-}
-
-/*
  * Check whether a line looks like a DX de spot.
  *
  * @param line Input text.
@@ -211,8 +151,6 @@ static bool dxcluster_line_is_dx_de(const char *line) {
 static void add_spot(const char *line) {
   if (!line || !line[0])
     return;
-
-  dxcluster_log_line(line);
 
   char copy[512];
   strncpy(copy, line, sizeof(copy) - 1);

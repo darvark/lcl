@@ -1,6 +1,7 @@
 #include "config.h"
 
 Config config;
+static char config_last_loaded_path[512] = {0};
 
 /*
  * Trim leading and trailing whitespace from a string in place.
@@ -72,6 +73,25 @@ static void set_defaults(void) {
   strcpy(config.cw_keyer_line, "DTR");
   config.cw_wpm = 20;
   config.cw_auto_connect = 1;
+
+  config.net_enabled = 0;
+  strcpy(config.net_role, "client");
+  strcpy(config.net_station_id, "");
+  strcpy(config.net_server_host, "127.0.0.1");
+  config.net_server_port = 9230;
+  strcpy(config.net_auth_token, "");
+  strcpy(config.net_shared_key, "");
+  strcpy(config.net_tls_cert_file, "logger_net_cert.pem");
+  strcpy(config.net_tls_key_file, "logger_net_key.pem");
+  strcpy(config.net_tls_peer_fingerprint, "");
+  config.net_sync_interval_ms = 1000;
+  config.net_heartbeat_sec = 5;
+  config.net_retry_min_ms = 1000;
+  config.net_retry_max_ms = 30000;
+  config.net_tls = 0;
+  config.net_rate_limit_window_sec = 1;
+  config.net_rate_limit_burst = 32;
+  config.net_max_frame_bytes = 65536;
 }
 
 /*
@@ -83,10 +103,17 @@ static void set_defaults(void) {
 int config_load(const char *filename) {
   set_defaults();
 
+  config_last_loaded_path[0] = 0;
+
   FILE *f = fopen(filename, "r");
 
   if (!f)
     return -1;
+
+  if (filename && filename[0]) {
+    strncpy(config_last_loaded_path, filename, sizeof(config_last_loaded_path));
+    config_last_loaded_path[sizeof(config_last_loaded_path) - 1] = 0;
+  }
 
   char line[256];
 
@@ -207,8 +234,81 @@ int config_load(const char *filename) {
       if (config.cw_wpm > 60) config.cw_wpm = 60;
     } else if (strcmp(key, "CW_AUTO_CONNECT") == 0) {
       config.cw_auto_connect = atoi(value) ? 1 : 0;
+    } else if (strcmp(key, "NET_ENABLED") == 0) {
+      config.net_enabled = atoi(value) ? 1 : 0;
+    } else if (strcmp(key, "NET_ROLE") == 0) {
+      strncpy(config.net_role, value, sizeof(config.net_role));
+      config.net_role[sizeof(config.net_role) - 1] = 0;
+    } else if (strcmp(key, "NET_STATION_ID") == 0) {
+      strncpy(config.net_station_id, value, sizeof(config.net_station_id));
+      config.net_station_id[sizeof(config.net_station_id) - 1] = 0;
+    } else if (strcmp(key, "NET_SERVER_HOST") == 0) {
+      strncpy(config.net_server_host, value, sizeof(config.net_server_host));
+      config.net_server_host[sizeof(config.net_server_host) - 1] = 0;
+    } else if (strcmp(key, "NET_SERVER_PORT") == 0) {
+      config.net_server_port = atoi(value);
+      if (config.net_server_port < 1) config.net_server_port = 1;
+      if (config.net_server_port > 65535) config.net_server_port = 65535;
+    } else if (strcmp(key, "NET_AUTH_TOKEN") == 0) {
+      strncpy(config.net_auth_token, value, sizeof(config.net_auth_token));
+      config.net_auth_token[sizeof(config.net_auth_token) - 1] = 0;
+      if (!config.net_shared_key[0]) {
+        strncpy(config.net_shared_key, value, sizeof(config.net_shared_key));
+        config.net_shared_key[sizeof(config.net_shared_key) - 1] = 0;
+      }
+    } else if (strcmp(key, "NET_SHARED_KEY") == 0) {
+      strncpy(config.net_shared_key, value, sizeof(config.net_shared_key));
+      config.net_shared_key[sizeof(config.net_shared_key) - 1] = 0;
+      if (!config.net_auth_token[0]) {
+        strncpy(config.net_auth_token, value, sizeof(config.net_auth_token));
+        config.net_auth_token[sizeof(config.net_auth_token) - 1] = 0;
+      }
+    } else if (strcmp(key, "NET_TLS_CERT_FILE") == 0) {
+      strncpy(config.net_tls_cert_file, value, sizeof(config.net_tls_cert_file));
+      config.net_tls_cert_file[sizeof(config.net_tls_cert_file) - 1] = 0;
+    } else if (strcmp(key, "NET_TLS_KEY_FILE") == 0) {
+      strncpy(config.net_tls_key_file, value, sizeof(config.net_tls_key_file));
+      config.net_tls_key_file[sizeof(config.net_tls_key_file) - 1] = 0;
+    } else if (strcmp(key, "NET_TLS_PEER_FINGERPRINT") == 0) {
+      strncpy(config.net_tls_peer_fingerprint, value,
+              sizeof(config.net_tls_peer_fingerprint));
+      config.net_tls_peer_fingerprint[sizeof(config.net_tls_peer_fingerprint) -
+                                      1] = 0;
+    } else if (strcmp(key, "NET_SYNC_INTERVAL_MS") == 0) {
+      config.net_sync_interval_ms = atoi(value);
+      if (config.net_sync_interval_ms < 100) config.net_sync_interval_ms = 100;
+      if (config.net_sync_interval_ms > 60000) config.net_sync_interval_ms = 60000;
+    } else if (strcmp(key, "NET_HEARTBEAT_SEC") == 0) {
+      config.net_heartbeat_sec = atoi(value);
+      if (config.net_heartbeat_sec < 1) config.net_heartbeat_sec = 1;
+      if (config.net_heartbeat_sec > 300) config.net_heartbeat_sec = 300;
+    } else if (strcmp(key, "NET_RETRY_MIN_MS") == 0) {
+      config.net_retry_min_ms = atoi(value);
+      if (config.net_retry_min_ms < 100) config.net_retry_min_ms = 100;
+      if (config.net_retry_min_ms > 60000) config.net_retry_min_ms = 60000;
+    } else if (strcmp(key, "NET_RETRY_MAX_MS") == 0) {
+      config.net_retry_max_ms = atoi(value);
+      if (config.net_retry_max_ms < 100) config.net_retry_max_ms = 100;
+      if (config.net_retry_max_ms > 600000) config.net_retry_max_ms = 600000;
+    } else if (strcmp(key, "NET_TLS") == 0) {
+      config.net_tls = atoi(value) ? 1 : 0;
+    } else if (strcmp(key, "NET_RATE_LIMIT_WINDOW_SEC") == 0) {
+      config.net_rate_limit_window_sec = atoi(value);
+      if (config.net_rate_limit_window_sec < 1) config.net_rate_limit_window_sec = 1;
+      if (config.net_rate_limit_window_sec > 300) config.net_rate_limit_window_sec = 300;
+    } else if (strcmp(key, "NET_RATE_LIMIT_BURST") == 0) {
+      config.net_rate_limit_burst = atoi(value);
+      if (config.net_rate_limit_burst < 1) config.net_rate_limit_burst = 1;
+      if (config.net_rate_limit_burst > 10000) config.net_rate_limit_burst = 10000;
+    } else if (strcmp(key, "NET_MAX_FRAME_BYTES") == 0) {
+      config.net_max_frame_bytes = atoi(value);
+      if (config.net_max_frame_bytes < 1024) config.net_max_frame_bytes = 1024;
+      if (config.net_max_frame_bytes > 1048576) config.net_max_frame_bytes = 1048576;
     }
   }
+
+  if (config.net_retry_max_ms < config.net_retry_min_ms)
+    config.net_retry_max_ms = config.net_retry_min_ms;
 
   fclose(f);
 
@@ -265,7 +365,42 @@ int config_save(const char *filename) {
   fprintf(f, "CW_KEYER_LINE=%s\n", config.cw_keyer_line);
   fprintf(f, "CW_WPM=%d\n", config.cw_wpm);
   fprintf(f, "CW_AUTO_CONNECT=%d\n", config.cw_auto_connect ? 1 : 0);
+  fprintf(f, "\n");
+  fprintf(f, "# Network Basic\n");
+  fprintf(f, "NET_ENABLED=%d\n", config.net_enabled ? 1 : 0);
+  fprintf(f, "NET_ROLE=%s\n", config.net_role);
+  fprintf(f, "NET_STATION_ID=%s\n", config.net_station_id);
+  fprintf(f, "NET_SERVER_HOST=%s\n", config.net_server_host);
+  fprintf(f, "NET_SERVER_PORT=%d\n", config.net_server_port);
+  fprintf(f, "\n");
+  fprintf(f, "# Network Security\n");
+  fprintf(f, "NET_AUTH_TOKEN=%s\n", config.net_auth_token);
+  fprintf(f, "NET_SHARED_KEY=%s\n", config.net_shared_key);
+  fprintf(f, "NET_TLS_CERT_FILE=%s\n", config.net_tls_cert_file);
+  fprintf(f, "NET_TLS_KEY_FILE=%s\n", config.net_tls_key_file);
+  fprintf(f, "NET_TLS_PEER_FINGERPRINT=%s\n", config.net_tls_peer_fingerprint);
+  fprintf(f, "NET_TLS=%d\n", config.net_tls ? 1 : 0);
+  fprintf(f, "\n");
+  fprintf(f, "# Network Runtime\n");
+  fprintf(f, "NET_SYNC_INTERVAL_MS=%d\n", config.net_sync_interval_ms);
+  fprintf(f, "NET_HEARTBEAT_SEC=%d\n", config.net_heartbeat_sec);
+  fprintf(f, "NET_RETRY_MIN_MS=%d\n", config.net_retry_min_ms);
+  fprintf(f, "NET_RETRY_MAX_MS=%d\n", config.net_retry_max_ms);
+  fprintf(f, "NET_RATE_LIMIT_WINDOW_SEC=%d\n", config.net_rate_limit_window_sec);
+  fprintf(f, "NET_RATE_LIMIT_BURST=%d\n", config.net_rate_limit_burst);
+  fprintf(f, "NET_MAX_FRAME_BYTES=%d\n", config.net_max_frame_bytes);
+  fprintf(f, "\n");
 
   fclose(f);
   return 0;
+}
+
+const char *config_loaded_path(void) {
+  return config_last_loaded_path[0] ? config_last_loaded_path : NULL;
+}
+
+int config_save_active(void) {
+  if (config_last_loaded_path[0])
+    return config_save(config_last_loaded_path);
+  return config_save("logger.conf");
 }
