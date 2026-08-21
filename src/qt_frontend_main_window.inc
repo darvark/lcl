@@ -945,6 +945,9 @@ private:
       general_form->addRow("OPERATOR_NAME:", operator_name_edit);
       auto *locator_edit = new QLineEdit(QString::fromLatin1(config.locator), &dialog);
       general_form->addRow("LOCATOR:", locator_edit);
+      auto *ui_theme_monokai_check = new QCheckBox(&dialog);
+      ui_theme_monokai_check->setChecked(config.ui_monokai_theme != 0);
+      general_form->addRow("UI_THEME_MONOKAI:", ui_theme_monokai_check);
       layout->addWidget(general_group);
 
       auto *dx_group = new QGroupBox("DX Cluster", &dialog);
@@ -1074,6 +1077,7 @@ private:
         snprintf(config.operator_call, sizeof(config.operator_call), "%s", config.station_call);
       copy_field(config.operator_name, sizeof(config.operator_name), operator_name_edit->text());
       copy_field(config.locator, sizeof(config.locator), locator_edit->text());
+      config.ui_monokai_theme = ui_theme_monokai_check->isChecked() ? 1 : 0;
       copy_field(config.dxc_host, sizeof(config.dxc_host), dxc_host_edit->text());
       config.dxc_port = dxc_port_spin->value();
       copy_field(config.dxc_call, sizeof(config.dxc_call), dxc_call_edit->text());
@@ -1102,6 +1106,7 @@ private:
         return;
       }
 
+      apply_theme();
       refresh_ui();
     }
 
@@ -1508,62 +1513,91 @@ private:
   }
 
   void apply_theme() {
+    const bool monokai = config.ui_monokai_theme != 0;
+    const QString bg = monokai ? QString("#272822") : QString("#89d4e8");
+    const QString panel = monokai ? QString("#3e3d32") : QString("#9be2ef");
+    const QString panel_alt = monokai ? QString("#383830") : QString("#95dceb");
+    const QString border = monokai ? QString("#75715e") : QString("#0e6a85");
+    const QString text = monokai ? QString("#f8f8f2") : QString("#0d2d3b");
+    const QString title_bg = monokai ? QString("#504945") : QString("#0f5ea4");
+    const QString title_text = monokai ? QString("#f8f8f2") : QString("#f4f8ff");
+    const QString accent = monokai ? QString("#a6e22e") : QString("#f3d24f");
+    const QString accent_text = monokai ? QString("#1b1d1e") : QString("#111111");
+    const QString status_bg = monokai ? QString("#504945") : QString("#0f5ea4");
+    const QString status_text = monokai ? QString("#f8f8f2") : QString("#f4f8ff");
+    const QString header_bg = monokai ? QString("#504945") : QString("#0f5ea4");
+    const QString header_text = monokai ? QString("#f8f8f2") : QString("#ffe66d");
+    const QString button_bg = monokai ? QString("#3e3d32") : QString("#0e4a7a");
+    const QString button_text = monokai ? QString("#f8f8f2") : QString("#ffe66d");
+    const QString button_hover = monokai ? QString("#6a695f") : QString("#1565a0");
+
     QFont mono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     mono.setPointSize(10);
     setFont(mono);
 
     setStyleSheet(
-      "QMainWindow, QWidget { background: #89d4e8; color: #0d2d3b; }"
-        "QGroupBox { border: 1px solid #0e6a85; border-radius: 3px; margin-top: 8px;"
-      "          background: #95dceb; font-weight: bold; }"
-      "QGroupBox#logGroup::title { subcontrol-origin: margin; left: 10px;"
-"                           padding: 0 6px; color: #f4f8ff; background: #0f5ea4; }"
-      "QGroupBox#clusterGroup::title { subcontrol-origin: margin; left: 10px; padding: 0 6px;"
-      "                               color: #f4f8ff; background: #0f5ea4; }"
-      "QHeaderView::section { background: #0f5ea4; color: #ffe66d; padding: 1px 4px;"
-        "                       border: 0; font-weight: bold; }"
-      "QTableWidget { background: #9be2ef; gridline-color: #5ca9bf; }"
-        "QLineEdit { background: #9be2ef; border: 1px solid #0e6a85; color: #0d2d3b; }"
-        "QFrame#suggestTitle { color: #f4f8ff; }"
-        "QListWidget { background: #9be2ef; border: 1px solid #0e6a85; }"
-        "QListWidget::item:selected { background: #f3d24f; color: #111; }");
+      QString("QMainWindow, QWidget { background: %1; color: %2; }")
+          .arg(bg, text)
+      + QString("QGroupBox { border: 1px solid %1; border-radius: 3px; margin-top: 8px; background: %2; font-weight: bold; }")
+          .arg(border, panel_alt)
+      + QString("QGroupBox#logGroup::title { subcontrol-origin: margin; left: 10px; padding: 0 6px; color: %1; background: %2; }")
+          .arg(title_text, title_bg)
+      + QString("QGroupBox#clusterGroup::title { subcontrol-origin: margin; left: 10px; padding: 0 6px; color: %1; background: %2; }")
+          .arg(title_text, title_bg)
+      + QString("QHeaderView::section { background: %1; color: %2; padding: 1px 4px; border: 0; font-weight: bold; }")
+          .arg(header_bg, header_text)
+      + QString("QTableWidget { background: %1; gridline-color: %2; }")
+          .arg(panel, border)
+      + QString("QLineEdit { background: %1; border: 1px solid %2; color: %3; }")
+          .arg(panel, border, text)
+      + QString("QFrame#suggestTitle { color: %1; }")
+          .arg(title_text)
+      + QString("QListWidget { background: %1; border: 1px solid %2; }")
+          .arg(panel, border)
+      + QString("QListWidget::item:selected { background: %1; color: %2; }")
+          .arg(accent, accent_text));
 
-    input_panel_->setStyleSheet("QFrame { background: #9be2ef; border: 1px solid #0e6a85; }");
-    status_panel_->setStyleSheet("QFrame { background: #0f5ea4; color: #f4f8ff; }");
-    dxcc_panel_->setStyleSheet("QFrame { background: #0f5ea4; color: #ffe66d; font-weight: bold; }");
-    stats_panel_->setStyleSheet("QFrame { background: #0f5ea4; color: #ffe66d; font-weight: bold; }");
+    input_panel_->setStyleSheet(QString("QFrame { background: %1; border: 1px solid %2; }").arg(panel, border));
+    status_panel_->setStyleSheet(QString("QFrame { background: %1; color: %2; }").arg(status_bg, status_text));
+    dxcc_panel_->setStyleSheet(QString("QFrame { background: %1; color: %2; font-weight: bold; }").arg(status_bg, monokai ? "#fd971f" : "#ffe66d"));
+    stats_panel_->setStyleSheet(QString("QFrame { background: %1; color: %2; font-weight: bold; }").arg(status_bg, monokai ? "#fd971f" : "#ffe66d"));
     op_panel_->setStyleSheet(
-      "QFrame { background: #95dceb; border: 1px solid #0e6a85; }"
-      "QLabel { color: #0d2d3b; font-weight: bold; }");
-    gap_panel_->setStyleSheet("QFrame { background: #95dceb; border: 0; }");
+      QString("QFrame { background: %1; border: 1px solid %2; }")
+      .arg(panel_alt, border)
+      + QString("QLabel { color: %1; font-weight: bold; }").arg(text));
+    gap_panel_->setStyleSheet(QString("QFrame { background: %1; border: 0; }").arg(panel_alt));
     function_panel_->setStyleSheet(
-      "QFrame { background: #0f5ea4; }"
-      " QPushButton { background: #0e4a7a; color: #ffe66d; font-weight: bold;"
-      "   border: 1px solid #2a7ab0; border-radius: 3px; padding: 1px 3px; }"
-      " QPushButton:hover { background: #1565a0; }"
-      " QPushButton:pressed { background: #f3d24f; color: #111; }");
+      QString("QFrame { background: %1; }").arg(status_bg)
+      + QString(" QPushButton { background: %1; color: %2; font-weight: bold; border: 1px solid %3; border-radius: 3px; padding: 1px 3px; }")
+          .arg(button_bg, button_text, border)
+      + QString(" QPushButton:hover { background: %1; }").arg(button_hover)
+      + QString(" QPushButton:pressed { background: %1; color: %2; }").arg(accent, accent_text));
     suggestions_frame_->setStyleSheet(
-        "QFrame { background: #95dceb; border: 1px solid #0e6a85; }"
-        "QLabel#suggestTitle { background: #0f5ea4; color: #f4f8ff; padding: 2px 6px; font-weight: bold; }"
-        "QListWidget { background: #9be2ef; border: 1px solid #0e6a85; }"
-        "QListWidget::item:selected { background: #f3d24f; color: #111; }");
+        QString("QFrame { background: %1; border: 1px solid %2; }")
+            .arg(panel_alt, border)
+        + QString("QLabel#suggestTitle { background: %1; color: %2; padding: 2px 6px; font-weight: bold; }")
+            .arg(title_bg, title_text)
+        + QString("QListWidget { background: %1; border: 1px solid %2; }")
+            .arg(panel, border)
+        + QString("QListWidget::item:selected { background: %1; color: %2; }")
+            .arg(accent, accent_text));
     cluster_group_->setStyleSheet(
-      "QGroupBox#clusterGroup::title { subcontrol-origin: margin; left: 10px; padding: 0 6px;"
-      " color: #f4f8ff; background: #0f5ea4; }"
-      "QCheckBox { color: #0d2d3b; font-weight: bold; }");
+      QString("QGroupBox#clusterGroup::title { subcontrol-origin: margin; left: 10px; padding: 0 6px; color: %1; background: %2; }")
+      .arg(title_text, title_bg)
+      + QString("QCheckBox { color: %1; font-weight: bold; }").arg(text));
     if (cat_group_) {
       cat_group_->setStyleSheet(
-        "QGroupBox#catGroup::title { subcontrol-origin: margin; left: 10px; padding: 0 6px;"
-        " color: #f4f8ff; background: #0f5ea4; }"
-        "QLabel { color: #0d2d3b; font-weight: bold; }");
+        QString("QGroupBox#catGroup::title { subcontrol-origin: margin; left: 10px; padding: 0 6px; color: %1; background: %2; }")
+        .arg(title_text, title_bg)
+        + QString("QLabel { color: %1; font-weight: bold; }").arg(text));
     }
     bandmap_group_->setStyleSheet(
-      "QGroupBox#bandmapGroup::title { subcontrol-origin: margin; left: 10px; padding: 0 6px;"
-      " color: #f4f8ff; background: #0f5ea4; }");
+      QString("QGroupBox#bandmapGroup::title { subcontrol-origin: margin; left: 10px; padding: 0 6px; color: %1; background: %2; }")
+      .arg(title_text, title_bg));
     if (bandmap2_group_) {
       bandmap2_group_->setStyleSheet(
-        "QGroupBox#bandmapGroupR2::title { subcontrol-origin: margin; left: 10px; padding: 0 6px;"
-        " color: #f4f8ff; background: #0f5ea4; }");
+        QString("QGroupBox#bandmapGroupR2::title { subcontrol-origin: margin; left: 10px; padding: 0 6px; color: %1; background: %2; }")
+        .arg(title_text, title_bg));
     }
   }
 
@@ -2150,6 +2184,13 @@ private:
       }
     }
 
+    const int current_row = list->currentRow();
+    if (current_row >= 0 && current_row < (int)freqs.size()) {
+      list->setCurrentRow(current_row);
+      list->scrollToItem(list->item(current_row));
+      return;
+    }
+
     if (target_row >= 0) {
       list->setCurrentRow(target_row);
       list->scrollToItem(list->item(target_row));
@@ -2240,10 +2281,15 @@ private:
     if (partial && partial[0] != '\0' && strlen(partial) >= 2 && scp_count() > 0)
       scp_found = scp_search(partial, scp_results, SCP_SEARCH_MAX);
 
+    const bool monokai = config.ui_monokai_theme != 0;
+    const QString panel_bg = monokai ? QString("#3e3d32") : QString("#9be2ef");
+    const QString border = monokai ? QString("#75715e") : QString("#0e6a85");
+    const QString accent = monokai ? QString("#a6e22e") : QString("#f3d24f");
+
     if (!has_history && scp_found == 0) {
       set_visible_if_changed(suggestions_frame_, false);
       set_stylesheet_if_changed(input_panel_,
-                                "QFrame { background: #9be2ef; border: 1px solid #0e6a85; }");
+                                QString("QFrame { background: %1; border: 1px solid %2; }").arg(panel_bg, border));
       last_suggestions_signature_ = 0;
       return;
     }
@@ -2251,8 +2297,8 @@ private:
     set_visible_if_changed(suggestions_frame_, true);
     place_suggestions_panel();
     set_stylesheet_if_changed(input_panel_,
-      has_history ? "QFrame { background: #f3d24f; border: 1px solid #0e6a85; }"
-                  : "QFrame { background: #9be2ef; border: 1px solid #0e6a85; }");
+      has_history ? QString("QFrame { background: %1; border: 1px solid %2; }").arg(accent, border)
+                  : QString("QFrame { background: %1; border: 1px solid %2; }").arg(panel_bg, border));
 
     std::uint64_t signature = 1469598103934665603ULL;
     signature = hash_mix(signature, (std::uint64_t)call_suggestion_count);
@@ -2365,9 +2411,13 @@ private:
     set_text_if_changed(cat_slot2_status_label_,
               QString("R2: %1").arg(QString::fromLatin1(slot2)));
     set_visible_if_changed(cat_slot2_status_label_, dual_mode);
+    const bool monokai = config.ui_monokai_theme != 0;
+    const QString ok_bg = monokai ? QString("#a6e22e") : QString("#87d37c");
+    const QString warn_bg = monokai ? QString("#fd971f") : QString("#f3d24f");
+    const QString border = monokai ? QString("#75715e") : QString("#0e6a85");
     set_stylesheet_if_changed(cat_status_frame_, connected
-      ? "QFrame { background: #87d37c; border: 1px solid #0e6a85; }"
-      : "QFrame { background: #f3d24f; border: 1px solid #0e6a85; }");
+      ? QString("QFrame { background: %1; border: 1px solid %2; }").arg(ok_bg, border)
+      : QString("QFrame { background: %1; border: 1px solid %2; }").arg(warn_bg, border));
     refresh_cat_cw_connection_badge();
   }
 
@@ -2764,10 +2814,18 @@ private:
       }
     }
 
-    auto set_input_style = [](QLineEdit *edit, bool active_field) {
+    auto set_input_style = [this](QLineEdit *edit, bool active_field) {
+      const bool monokai = config.ui_monokai_theme != 0;
+      const QString active_bg = monokai ? QString("#a6e22e") : QString("#f3d24f");
+      const QString active_text = monokai ? QString("#1b1d1e") : QString("#111111");
+      const QString idle_bg = monokai ? QString("#3e3d32") : QString("#9be2ef");
+      const QString idle_text = monokai ? QString("#f8f8f2") : QString("#0d2d3b");
+      const QString border = monokai ? QString("#75715e") : QString("#0e6a85");
       set_stylesheet_if_changed(edit, active_field
-          ? "QLineEdit { background: #f3d24f; border: 1px solid #0e6a85; color: #111; }"
-          : "QLineEdit { background: #9be2ef; border: 1px solid #0e6a85; color: #0d2d3b; }");
+          ? QString("QLineEdit { background: %1; border: 1px solid %2; color: %3; }")
+                .arg(active_bg, border, active_text)
+          : QString("QLineEdit { background: %1; border: 1px solid %2; color: %3; }")
+                .arg(idle_bg, border, idle_text));
     };
 
     const int active_radio = app_controller_get_active_radio();
@@ -2876,21 +2934,23 @@ private:
       set_visible_if_changed(input_rst_r2_label_, dual_mode);
       set_visible_if_changed(input_rst_r2_edit_, dual_mode);
 
-      set_stylesheet_if_changed(radio1_focus_button_, active_radio == 1
-        ? "QPushButton { background: #f3d24f; color: #111; font-weight: bold; }"
-        : "");
-      set_stylesheet_if_changed(radio2_focus_button_, active_radio == 2
-        ? "QPushButton { background: #f3d24f; color: #111; font-weight: bold; }"
-        : "");
+      const bool monokai = config.ui_monokai_theme != 0;
+      const QString active_style = monokai ? QString("QPushButton { background: %1; color: %2; font-weight: bold; }")
+                                              .arg("#a6e22e", "#1b1d1e")
+                                       : QString("QPushButton { background: %1; color: %2; font-weight: bold; }")
+                                              .arg("#f3d24f", "#111111");
+      const QString run_style = monokai ? QString("QPushButton { background: %1; color: %2; font-weight: bold; }")
+                                            .arg("#a6e22e", "#1b1d1e")
+                                     : QString("QPushButton { background: %1; color: %2; font-weight: bold; }")
+                                            .arg("#87d37c", "#111111");
+
+      set_stylesheet_if_changed(radio1_focus_button_, active_radio == 1 ? active_style : QString());
+      set_stylesheet_if_changed(radio2_focus_button_, active_radio == 2 ? active_style : QString());
 
       set_text_if_changed(run1_toggle_button_, state.radio1_run ? "R1 RUN" : "R1 S&P");
       set_text_if_changed(run2_toggle_button_, state.radio2_run ? "R2 RUN" : "R2 S&P");
-      set_stylesheet_if_changed(run1_toggle_button_, state.radio1_run
-        ? "QPushButton { background: #87d37c; color: #111; font-weight: bold; }"
-        : "");
-      set_stylesheet_if_changed(run2_toggle_button_, state.radio2_run
-        ? "QPushButton { background: #87d37c; color: #111; font-weight: bold; }"
-        : "");
+      set_stylesheet_if_changed(run1_toggle_button_, state.radio1_run ? run_style : QString());
+      set_stylesheet_if_changed(run2_toggle_button_, state.radio2_run ? run_style : QString());
 
       set_text_if_changed(radio1_label_, QString("R1 %1 kHz %2")
                      .arg(state.radio1_freq_khz)
@@ -2920,17 +2980,27 @@ private:
           fn_buttons_[i]->setToolTip(QString::fromLatin1(expanded).simplified());
         fn_buttons_[i]->setEnabled(!cty_update_in_progress);
       }
+      const bool monokai = config.ui_monokai_theme != 0;
+      const QString status_bg = monokai ? QString("#504945") : QString("#0f5ea4");
+      const QString button_bg = monokai ? QString("#3e3d32") : QString("#0e4a7a");
+      const QString button_text = monokai ? QString("#f8f8f2") : QString("#ffe66d");
+      const QString button_hover = monokai ? QString("#6a695f") : QString("#1565a0");
+      const QString accent = monokai ? QString("#a6e22e") : QString("#f3d24f");
+      const QString accent_text = monokai ? QString("#1b1d1e") : QString("#111111");
+      const QString border = monokai ? QString("#75715e") : QString("#2a7ab0");
       set_stylesheet_if_changed(function_panel_,
         cty_update_in_progress
-          ? "QFrame { background: #f3d24f; }"
-            " QPushButton { background: #e0b030; color: #111; font-weight: bold;"
-            "   border: 1px solid #a07800; border-radius: 3px; padding: 1px 3px; }"
-            " QPushButton:disabled { color: #555; }"
-          : "QFrame { background: #0f5ea4; }"
-            " QPushButton { background: #0e4a7a; color: #ffe66d; font-weight: bold;"
-            "   border: 1px solid #2a7ab0; border-radius: 3px; padding: 1px 3px; }"
-            " QPushButton:hover { background: #1565a0; }"
-            " QPushButton:pressed { background: #f3d24f; color: #111; }");
+          ? QString("QFrame { background: %1; }")
+              .arg(monokai ? "#fd971f" : "#f3d24f")
+            + QString(" QPushButton { background: %1; color: %2; font-weight: bold; border: 1px solid %3; border-radius: 3px; padding: 1px 3px; }")
+              .arg(monokai ? "#f9b15e" : "#e0b030", monokai ? "#1b1d1e" : "#111111", monokai ? "#75715e" : "#a07800")
+            + QString(" QPushButton:disabled { color: #555; }")
+          : QString("QFrame { background: %1; }")
+              .arg(status_bg)
+            + QString(" QPushButton { background: %1; color: %2; font-weight: bold; border: 1px solid %3; border-radius: 3px; padding: 1px 3px; }")
+              .arg(button_bg, button_text, border)
+            + QString(" QPushButton:hover { background: %1; }").arg(button_hover)
+            + QString(" QPushButton:pressed { background: %1; color: %2; }").arg(accent, accent_text));
     }
 
     refresh_log_table();

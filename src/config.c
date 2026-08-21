@@ -93,6 +93,8 @@ static void set_defaults(void) {
   config.net_rate_limit_window_sec = 1;
   config.net_rate_limit_burst = 32;
   config.net_max_frame_bytes = 65536;
+
+  config.ui_monokai_theme = 0;
 }
 
 /*
@@ -310,6 +312,9 @@ int config_load(const char *filename) {
       config.net_max_frame_bytes = atoi(value);
       if (config.net_max_frame_bytes < 1024) config.net_max_frame_bytes = 1024;
       if (config.net_max_frame_bytes > 1048576) config.net_max_frame_bytes = 1048576;
+    } else if (strcmp(key, "UI_THEME_MONOKAI") == 0 ||
+               strcmp(key, "UI_MONOKAI_THEME") == 0) {
+      config.ui_monokai_theme = atoi(value) ? 1 : 0;
     }
   }
 
@@ -401,6 +406,8 @@ int config_save(const char *filename) {
   fprintf(f, "NET_RATE_LIMIT_WINDOW_SEC=%d\n", config.net_rate_limit_window_sec);
   fprintf(f, "NET_RATE_LIMIT_BURST=%d\n", config.net_rate_limit_burst);
   fprintf(f, "NET_MAX_FRAME_BYTES=%d\n", config.net_max_frame_bytes);
+  fprintf(f, "\n");
+  fprintf(f, "UI_THEME_MONOKAI=%d\n", config.ui_monokai_theme ? 1 : 0);
   fprintf(f, "\n");
 
   fclose(f);

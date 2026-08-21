@@ -63,6 +63,8 @@ typedef struct {
   int net_rate_limit_burst;
   int net_max_frame_bytes;
 
+  int ui_monokai_theme;
+
 } Config;
 
 extern Config config;

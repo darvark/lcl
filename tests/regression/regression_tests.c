@@ -10,8 +10,10 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <math.h>
 #include <stdarg.h>
+#include <stdlib.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -539,6 +541,101 @@ static void test_call_suggestions(void) {
   call_suggestion_refresh(&list, "SP9 ", history, 8);
   expect_int_eq(list.count, 0,
                 "no suggestions after first token is completed");
+}
+
+static int bandmap_target_row_for_frequency(const int *freqs, int count,
+                                            int target_freq_khz) {
+  int target_row = -1;
+  if (target_freq_khz > 0) {
+    for (int i = 0; i < count; i++) {
+      if (freqs[i] == target_freq_khz) {
+        target_row = i;
+        break;
+      }
+    }
+  }
+
+  if (target_row >= 0)
+    return target_row;
+
+  int best_delta = INT_MAX;
+  for (int i = 0; i < count; i++) {
+    const int delta = abs(freqs[i] - target_freq_khz);
+    if (delta < best_delta) {
+      best_delta = delta;
+      target_row = i;
+    }
+  }
+
+  return target_row;
+}
+
+static int bandmap_refresh_keeps_current_row(const int *freqs, int count,
+                                            int target_freq_khz,
+                                            int current_row) {
+  if (current_row >= 0 && current_row < count)
+    return current_row;
+
+  return bandmap_target_row_for_frequency(freqs, count, target_freq_khz);
+}
+
+static int bandmap_navigate_step(const int *freqs, int count,
+                                int active_freq_khz, int current_row,
+                                int step) {
+  int row = current_row;
+  if (row < 0) {
+    if (step > 0) {
+      row = count - 1;
+      for (int i = 0; i < count; i++) {
+        if (freqs[i] > active_freq_khz) {
+          row = i;
+          break;
+        }
+      }
+    } else {
+      row = 0;
+      for (int i = count - 1; i >= 0; i--) {
+        if (freqs[i] < active_freq_khz) {
+          row = i;
+          break;
+        }
+      }
+    }
+  } else {
+    row += step;
+  }
+
+  row = row < 0 ? 0 : row;
+  row = row >= count ? count - 1 : row;
+  return row;
+}
+
+static void test_bandmap_ctrl_navigation_regression(void) {
+  const int freqs[] = {14000, 14025, 14050, 14075, 14100};
+
+  expect_int_eq(bandmap_refresh_keeps_current_row(freqs, 5, 14010, 2), 2,
+                "refresh should preserve the active bandmap row instead of snapping to nearest frequency");
+  expect_int_eq(bandmap_target_row_for_frequency(freqs, 5, 14010), 1,
+                "nearest-frequency fallback should still select the closest row when no current row exists");
+
+  int row = 0;
+  row = bandmap_navigate_step(freqs, 5, 14000, row, 1);
+  expect_int_eq(row, 1, "Ctrl+Down should move to the next bandmap row");
+  row = bandmap_refresh_keeps_current_row(freqs, 5, 14010, row);
+  expect_int_eq(row, 1, "Ctrl+Down selection should remain stable after refresh");
+
+  row = bandmap_navigate_step(freqs, 5, 14010, row, 1);
+  expect_int_eq(row, 2, "Ctrl+Down should continue to the next row after refresh");
+  row = bandmap_refresh_keeps_current_row(freqs, 5, 14060, row);
+  expect_int_eq(row, 2, "bandmap refresh must not reset the user-selected row");
+
+  row = bandmap_navigate_step(freqs, 5, 14060, row, -1);
+  expect_int_eq(row, 1, "Ctrl+Up should move back one row");
+  row = bandmap_refresh_keeps_current_row(freqs, 5, 14020, row);
+  expect_int_eq(row, 1, "Ctrl+Up selection should also remain stable after refresh");
+
+  row = bandmap_navigate_step(freqs, 5, 14020, row, -1);
+  expect_int_eq(row, 0, "Ctrl+Up should continue to the previous row without truncating");
 }
 
 /* ------------------------------------------------------------------ */
