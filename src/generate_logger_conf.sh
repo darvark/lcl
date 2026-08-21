@@ -60,6 +60,7 @@ ask_bool() {
 }
 
 station_call="$(ask "Znak stacji" "N0CALL")"
+operator_call="$(ask "Znak operatora logującego" "${station_call}")"
 operator_name="$(ask "Nazwa operatora" "")"
 locator="$(ask "Lokator Maidenhead" "")"
 lat="$(ask "Szerokość geograficzna (LAT)" "0.000000")"
@@ -124,6 +125,7 @@ CAT2_PARITY=${cat2_parity}
 CAT2_HANDSHAKE=${cat2_handshake}
 
 STATION_CALL=${station_call}
+OPERATOR_CALL=${operator_call}
 OPERATOR_NAME=${operator_name}
 CONTEST_DEF_FILE=${contest_def_file}
 CONTEST_TX_EXCHANGE=${contest_tx_exchange}

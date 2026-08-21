@@ -75,8 +75,9 @@ int net_protocol_encode_catchup_batch(const SyncLogOpEntry *ops, int op_count,
                                       char *out, size_t out_size);
 int net_protocol_encode_op_broadcast(const SyncLogOpEntry *op, char *out,
                                      size_t out_size);
-int net_protocol_encode_reserve_serial(const char *request_id, int ttl_sec,
-                                       char *out, size_t out_size);
+int net_protocol_encode_reserve_serial(const char *request_id, int logbook_id,
+                                       int ttl_sec, char *out,
+                                       size_t out_size);
 int net_protocol_encode_reserve_serial_ack(const char *request_id,
                                            const char *reservation_id,
                                            int serial,
@@ -93,7 +94,8 @@ int net_protocol_parse_pull_ops_resp(const char *frame, SyncLogOpEntry *out,
                                      long long *out_last_global_seq);
 int net_protocol_parse_op_broadcast(const char *frame, SyncLogOpEntry *out);
 int net_protocol_parse_reserve_serial(const char *frame, char *request_id,
-                                      size_t request_id_size, int *ttl_sec);
+                                      size_t request_id_size,
+                                      int *logbook_id, int *ttl_sec);
 int net_protocol_parse_reserve_serial_ack(const char *frame,
                                           char *request_id,
                                           size_t request_id_size,

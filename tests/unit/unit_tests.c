@@ -170,6 +170,8 @@ static void test_config_load(const char *tmp_dir) {
       "DXC_HOST = dx.example.net\n"
       "DXC_PORT = 9000\n"
       "DXC_CALL = SP9XYZ\n"
+      "STATION_CALL = SP9STAC\n"
+      "OPERATOR_CALL = SP9OPER\n"
       "CAT_MODE_FROM_RIG = 1\n"
       "CONTEST_TX_EXCHANGE = 28\n"
       "CONTEST_TECHNIQUE = SO2R\n";
@@ -184,6 +186,8 @@ static void test_config_load(const char *tmp_dir) {
   expect_str_eq(config.dxc_host, "dx.example.net", "config host parsed");
   expect_int_eq(config.dxc_port, 9000, "config port parsed");
   expect_str_eq(config.dxc_call, "SP9XYZ", "config call parsed");
+  expect_str_eq(config.station_call, "SP9STAC", "config station call parsed");
+  expect_str_eq(config.operator_call, "SP9OPER", "config operator call parsed");
   expect_int_eq(config.cat_mode_from_rig, 1,
                 "config CAT mode-from-rig parsed");
   expect_int_eq((int)config.contest_technique, (int)CONTEST_TECH_SO2R,
@@ -199,6 +203,10 @@ static void test_config_load(const char *tmp_dir) {
                 "default port restored on missing config");
   expect_str_eq(config.dxc_call, "N0CALL",
                 "default call restored on missing config");
+  expect_str_eq(config.station_call, "N0CALL",
+                "default station call restored on missing config");
+  expect_str_eq(config.operator_call, "N0CALL",
+                "default operator call restored on missing config");
   expect_int_eq(config.cat_mode_from_rig, 0,
                 "default CAT mode-from-rig restored on missing config");
 }
@@ -1435,6 +1443,18 @@ static void test_protocol_append_and_pull_parsing(void) {
   expect_int_eq(parsed_count, 1, "parsed APPEND_OPS count");
   expect_str_eq(parsed[0].op_id, "op-a", "parsed APPEND_OPS op_id");
 
+  char missing_logbook_frame[4096] = {0};
+  snprintf(missing_logbook_frame, sizeof(missing_logbook_frame),
+           "{\"type\":\"APPEND_OPS\",\"ops\":[{\"op_id\":\"op-missing-logbook\",\"station_id\":\"st-1\",\"station_seq\":9,\"op_type\":\"QSO_INSERT\",\"entity_id\":\"q-missing\",\"payload\":{\"qso_uid\":\"q-missing\",\"version\":1},\"op_utc\":\"2026-01-01T00:00:00Z\"}]}" );
+  NetAppendOp missing_logbook[2];
+  int missing_logbook_count = 0;
+  memset(missing_logbook, 0, sizeof(missing_logbook));
+  expect_true(net_protocol_parse_append_ops(missing_logbook_frame,
+                                          missing_logbook, 2,
+                                          &missing_logbook_count) == 0 &&
+              missing_logbook_count == 0,
+              "APPEND_OPS without logbook_id must be rejected");
+
   SyncLogOpEntry pull_ops[1];
   memset(pull_ops, 0, sizeof(pull_ops));
   pull_ops[0].global_seq = 123;
@@ -2141,6 +2161,41 @@ static void test_net_server_duplicate_append_is_idempotent(const char *tmp_dir) 
   snprintf(config.net_server_host, sizeof(config.net_server_host), "%s",
            saved_host);
   config.net_server_port = saved_port;
+  set_test_db_path(tmp_dir);
+  qso_init();
+}
+
+static void test_db_sync_qso_uid_conflict_is_rejected(const char *tmp_dir) {
+  char case_dir[512];
+  snprintf(case_dir, sizeof(case_dir), "%s/qso_uid_conflict_case", tmp_dir);
+  expect_int_eq(mkdir(case_dir, 0777), 0,
+                "create qso_uid conflict test directory");
+
+  set_test_db_path(case_dir);
+  qso_init();
+
+  const char *payload_a =
+      "{\"kind\":\"qso_full\",\"qso_uid\":\"q-conflict-1\",\"origin_station_id\":\"st-a\",\"origin_station_seq\":5,\"last_modified_utc\":\"2026-01-01T01:00:00Z\",\"version\":1,\"date\":\"20260101\",\"utc\":\"0100\",\"call\":\"SP9A\",\"freq\":7020,\"band\":\"40M\",\"mode\":\"CW\",\"rst\":\"599\",\"comments\":\"one\",\"exchange_sent\":\"001\",\"exchange_recv\":\"123\",\"operator_mode\":\"RUN\",\"contest_id\":\"CQWW\",\"radio_nr\":1,\"points\":3,\"country\":\"POLAND\",\"cq_zone\":15,\"itu_zone\":28,\"invalid\":false}";
+
+  const char *payload_b =
+      "{\"kind\":\"qso_full\",\"qso_uid\":\"q-conflict-1\",\"origin_station_id\":\"st-b\",\"origin_station_seq\":9,\"last_modified_utc\":\"2026-01-01T02:00:00Z\",\"version\":1,\"date\":\"20260101\",\"utc\":\"0200\",\"call\":\"SP9B\",\"freq\":7021,\"band\":\"40M\",\"mode\":\"CW\",\"rst\":\"599\",\"comments\":\"two\",\"exchange_sent\":\"002\",\"exchange_recv\":\"124\",\"operator_mode\":\"RUN\",\"contest_id\":\"CQWW\",\"radio_nr\":1,\"points\":3,\"country\":\"POLAND\",\"cq_zone\":15,\"itu_zone\":28,\"invalid\":false}";
+
+  long long gseq_a = 0;
+  expect_true(db_sync_apply_remote_op("op-qso-conflict-a", "st-a", 5, 1,
+                                      "QSO_INSERT", "q-conflict-1", payload_a,
+                                      "2026-01-01T01:00:00Z", &gseq_a) >= 0,
+              "first remote QSO should apply successfully");
+
+  long long gseq_b = 0;
+  expect_int_eq(db_sync_apply_remote_op("op-qso-conflict-b", "st-b", 9, 1,
+                                        "QSO_INSERT", "q-conflict-1", payload_b,
+                                        "2026-01-01T02:00:00Z", &gseq_b),
+                DB_SYNC_APPLY_QSO_UID_CONFLICT,
+                "same qso_uid on different station should be rejected");
+
+  qso_init();
+  expect_int_eq(qso_count, 1, "conflicting qso_uid should not create duplicate row");
+
   set_test_db_path(tmp_dir);
   qso_init();
 }
@@ -4006,6 +4061,7 @@ int main(void) {
   test_net_server_client_roundtrip_apply_pull(tmp_dir);
   test_net_server_client_roundtrip_apply_pull_tls(tmp_dir);
   test_net_server_duplicate_append_is_idempotent(tmp_dir);
+  test_db_sync_qso_uid_conflict_is_rejected(tmp_dir);
   test_db_sync_serial_reservation_and_commit(tmp_dir);
   test_qso_add_mark_and_stats();
   test_export_csv_adif(tmp_dir);

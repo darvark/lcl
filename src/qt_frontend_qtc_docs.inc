@@ -111,7 +111,7 @@ public:
       receiver_edit_->setText(QString::fromLatin1(receiver));
 
     const int next_nr =
-        qtc_next_bundle_nr(config.station_call, receiver);
+        qtc_next_bundle_nr(config_effective_operator_call(), receiver);
     qtc_nr_edit_->setText(QString("%1/10").arg(next_nr));
 
     status_label_->clear();
@@ -159,7 +159,7 @@ private:
 
     char expanded[256] = {0};
     cw_qtc_expand(tpl,
-                  config.station_call,
+                  config_effective_operator_call(),
                   receiver_edit_->text().toLatin1().constData(),
                   qtc_nr_parts().first,
                   qtc_nr_parts().second > 0 ? qtc_nr_parts().second : valid_record_count(),

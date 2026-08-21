@@ -9,7 +9,7 @@ Celem jest dodanie pracy wielu stacji w topologii gwiazdy:
 - system ma byc odporny na restart klienta i chwilowa utrate lacznosci,
 - numeracja seryjna (dla contestow wymagajacych seriali) ma byc spójna globalnie.
 
-Dokument jest przygotowany pod aktualna architekture projektu i model danych SQLite.
+Dokument jest przygotowany pod aktualna architekture projektu i model danych SQLite. W praktyce architektura ta jest już wdrożona w repo, a ten plik odzwierciedla działający model sieci oraz jego hardening operacyjny, a nie tylko plan na przyszłość.
 
 ## Inspiracja DXLog - decyzje projektowe
 

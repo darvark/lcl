@@ -228,6 +228,7 @@ typedef struct {
 #define DB_SYNC_APPLY_ALREADY_PRESENT 0
 #define DB_SYNC_APPLY_ERR (-1)
 #define DB_SYNC_APPLY_STATION_SEQ_CONFLICT (-2)
+#define DB_SYNC_APPLY_QSO_UID_CONFLICT (-3)
 
 #define DB_SYNC_COMMIT_OK 0
 #define DB_SYNC_COMMIT_NOT_FOUND 1
@@ -327,6 +328,7 @@ int db_sync_get_failed_outbox_count(int *out_count);
 /*
  * Read and persist last pulled global sequence cursor.
  */
+int db_get_current_logbook_id(int *out_id);
 int db_sync_get_last_global_seq(long long *out_seq);
 int db_sync_set_last_global_seq(long long seq);
 

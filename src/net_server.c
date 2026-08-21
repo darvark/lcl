@@ -15,15 +15,18 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 #define NET_SERVER_MAX_OPS 64
 #define NET_SERVER_MAX_SESSIONS 16
+#define NET_SERVER_SESSION_IDLE_SEC 60
 
 typedef struct {
   int in_use;
   int authenticated;
   int client_fd;
+  time_t last_activity_utc;
   NetTransport transport;
   pthread_t thread;
   pthread_mutex_t write_mutex;
@@ -183,6 +186,18 @@ static void handle_append_ops(NetServerSession *session, const char *frame) {
       continue;
     }
 
+    if (rc == DB_SYNC_APPLY_QSO_UID_CONFLICT) {
+      int n = snprintf(rejected_json + rejected_used,
+                       sizeof(rejected_json) - rejected_used,
+                       "%s{\"op_id\":\"%s\",\"code\":\"QSO_UID_CONFLICT\"}",
+                       rejected_count == 0 ? "" : ",", ops[i].op_id);
+      if (n > 0 && (size_t)n < sizeof(rejected_json) - rejected_used) {
+        rejected_used += (size_t)n;
+        rejected_count++;
+      }
+      continue;
+    }
+
     if (rc < 0) {
       (void)send_session_frame(session,
                                "{\"type\":\"ERROR\",\"code\":\"APPLY_FAILED\"}");
@@ -290,9 +305,11 @@ static void handle_pull_ops(NetServerSession *session, const char *frame,
 
 static void handle_reserve_serial(NetServerSession *session, const char *frame) {
   char request_id[64] = {0};
+  int logbook_id = 0;
   int ttl_sec = 120;
   if (net_protocol_parse_reserve_serial(frame, request_id, sizeof(request_id),
-                                        &ttl_sec) != 0) {
+                                        &logbook_id, &ttl_sec) != 0 ||
+      logbook_id <= 0) {
     (void)send_session_frame(session,
                              "{\"type\":\"ERROR\",\"code\":\"BAD_RESERVE\"}");
     return;
@@ -301,9 +318,10 @@ static void handle_reserve_serial(NetServerSession *session, const char *frame) 
   char reservation_id[64] = {0};
   int serial = 0;
   char expires_utc[32] = {0};
-  if (db_sync_reserve_serial(1, session->station_id, request_id, ttl_sec,
-                             reservation_id, sizeof(reservation_id), &serial,
-                             expires_utc, sizeof(expires_utc)) != 0) {
+  if (db_sync_reserve_serial(logbook_id, session->station_id, request_id,
+                             ttl_sec, reservation_id,
+                             sizeof(reservation_id), &serial, expires_utc,
+                             sizeof(expires_utc)) != 0) {
     (void)send_session_frame(session,
                              "{\"type\":\"ERROR\",\"code\":\"RESERVE_FAILED\"}");
     return;
@@ -358,6 +376,8 @@ static void release_session_slot(NetServerSession *session) {
   pthread_mutex_lock(&net_server_sessions_mutex);
   session->authenticated = 0;
   session->station_id[0] = 0;
+  session->client_fd = -1;
+  session->last_activity_utc = 0;
   session->in_use = 0;
   pthread_mutex_unlock(&net_server_sessions_mutex);
 }
@@ -380,12 +400,18 @@ static void *net_server_client_worker(void *arg) {
     if (net_server_stop_flag)
       break;
 
+    if (time(NULL) - session->last_activity_utc >= NET_SERVER_SESSION_IDLE_SEC) {
+      break;
+    }
+
     char frame[16384] = {0};
     if (net_protocol_recv_framed_io_limited(&session->transport,
                                             net_transport_read_cb, frame,
                                             sizeof(frame),
                                             max_frame_size) != 0)
       break;
+
+    session->last_activity_utc = time(NULL);
 
     if (net_protocol_validate_protocol_version(frame) != 0) {
       (void)send_unsupported_protocol(session);
@@ -481,6 +507,7 @@ static int allocate_session_slot(NetServerSession **out_session) {
       net_server_sessions[i].authenticated = 0;
       net_server_sessions[i].station_id[0] = 0;
       net_server_sessions[i].client_fd = -1;
+      net_server_sessions[i].last_activity_utc = time(NULL);
       *out_session = &net_server_sessions[i];
       break;
     }
@@ -580,6 +607,7 @@ int net_server_start(void) {
     net_server_sessions[i].in_use = 0;
     net_server_sessions[i].authenticated = 0;
     net_server_sessions[i].client_fd = -1;
+    net_server_sessions[i].last_activity_utc = 0;
     net_server_sessions[i].station_id[0] = 0;
     (void)pthread_mutex_init(&net_server_sessions[i].write_mutex, NULL);
   }
@@ -604,8 +632,10 @@ void net_server_stop(void) {
 
   pthread_mutex_lock(&net_server_sessions_mutex);
   for (int i = 0; i < NET_SERVER_MAX_SESSIONS; i++) {
-    if (net_server_sessions[i].in_use)
+    if (net_server_sessions[i].in_use) {
+      net_server_sessions[i].last_activity_utc = time(NULL);
       net_transport_close(&net_server_sessions[i].transport);
+    }
   }
   pthread_mutex_unlock(&net_server_sessions_mutex);
 

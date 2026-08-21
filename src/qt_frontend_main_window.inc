@@ -49,6 +49,11 @@ public:
         connect(bandmap_prev_shortcut, &QShortcut::activated, this,
           [this]() { navigate_bandmap(-1); });
 
+    auto *operator_shortcut = new QShortcut(QKeySequence("Ctrl+O"), this);
+    operator_shortcut->setContext(Qt::ApplicationShortcut);
+    connect(operator_shortcut, &QShortcut::activated, this,
+            [this]() { prompt_operator_call(); });
+
     auto *left_column = new QWidget(central);
     left_column->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     left_column->setMinimumWidth(420);
@@ -889,6 +894,34 @@ private:
     submit_command_text(QString("openlog %1").arg(id));
   }
 
+    void prompt_operator_call() {
+      bool ok = false;
+      const QString current = QString::fromLatin1(config_effective_operator_call());
+      const QString text = QInputDialog::getText(this, "Operator callsign",
+                                                "OPERATOR_CALL:",
+                                                QLineEdit::Normal,
+                                                current, &ok);
+      if (!ok)
+        return;
+
+      QByteArray bytes = text.trimmed().toLatin1();
+      if (bytes.isEmpty()) {
+        snprintf(config.operator_call, sizeof(config.operator_call), "%s",
+                 config.station_call);
+      } else {
+        snprintf(config.operator_call, sizeof(config.operator_call), "%s",
+                 bytes.constData());
+      }
+
+      if (config_save_active() != 0) {
+        QMessageBox::warning(this, "Operator callsign",
+                             "Nie mozna zapisac logger.conf.");
+        return;
+      }
+
+      refresh_ui();
+    }
+
     void prompt_station_configuration() {
       QDialog dialog(this);
       dialog.setWindowTitle("Konfiguracja stacji");
@@ -906,6 +939,8 @@ private:
       auto *general_form = new QFormLayout(general_group);
       auto *station_call_edit = new QLineEdit(QString::fromLatin1(config.station_call), &dialog);
       general_form->addRow("STATION_CALL:", station_call_edit);
+      auto *operator_call_edit = new QLineEdit(QString::fromLatin1(config.operator_call), &dialog);
+      general_form->addRow("OPERATOR_CALL:", operator_call_edit);
       auto *operator_name_edit = new QLineEdit(QString::fromLatin1(config.operator_name), &dialog);
       general_form->addRow("OPERATOR_NAME:", operator_name_edit);
       auto *locator_edit = new QLineEdit(QString::fromLatin1(config.locator), &dialog);
@@ -1034,6 +1069,9 @@ private:
       };
 
       copy_field(config.station_call, sizeof(config.station_call), station_call_edit->text());
+      copy_field(config.operator_call, sizeof(config.operator_call), operator_call_edit->text());
+      if (!config.operator_call[0])
+        snprintf(config.operator_call, sizeof(config.operator_call), "%s", config.station_call);
       copy_field(config.operator_name, sizeof(config.operator_name), operator_name_edit->text());
       copy_field(config.locator, sizeof(config.locator), locator_edit->text());
       copy_field(config.dxc_host, sizeof(config.dxc_host), dxc_host_edit->text());
@@ -1105,7 +1143,16 @@ private:
       auto *host_edit =
           new QLineEdit(QString::fromLatin1(config.net_server_host), &dialog);
       host_edit->setPlaceholderText("127.0.0.1 lub nazwa hosta");
-      form->addRow("NET_SERVER_HOST:", host_edit);
+      host_edit->setVisible(role_combo->currentData().toString().compare("server", Qt::CaseInsensitive) != 0);
+      host_edit->setEnabled(host_edit->isVisible());
+      form->addRow("NET_SERVER_HOST (client only):", host_edit);
+      QObject::connect(role_combo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                       [&](int) {
+                         const bool is_server =
+                             role_combo->currentData().toString().compare("server", Qt::CaseInsensitive) == 0;
+                         host_edit->setVisible(!is_server);
+                         host_edit->setEnabled(!is_server);
+                       });
 
       auto *port_spin = new QSpinBox(&dialog);
       port_spin->setRange(1, 65535);
@@ -1563,8 +1610,8 @@ private:
       char expanded[256] = {0};
 
       if (tpl && tpl[0])
-        cw_keys_expand(tpl, config.station_call, rst, exchange, hiscall, expanded,
-                       sizeof(expanded));
+        cw_keys_expand(tpl, config_effective_operator_call(), rst, exchange, hiscall,
+                       expanded, sizeof(expanded));
 
       const QString rendered = expanded[0]
                                    ? QString::fromLatin1(expanded).simplified()
@@ -2495,7 +2542,8 @@ private:
     }
 
     char text[256];
-    cw_keys_expand(tpl, config.station_call, rst, exch, hiscall, text, sizeof(text));
+    cw_keys_expand(tpl, config_effective_operator_call(), rst, exch, hiscall,
+                   text, sizeof(text));
     if (text[0] == 0) return;
 
     cw_feedback_ = QString("CW: %1").arg(QString::fromLatin1(text));
@@ -2734,6 +2782,8 @@ private:
         : QString("Status: %1").arg(state.status ? state.status : ""),
       std::max(1, status_cols)));
     QString info_text = QString("Info: %1").arg(state.info ? state.info : "");
+    const QString operator_text = QString("OP: %1").arg(
+        QString::fromLatin1(config_effective_operator_call()));
 
     NetSyncStatus sync_state;
     std::memset(&sync_state, 0, sizeof(sync_state));
@@ -2756,7 +2806,7 @@ private:
                          .arg(sync_state.pending_outbox);
     }
 
-    info_text = QString("%1 | %2").arg(info_text, network_text);
+    info_text = QString("%1 | %2 | %3").arg(info_text, operator_text, network_text);
 
     if (contest_entry_mode) {
       const QString exchange_label =
@@ -2860,7 +2910,7 @@ private:
         const char *tpl = cw_keys_get(&cw_key_map_, i + 1, is_run ? 1 : 0);
         char expanded[256] = {0};
         if (tpl && tpl[0])
-          cw_keys_expand(tpl, config.station_call, rst, exch, hiscall,
+          cw_keys_expand(tpl, config_effective_operator_call(), rst, exch, hiscall,
                          expanded, sizeof(expanded));
         const QString lbl = expanded[0]
           ? QString("F%1: %2").arg(i + 1).arg(QString::fromLatin1(expanded).simplified())

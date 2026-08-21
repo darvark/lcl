@@ -64,6 +64,7 @@ static void set_defaults(void) {
   strcpy(config.cat2_handshake, "None");
 
   strcpy(config.station_call, "N0CALL");
+  strcpy(config.operator_call, "N0CALL");
   strcpy(config.operator_name, "");
   strcpy(config.contest_definition_path, "contest.conf");
   strcpy(config.contest_tx_exchange, "");
@@ -116,6 +117,7 @@ int config_load(const char *filename) {
   }
 
   char line[256];
+  int saw_operator_call = 0;
 
   while (fgets(line, sizeof(line), f)) {
     trim(line);
@@ -205,6 +207,10 @@ int config_load(const char *filename) {
       strncpy(config.station_call, value, sizeof(config.station_call));
 
       config.station_call[sizeof(config.station_call) - 1] = 0;
+    } else if (strcmp(key, "OPERATOR_CALL") == 0) {
+      strncpy(config.operator_call, value, sizeof(config.operator_call));
+      config.operator_call[sizeof(config.operator_call) - 1] = 0;
+      saw_operator_call = 1;
     } else if (strcmp(key, "OPERATOR_NAME") == 0) {
       strncpy(config.operator_name, value, sizeof(config.operator_name));
 
@@ -307,6 +313,11 @@ int config_load(const char *filename) {
     }
   }
 
+  if (!saw_operator_call && config.station_call[0]) {
+    strncpy(config.operator_call, config.station_call, sizeof(config.operator_call));
+    config.operator_call[sizeof(config.operator_call) - 1] = 0;
+  }
+
   if (config.net_retry_max_ms < config.net_retry_min_ms)
     config.net_retry_max_ms = config.net_retry_min_ms;
 
@@ -355,6 +366,7 @@ int config_save(const char *filename) {
   fprintf(f, "CAT2_HANDSHAKE=%s\n", config.cat2_handshake);
   fprintf(f, "\n");
   fprintf(f, "STATION_CALL=%s\n", config.station_call);
+  fprintf(f, "OPERATOR_CALL=%s\n", config.operator_call);
   fprintf(f, "OPERATOR_NAME=%s\n", config.operator_name);
   fprintf(f, "CONTEST_DEF_FILE=%s\n", config.contest_definition_path);
   fprintf(f, "CONTEST_TX_EXCHANGE=%s\n", config.contest_tx_exchange);
@@ -397,6 +409,12 @@ int config_save(const char *filename) {
 
 const char *config_loaded_path(void) {
   return config_last_loaded_path[0] ? config_last_loaded_path : NULL;
+}
+
+const char *config_effective_operator_call(void) {
+  if (config.operator_call[0])
+    return config.operator_call;
+  return config.station_call[0] ? config.station_call : "N0CALL";
 }
 
 int config_save_active(void) {

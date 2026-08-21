@@ -392,6 +392,10 @@ int net_sync_reserve_serial_remote_ex(int *out_serial,
   if (db_sync_get_or_create_station_id(station_id, sizeof(station_id)) != 0)
     return -1;
 
+  int logbook_id = 1;
+  if (db_get_current_logbook_id(&logbook_id) != 0 || logbook_id <= 0)
+    logbook_id = 1;
+
   int sock = net_connect_tcp(config.net_server_host, config.net_server_port);
   if (sock < 0)
     return -1;
@@ -419,7 +423,7 @@ int net_sync_reserve_serial_remote_ex(int *out_serial,
     char req_id[32] = {0};
     snprintf(req_id, sizeof(req_id), "req-%lld", (long long)time(NULL));
 
-    if (net_protocol_encode_reserve_serial(req_id, 120, frame,
+    if (net_protocol_encode_reserve_serial(req_id, logbook_id, 120, frame,
                                            sizeof(frame)) != 0 ||
         net_protocol_send_framed_io(&transport, net_transport_write_cb,
                                     frame) != 0)

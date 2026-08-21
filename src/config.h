@@ -33,6 +33,7 @@ typedef struct {
   char cat2_handshake[16];
 
   char station_call[32];
+  char operator_call[32];
   char operator_name[64];
   char contest_definition_path[256];
   char contest_tx_exchange[32];
@@ -87,5 +88,8 @@ const char *config_loaded_path(void);
 
 /* Save configuration back to the active config file path. */
 int config_save_active(void);
+
+/* Return active operator callsign for logging: explicit operator_call or station_call fallback. */
+const char *config_effective_operator_call(void);
 
 #endif

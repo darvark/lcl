@@ -100,8 +100,8 @@ Okno `Menu -> Network Config` pozwala ustawić podstawowe parametry pracy siecio
 - `NET_ENABLED`: czy sync ma być aktywny po starcie,
 - `NET_STATION_ID`: nazwa / identyfikator stacji,
 - `NET_ROLE`: `client` albo `server`,
-- `NET_SERVER_HOST`: adres serwera centralnego,
-- `NET_SERVER_PORT`: port TCP serwera,
+- `NET_SERVER_HOST`: adres serwera centralnego tylko dla trybu `client`,
+- `NET_SERVER_PORT`: port TCP serwera; w trybie `server` to port nasłuchu aplikacji,
 - `NET_TLS`: włączenie warstwy TLS,
 - `NET_SHARED_KEY`: wspólny klucz autoryzacji aplikacyjnej,
 - `NET_TLS_PEER_FINGERPRINT`: fingerprint certyfikatu serwera dla pinningu klienta.

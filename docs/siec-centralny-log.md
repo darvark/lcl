@@ -25,6 +25,19 @@ Zakres dokumentu:
 - Numeracja seriali contestowych jest rezerwowana centralnie.
 - Transport produkcyjny: TCP (UDP tylko ewentualnie do telemetrii, nie do krytycznej synchronizacji).
 
+## Stan aktualnej implementacji
+
+Dokument ten opisuje działający model sieci. W repo znajduje się już pełna infrastruktura dla podstawowej pracy z centralnym logiem w topologii gwiazdy:
+
+- klient wysyła operacje z outboxu do serwera, a serwer je akceptuje i rozsyła dalej,
+- po stronie klienta działa catch-up i pull względem ostatniego `global_seq`,
+- rezerwacja numeru seryjnego odbywa się centralnie i jest weryfikowana po `logbook_id`,
+- `qso_uid` jest używany jako klucz biznesowy i konflikt duplikatu jest odrzucany,
+- błędne dane sieciowe nie są już automatycznie domykane do domyślnego `logbook_id = 1`,
+- sesje serwera mają timeout nieaktywności i czyszczą slot po rozłączeniu lub utracie aktywności.
+
+Dodatkowo implementacja ma warstwę retry/backoff, obróbkę błędów po stronie klienta oraz testy, które sprawdzają logbook validation, serial reservation, idempotent append oraz pełne scenariusze round-trip.
+
 ## 1. Propozycja zmian schematu SQLite
 
 ## 1.1 Rozszerzenia tabeli `qso`

@@ -503,18 +503,21 @@ int net_protocol_encode_op_broadcast(const SyncLogOpEntry *op, char *out,
   return net_protocol_wrap("OP_BROADCAST", "", "", payload, out, out_size);
 }
 
-int net_protocol_encode_reserve_serial(const char *request_id, int ttl_sec,
-                                       char *out, size_t out_size) {
+int net_protocol_encode_reserve_serial(const char *request_id, int logbook_id,
+                                       int ttl_sec, char *out,
+                                       size_t out_size) {
   if (!request_id || !request_id[0] || !out || out_size < 24)
     return -1;
 
+  if (logbook_id <= 0)
+    logbook_id = 1;
   if (ttl_sec < 1)
     ttl_sec = 1;
 
   char payload[256] = {0};
   int n = snprintf(payload, sizeof(payload),
-                   "{\"request_id\":\"%s\",\"ttl_sec\":%d}", request_id,
-                   ttl_sec);
+                   "{\"request_id\":\"%s\",\"logbook_id\":%d,\"ttl_sec\":%d}",
+                   request_id, logbook_id, ttl_sec);
   if (n <= 0 || (size_t)n >= sizeof(payload))
     return -1;
 
@@ -612,13 +615,14 @@ int net_protocol_parse_append_ops(const char *frame, NetAppendOp *out,
     memset(dst, 0, sizeof(*dst));
 
     long long seq = 0;
-    long long logbook_id = 1;
+    long long logbook_id = 0;
     if (json_get_string(obj, "op_id", dst->op_id, sizeof(dst->op_id)) != 0)
       continue;
     (void)json_get_string(obj, "station_id", dst->station_id,
                           sizeof(dst->station_id));
     (void)json_get_i64(obj, "station_seq", &seq);
-    (void)json_get_i64(obj, "logbook_id", &logbook_id);
+    if (json_get_i64(obj, "logbook_id", &logbook_id) != 0 || logbook_id <= 0)
+      continue;
     (void)json_get_string(obj, "op_type", dst->op_type, sizeof(dst->op_type));
     (void)json_get_string(obj, "entity_id", dst->entity_id,
                           sizeof(dst->entity_id));
@@ -696,13 +700,14 @@ int net_protocol_parse_pull_ops_resp(const char *frame, SyncLogOpEntry *out,
     SyncLogOpEntry *dst = &out[count];
     memset(dst, 0, sizeof(*dst));
 
-    long long logbook_id = 1;
+    long long logbook_id = 0;
     (void)json_get_i64(obj, "global_seq", &dst->global_seq);
     (void)json_get_string(obj, "op_id", dst->op_id, sizeof(dst->op_id));
     (void)json_get_string(obj, "station_id", dst->station_id,
                           sizeof(dst->station_id));
     (void)json_get_i64(obj, "station_seq", &dst->station_seq);
-    (void)json_get_i64(obj, "logbook_id", &logbook_id);
+    if (json_get_i64(obj, "logbook_id", &logbook_id) != 0 || logbook_id <= 0)
+      continue;
     (void)json_get_string(obj, "op_type", dst->op_type, sizeof(dst->op_type));
     (void)json_get_string(obj, "entity_id", dst->entity_id,
                           sizeof(dst->entity_id));
@@ -750,7 +755,7 @@ int net_protocol_parse_op_broadcast(const char *frame, SyncLogOpEntry *out) {
 
   memset(out, 0, sizeof(*out));
 
-  long long logbook_id = 1;
+  long long logbook_id = 0;
   if (json_get_obj_i64(frame, "global_seq", &out->global_seq) != 0)
     return -1;
   if (json_get_string(frame, "op_id", out->op_id, sizeof(out->op_id)) != 0)
@@ -760,7 +765,9 @@ int net_protocol_parse_op_broadcast(const char *frame, SyncLogOpEntry *out) {
     return -1;
   if (json_get_obj_i64(frame, "station_seq", &out->station_seq) != 0)
     return -1;
-  (void)json_get_obj_i64(frame, "logbook_id", &logbook_id);
+  if (json_get_obj_i64(frame, "logbook_id", &logbook_id) != 0 ||
+      logbook_id <= 0)
+    return -1;
   out->logbook_id = (int)logbook_id;
   if (json_get_string(frame, "op_type", out->op_type, sizeof(out->op_type)) !=
       0)
@@ -804,15 +811,22 @@ int net_protocol_parse_op_broadcast(const char *frame, SyncLogOpEntry *out) {
 }
 
 int net_protocol_parse_reserve_serial(const char *frame, char *request_id,
-                                      size_t request_id_size, int *ttl_sec) {
-  if (!frame || !request_id || request_id_size < 2 || !ttl_sec)
+                                      size_t request_id_size,
+                                      int *logbook_id, int *ttl_sec) {
+  if (!frame || !request_id || request_id_size < 2 || !logbook_id || !ttl_sec)
     return -1;
 
   request_id[0] = 0;
+  *logbook_id = 0;
   *ttl_sec = 0;
 
   if (json_get_string(frame, "request_id", request_id, request_id_size) != 0)
     return -1;
+
+  long long lb = 1;
+  if (json_get_i64(frame, "logbook_id", &lb) != 0 || lb <= 0)
+    lb = 1;
+  *logbook_id = (int)lb;
 
   long long ttl = 0;
   if (json_get_i64(frame, "ttl_sec", &ttl) != 0)

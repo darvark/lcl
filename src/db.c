@@ -2700,6 +2700,26 @@ int db_sync_get_failed_outbox_count(int *out_count) {
   return 0;
 }
 
+int db_get_current_logbook_id(int *out_id) {
+  if (!out_id)
+    return -1;
+
+  *out_id = 0;
+  if (db_init() != 0)
+    return -1;
+
+  sqlite3_stmt *stmt = NULL;
+  if (prepare_stmt(&stmt,
+                   "SELECT value FROM app_metadata WHERE key = 'current_logbook_id' LIMIT 1;") != SQLITE_OK)
+    return -1;
+
+  if (sqlite3_step(stmt) == SQLITE_ROW)
+    *out_id = sqlite3_column_int(stmt, 0);
+
+  sqlite3_finalize(stmt);
+  return 0;
+}
+
 int db_sync_get_last_global_seq(long long *out_seq) {
   if (!out_seq)
     return -1;
@@ -2838,6 +2858,30 @@ int db_sync_apply_remote_op(const char *op_id, const char *station_id,
     }
   }
   sqlite3_finalize(conflict);
+
+  if (strncmp(op_type, "QSO_", 4) == 0) {
+    char qso_uid_buf[40] = {0};
+    if (sync_json_get_string(payload_json, "qso_uid", qso_uid_buf,
+                             sizeof(qso_uid_buf)) == 0 && qso_uid_buf[0]) {
+      sqlite3_stmt *uid_conflict = NULL;
+      if (prepare_stmt(&uid_conflict,
+                       "SELECT id FROM qso WHERE qso_uid = ? AND logbook_id = ? AND id NOT IN (SELECT id FROM qso WHERE qso_uid = ? AND logbook_id = ? AND origin_station_id = ? AND origin_station_seq = ?);") != SQLITE_OK)
+        return DB_SYNC_APPLY_ERR;
+
+      sqlite3_bind_text(uid_conflict, 1, qso_uid_buf, -1, SQLITE_TRANSIENT);
+      sqlite3_bind_int(uid_conflict, 2, logbook_id);
+      sqlite3_bind_text(uid_conflict, 3, qso_uid_buf, -1, SQLITE_TRANSIENT);
+      sqlite3_bind_int(uid_conflict, 4, logbook_id);
+      sqlite3_bind_text(uid_conflict, 5, station_id, -1, SQLITE_TRANSIENT);
+      sqlite3_bind_int64(uid_conflict, 6, station_seq);
+
+      if (sqlite3_step(uid_conflict) == SQLITE_ROW) {
+        sqlite3_finalize(uid_conflict);
+        return DB_SYNC_APPLY_QSO_UID_CONFLICT;
+      }
+      sqlite3_finalize(uid_conflict);
+    }
+  }
 
   int changed = 0;
   if (strncmp(op_type, "QSO_", 4) == 0) {
@@ -3072,7 +3116,7 @@ int db_sync_reserve_serial(int logbook_id, const char *station_id,
 }
 
 int db_sync_commit_serial(const char *reservation_id, const char *qso_uid) {
-  if (!reservation_id || !reservation_id[0])
+  if (!reservation_id || !reservation_id[0] || !qso_uid || !qso_uid[0])
     return DB_SYNC_COMMIT_ERR;
 
   if (db_init() != 0)

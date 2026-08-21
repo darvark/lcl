@@ -10,7 +10,21 @@ Dodatkowa dokumentacja:
 - [docs/przykladowe-konfiguracje.md](docs/przykladowe-konfiguracje.md)
 - [docs/sciaga-operatora.md](docs/sciaga-operatora.md)
 - [docs/siec-centralny-log.md](docs/siec-centralny-log.md)
+- [docs/siec-centralny-log-projekt.md](docs/siec-centralny-log-projekt.md)
 
+## Status pracy sieciowej
+
+Topologia gwiazdy z centralnym logiem jest już zaimplementowana w kodzie, a nie tylko opisana w dokumentacji. Aktualny model obejmuje:
+
+- serwer centralny z nasłuchiwaniem TCP oraz sesjami klienta,
+- klienta z lokalnym outboxem, retry/backoff i synchronizacją catch-up,
+- globalny dziennik operacji, `station_seq` i `global_seq`,
+- centralną rezerwację seriali contestowych oraz walidację logbooków,
+- utrwalanie identyfikatora `qso_uid` i odrzucanie konfliktów duplikatów,
+- opcjonalne TLS i mechanizmy limitowania ruchu oraz timeoutów sesji,
+- testy regresyjne i jednostkowe uruchamiane w WSL.
+
+Implementacja jest już dostatecznie dojrzała, aby traktować ten dokument jako opis aktualnego działania systemu, a nie wyłącznie planu rozwoju.
 
 ## Architektura
 

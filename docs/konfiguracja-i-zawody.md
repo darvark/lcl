@@ -19,7 +19,15 @@ Ten dokument opisuje pola obsługiwane w `logger.conf` oraz klucze dozwolone w p
 | `LON` | liczba zmiennoprzecinkowa | `0.0` | Długość geograficzna stacji. |
 | `LOCATOR` | tekst | pusty | Lokator Maidenhead stacji. |
 | `STATION_CALL` | tekst | `N0CALL` | Znak stacji używany m.in. w eksporcie Cabrillo. |
+| `OPERATOR_CALL` | tekst | taki sam jak `STATION_CALL` | Znak operatora logującego łączność; jeśli nie ustawiony, domyślnie przyjmuje wartość znaku stacji. |
 | `OPERATOR_NAME` | tekst | pusty | Nazwa operatora do metadanych. |
+
+Uwaga praktyczna:
+
+- `STATION_CALL` pozostaje niezmienione i jest używany tam, gdzie chodzi o tożsamość stacji (np. export Cabrillo i podstawowe dane stacji).
+- `OPERATOR_CALL` jest używany w działaniach operatora, np. przy logowaniu, CW, QTC i UI.
+- W głównym oknie można zmienić aktywnego operatora szybkim skrótem `Ctrl+O`.
+- Pasek statusu pokazuje bieżący znak operatora w formacie `OP: <znak>`.
 
 ### DXCluster
 
@@ -107,7 +115,9 @@ CAT2_PARITY=None
 CAT2_HANDSHAKE=None
 
 STATION_CALL=SP6MI
+OPERATOR_CALL=SP6MI
 OPERATOR_NAME=
+# W GUI: Ctrl+O zmienia aktywnego operatora, a pasek statusu pokazuje OP: SP6MI
 CONTEST_DEF_FILE=contest_defs/cq_wpx_cw.conf
 CONTEST_TX_EXCHANGE=
 CONTEST_TECHNIQUE=SO2V
