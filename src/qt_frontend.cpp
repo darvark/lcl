@@ -15,6 +15,7 @@
 #include <QGroupBox>
 #include <QHeaderView>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QInputDialog>
 #include <QKeyEvent>
 #include <QLabel>
@@ -387,6 +388,24 @@ std::uint64_t hash_cstr(std::uint64_t hash, const char *text) {
 
 std::uint64_t hash_qstring(std::uint64_t hash, const QString &text) {
   return hash_mix(hash, (std::uint64_t)qHash(text));
+}
+
+QString resolve_app_icon_path() {
+  const QString app_dir = QApplication::applicationDirPath();
+  const QStringList candidates = {
+      app_dir + "/lcl.jpg",
+      app_dir + "/../lcl.jpg",
+      app_dir + "/../share/lcl-logger/lcl.jpg",
+      "/usr/share/lcl-logger/lcl.jpg",
+      QString::fromLatin1(LOGGER_SOURCE_DIR) + "/lcl.jpg",
+  };
+
+  for (const QString &path : candidates) {
+    if (QFileInfo::exists(path))
+      return QFileInfo(path).canonicalFilePath();
+  }
+
+  return QString();
 }
 } // namespace
 

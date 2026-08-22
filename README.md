@@ -186,6 +186,66 @@ sudo apt-get update
 sudo apt-get install -y build-essential cmake
 ```
 
+### Skrypty instalacyjne (Ubuntu/Debian, Fedora, Arch Linux)
+
+W repozytorium są gotowe skrypty instalujące zależności build + GUI:
+
+```bash
+chmod +x scripts/install_*.sh
+```
+
+Ubuntu/Debian:
+
+```bash
+./scripts/install_ubuntu_debian.sh
+```
+
+Fedora:
+
+```bash
+./scripts/install_fedora.sh
+```
+
+Arch Linux:
+
+```bash
+./scripts/install_arch.sh
+```
+
+### Skrypt tworzenia paczek
+
+Jest dostępny wspólny skrypt do budowania paczek dla Debian/Ubuntu, Fedora i Arch Linux:
+
+```bash
+chmod +x scripts/build_packages.sh
+./scripts/build_packages.sh <target>
+```
+
+Dostępne targety:
+
+- `debian` (pakiet `.deb`)
+- `fedora` (pakiet `.rpm`)
+- `arch` (pakiet `.pkg.tar.zst`)
+- `all` (buduje wszystkie formaty, które są dostępne na aktualnym systemie)
+
+Przykłady:
+
+```bash
+./scripts/build_packages.sh debian
+./scripts/build_packages.sh fedora
+./scripts/build_packages.sh arch
+./scripts/build_packages.sh all
+```
+
+Gotowe paczki są zapisywane w katalogu `dist/`.
+
+Po instalacji pakietów zbuduj projekt standardowo:
+
+```bash
+cmake -S . -B build
+cmake --build build
+```
+
 ## Budowanie
 
 Z katalogu głównego projektu:

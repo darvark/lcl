@@ -41,6 +41,15 @@ int main(int argc, char **argv) {
 
   QApplication app(qt_argc, argv);
 
+  QIcon app_icon = QIcon::fromTheme("lcl-logger");
+  if (app_icon.isNull()) {
+    const QString icon_path = resolve_app_icon_path();
+    if (!icon_path.isEmpty())
+      app_icon = QIcon(icon_path);
+  }
+  if (!app_icon.isNull())
+    app.setWindowIcon(app_icon);
+
   if (app_debug_enabled) {
     std::fprintf(stderr, "[debug] logger starting with --debug\n");
   }
@@ -56,6 +65,8 @@ int main(int argc, char **argv) {
   cat_init();
 
   LoggerQtWindow window;
+  if (!app_icon.isNull())
+    window.setWindowIcon(app_icon);
   window.show();
 
   const int rc = app.exec();
