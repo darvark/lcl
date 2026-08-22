@@ -39,6 +39,9 @@ public:
               tune_to_bandmap_row(bandmap_list_->row(item), 1);
             });
 
+    bandmap_selected_row_ = -1;
+    bandmap2_selected_row_ = -1;
+
         auto *bandmap_next_shortcut = new QShortcut(QKeySequence("Ctrl+Down"), this);
         bandmap_next_shortcut->setContext(Qt::ApplicationShortcut);
         connect(bandmap_next_shortcut, &QShortcut::activated, this,
@@ -2184,7 +2187,8 @@ private:
       }
     }
 
-    const int current_row = list->currentRow();
+    int *selected_row = radio_nr == 2 ? &bandmap2_selected_row_ : &bandmap_selected_row_;
+    const int current_row = *selected_row;
     if (current_row >= 0 && current_row < (int)freqs.size()) {
       list->setCurrentRow(current_row);
       list->scrollToItem(list->item(current_row));
@@ -2194,6 +2198,7 @@ private:
     if (target_row >= 0) {
       list->setCurrentRow(target_row);
       list->scrollToItem(list->item(target_row));
+      *selected_row = target_row;
     }
   }
 
@@ -2205,6 +2210,9 @@ private:
     std::vector<QString> *calls = radio_nr == 2 ? &bandmap2_calls_ : &bandmap_calls_;
     if (!freqs || !calls || row < 0 || row >= (int)freqs->size())
       return;
+
+    int *selected_row = radio_nr == 2 ? &bandmap2_selected_row_ : &bandmap_selected_row_;
+    *selected_row = row;
 
     app_controller_set_active_radio(radio_nr);
 
@@ -2229,16 +2237,20 @@ private:
     QListWidget *list = radio_nr == 2 ? bandmap2_list_ : bandmap_list_;
     std::vector<int> *freqs = radio_nr == 2 ? &bandmap2_freqs_ : &bandmap_freqs_;
     const int active_freq_khz = radio_nr == 2 ? state.radio2_freq_khz : state.radio1_freq_khz;
+    int *selected_row = radio_nr == 2 ? &bandmap2_selected_row_ : &bandmap_selected_row_;
 
     if (!list || !freqs || freqs->empty()) {
       list = bandmap_list_;
       freqs = &bandmap_freqs_;
       radio_nr = 1;
+      selected_row = &bandmap_selected_row_;
       if (!list || freqs->empty())
         return;
     }
 
-    int row = list->currentRow();
+    int row = *selected_row;
+    if (row < 0)
+      row = list->currentRow();
     if (row < 0) {
       if (step > 0) {
         row = (int)freqs->size() - 1;
@@ -2262,6 +2274,7 @@ private:
     }
 
     row = std::max(0, std::min(row, (int)freqs->size() - 1));
+    *selected_row = row;
     list->setCurrentRow(row);
     list->scrollToItem(list->item(row));
     tune_to_bandmap_row(row, radio_nr);
@@ -3103,6 +3116,8 @@ private:
   std::vector<int> bandmap2_freqs_;
   std::vector<QString> bandmap_calls_;
   std::vector<QString> bandmap2_calls_;
+  int bandmap_selected_row_ = -1;
+  int bandmap2_selected_row_ = -1;
   QLineEdit *cluster_search_edit_ = nullptr;
   std::array<QCheckBox *, kBandLabels.size()> cluster_band_checks_{};
 

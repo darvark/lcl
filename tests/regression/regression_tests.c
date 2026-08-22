@@ -579,6 +579,15 @@ static int bandmap_refresh_keeps_current_row(const int *freqs, int count,
   return bandmap_target_row_for_frequency(freqs, count, target_freq_khz);
 }
 
+static int bandmap_refresh_keeps_selected_row(const int *freqs, int count,
+                                              int target_freq_khz,
+                                              int selected_row) {
+  if (selected_row >= 0 && selected_row < count)
+    return selected_row;
+
+  return bandmap_target_row_for_frequency(freqs, count, target_freq_khz);
+}
+
 static int bandmap_navigate_step(const int *freqs, int count,
                                 int active_freq_khz, int current_row,
                                 int step) {
@@ -621,17 +630,27 @@ static void test_bandmap_ctrl_navigation_regression(void) {
   int row = 0;
   row = bandmap_navigate_step(freqs, 5, 14000, row, 1);
   expect_int_eq(row, 1, "Ctrl+Down should move to the next bandmap row");
-  row = bandmap_refresh_keeps_current_row(freqs, 5, 14010, row);
+  row = bandmap_refresh_keeps_selected_row(freqs, 5, 14010, row);
   expect_int_eq(row, 1, "Ctrl+Down selection should remain stable after refresh");
 
   row = bandmap_navigate_step(freqs, 5, 14010, row, 1);
   expect_int_eq(row, 2, "Ctrl+Down should continue to the next row after refresh");
-  row = bandmap_refresh_keeps_current_row(freqs, 5, 14060, row);
+  row = bandmap_refresh_keeps_selected_row(freqs, 5, 14060, row);
   expect_int_eq(row, 2, "bandmap refresh must not reset the user-selected row");
+
+  row = bandmap_navigate_step(freqs, 5, 14060, row, 1);
+  expect_int_eq(row, 3, "Ctrl+Down should keep advancing past the third hop");
+  row = bandmap_refresh_keeps_selected_row(freqs, 5, 14080, row);
+  expect_int_eq(row, 3, "Ctrl+Down selection should survive another refresh");
+
+  row = bandmap_navigate_step(freqs, 5, 14080, row, 1);
+  expect_int_eq(row, 4, "Ctrl+Down should still work after several refreshes");
+  row = bandmap_refresh_keeps_selected_row(freqs, 5, 14100, row);
+  expect_int_eq(row, 4, "final Ctrl+Down selection should remain stable after refresh");
 
   row = bandmap_navigate_step(freqs, 5, 14060, row, -1);
   expect_int_eq(row, 1, "Ctrl+Up should move back one row");
-  row = bandmap_refresh_keeps_current_row(freqs, 5, 14020, row);
+  row = bandmap_refresh_keeps_selected_row(freqs, 5, 14020, row);
   expect_int_eq(row, 1, "Ctrl+Up selection should also remain stable after refresh");
 
   row = bandmap_navigate_step(freqs, 5, 14020, row, -1);
