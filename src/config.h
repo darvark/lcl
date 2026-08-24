@@ -43,6 +43,7 @@ typedef struct {
   char cw_keyer_line[8];  /* "DTR" or "RTS" */
   int cw_wpm;
   int cw_auto_connect;
+  int cw_esm_enabled;
 
   int net_enabled;
   char net_role[16];
@@ -62,6 +63,11 @@ typedef struct {
   int net_rate_limit_window_sec;
   int net_rate_limit_burst;
   int net_max_frame_bytes;
+
+  int live_upload_enabled;
+  char live_upload_host[128];
+  int live_upload_port;
+  char live_upload_token[128];
 
   int ui_monokai_theme;
 

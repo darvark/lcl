@@ -179,10 +179,14 @@ public:
     auto *status_layout = new QHBoxLayout(status_panel_);
     status_layout->setContentsMargins(8, 2, 8, 2);
     status_label_ = new QLabel(status_panel_);
+    dupe_status_label_ = new QLabel(status_panel_);
     info_label_ = new QLabel(status_panel_);
     status_label_->setWordWrap(false);
+    dupe_status_label_->setWordWrap(false);
+    dupe_status_label_->hide();
     info_label_->setWordWrap(false);
     status_layout->addWidget(status_label_, 1);
+    status_layout->addWidget(dupe_status_label_, 0, Qt::AlignVCenter);
     status_layout->addWidget(info_label_, 1, Qt::AlignRight);
     left_layout->addWidget(status_panel_);
 
@@ -367,6 +371,43 @@ public:
 
     cluster_layout->addWidget(cluster_filters);
 
+        auto *cluster_advanced_filters = new QFrame(cluster_group_);
+        auto *cluster_advanced_layout = new QHBoxLayout(cluster_advanced_filters);
+        cluster_advanced_layout->setContentsMargins(0, 0, 0, 0);
+        cluster_advanced_layout->setSpacing(8);
+
+        cluster_mode_combo_ = new QComboBox(cluster_advanced_filters);
+        cluster_mode_combo_->addItem("Mode: All", 0);
+        cluster_mode_combo_->addItem("Mode: CW", 1);
+        cluster_mode_combo_->addItem("Mode: Phone", 2);
+        cluster_mode_combo_->addItem("Mode: Digi", 3);
+        connect(cluster_mode_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+          this, [this](int) { refresh_ui(); });
+
+        cluster_max_age_spin_ = new QSpinBox(cluster_advanced_filters);
+        cluster_max_age_spin_->setRange(0, 720);
+        cluster_max_age_spin_->setValue(0);
+        cluster_max_age_spin_->setSuffix(" min");
+        cluster_max_age_spin_->setToolTip("0 = no age limit");
+        connect(cluster_max_age_spin_, QOverload<int>::of(&QSpinBox::valueChanged),
+          this, [this](int) { refresh_ui(); });
+
+        cluster_hide_worked_check_ = new QCheckBox("Hide worked", cluster_advanced_filters);
+        connect(cluster_hide_worked_check_, &QCheckBox::toggled, this,
+          [this]() { refresh_ui(); });
+
+        cluster_only_new_dxcc_check_ =
+      new QCheckBox("Only new DXCC", cluster_advanced_filters);
+        connect(cluster_only_new_dxcc_check_, &QCheckBox::toggled, this,
+          [this]() { refresh_ui(); });
+
+        cluster_advanced_layout->addWidget(cluster_mode_combo_);
+        cluster_advanced_layout->addWidget(cluster_max_age_spin_);
+        cluster_advanced_layout->addWidget(cluster_hide_worked_check_);
+        cluster_advanced_layout->addWidget(cluster_only_new_dxcc_check_);
+        cluster_advanced_layout->addStretch(1);
+        cluster_layout->addWidget(cluster_advanced_filters);
+
     cluster_table_ = new QTableWidget(cluster_group_);
     cluster_table_->setColumnCount(4);
     cluster_table_->setHorizontalHeaderLabels({"Time", "Freq", "Call", "Comment"});
@@ -385,11 +426,21 @@ public:
     auto *cluster_buttons_layout = new QHBoxLayout(cluster_buttons_row);
     cluster_buttons_layout->setContentsMargins(0, 0, 0, 0);
     cluster_buttons_layout->setSpacing(6);
-    auto *dxcluster_retry_button = new QPushButton("Reconnect", cluster_group_);
-    cluster_buttons_layout->addWidget(dxcluster_retry_button, 0);
+    dxcluster_connect_button_ = new QPushButton("Connect", cluster_group_);
+    dxcluster_disconnect_button_ = new QPushButton("Disconnect", cluster_group_);
+    dxcluster_spot_button_ = new QPushButton("Send Spot (Alt+S)", cluster_group_);
+    cluster_buttons_layout->addWidget(dxcluster_connect_button_, 0);
+    cluster_buttons_layout->addWidget(dxcluster_disconnect_button_, 0);
+    cluster_buttons_layout->addWidget(dxcluster_spot_button_, 1);
     cluster_layout->addWidget(cluster_buttons_row);
-    connect(dxcluster_retry_button, &QPushButton::clicked, this, []() {
-      dxcluster_retry_connection();
+    connect(dxcluster_connect_button_, &QPushButton::clicked, this, [this]() {
+      on_dxcluster_connect();
+    });
+    connect(dxcluster_disconnect_button_, &QPushButton::clicked, this, [this]() {
+      on_dxcluster_disconnect();
+    });
+    connect(dxcluster_spot_button_, &QPushButton::clicked, this, [this]() {
+      prompt_dxcluster_spot();
     });
 
         cluster_group_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
@@ -499,6 +550,12 @@ public:
       connect(cluster_action, &QAction::triggered, this,
               [trigger_ctrl_key]() { trigger_ctrl_key(APP_KEY_F5); });
 
+            QAction *send_spot_action = new QAction("Send Spot", this);
+            send_spot_action->setShortcut(QKeySequence("Alt+S"));
+            send_spot_action->setShortcutContext(Qt::ApplicationShortcut);
+            connect(send_spot_action, &QAction::triggered, this,
+              [this]() { prompt_dxcluster_spot(); });
+
             QAction *stats_action = new QAction("Stats", this);
       stats_action->setShortcut(QKeySequence("Ctrl+F6"));
       connect(stats_action, &QAction::triggered, this,
@@ -596,6 +653,7 @@ public:
       main_menu->addAction(scp_action);
       main_menu->addSeparator();
       main_menu->addAction(cluster_action);
+      main_menu->addAction(send_spot_action);
       main_menu->addAction(stats_action);
       main_menu->addSeparator();
       main_menu->addAction(toggle_bandmap_r1_action);
@@ -607,6 +665,100 @@ public:
       main_menu->addAction(qtc_history_action);
       main_menu->addSeparator();
       main_menu->addAction(quit_action);
+
+      QMenu *operations_menu = menuBar()->addMenu("Operations");
+
+      QAction *reset_cat_cw_action = new QAction("Reset CAT/CW keyer", this);
+      reset_cat_cw_action->setShortcutContext(Qt::ApplicationShortcut);
+      connect(reset_cat_cw_action, &QAction::triggered, this, [this]() {
+        cat_disconnect_slot(CAT_SLOT_A);
+        cat_disconnect_slot(CAT_SLOT_B);
+        cat_disconnect_cw_keyer();
+        refresh_cat_status();
+        refresh_cw_keyer_status();
+
+        if (config.cat_model > 0 && config.cat_device[0]) {
+          CatConnectionParams p1{};
+          p1.model = config.cat_model;
+          std::snprintf(p1.device, sizeof(p1.device), "%s", config.cat_device);
+          p1.baud_rate = config.cat_baud;
+          p1.data_bits = config.cat_data_bits;
+          p1.stop_bits = config.cat_stop_bits;
+          std::snprintf(p1.parity, sizeof(p1.parity), "%s", config.cat_parity);
+          std::snprintf(p1.handshake, sizeof(p1.handshake), "%s", config.cat_handshake);
+          start_cat_connect_async(CAT_SLOT_A, p1, false);
+        }
+
+        if (config.cat2_model > 0 && config.cat2_device[0]) {
+          CatConnectionParams p2{};
+          p2.model = config.cat2_model;
+          std::snprintf(p2.device, sizeof(p2.device), "%s", config.cat2_device);
+          p2.baud_rate = config.cat2_baud;
+          p2.data_bits = config.cat2_data_bits;
+          p2.stop_bits = config.cat2_stop_bits;
+          std::snprintf(p2.parity, sizeof(p2.parity), "%s", config.cat2_parity);
+          std::snprintf(p2.handshake, sizeof(p2.handshake), "%s", config.cat2_handshake);
+          start_cat_connect_async(CAT_SLOT_B, p2, false);
+        }
+
+        if (config.cw_device[0] && config.cw_keyer_line[0]) {
+          start_cw_connect_async(false);
+        }
+      });
+
+      QAction *band_up_action = new QAction("Band Up", this);
+      band_up_action->setShortcut(QKeySequence("Alt+F9"));
+      band_up_action->setShortcutContext(Qt::ApplicationShortcut);
+      connect(band_up_action, &QAction::triggered, this, [this]() {
+        app_controller_band_up();
+        refresh_ui();
+      });
+
+      QAction *band_down_action = new QAction("Band Down", this);
+      band_down_action->setShortcut(QKeySequence("Alt+F10"));
+      band_down_action->setShortcutContext(Qt::ApplicationShortcut);
+      connect(band_down_action, &QAction::triggered, this, [this]() {
+        app_controller_band_down();
+        refresh_ui();
+      });
+
+      QAction *mode_cw_action = new QAction("CW", this);
+      mode_cw_action->setShortcut(QKeySequence("Alt+F7"));
+      mode_cw_action->setShortcutContext(Qt::ApplicationShortcut);
+      connect(mode_cw_action, &QAction::triggered, this, [this]() {
+        app_controller_set_active_mode("CW");
+        refresh_ui();
+      });
+
+      QAction *mode_ssb_action = new QAction("SSB", this);
+      mode_ssb_action->setShortcut(QKeySequence("Alt+F8"));
+      mode_ssb_action->setShortcutContext(Qt::ApplicationShortcut);
+      connect(mode_ssb_action, &QAction::triggered, this, [this]() {
+        app_controller_set_active_mode("SSB");
+        refresh_ui();
+      });
+
+      QAction *esm_toggle_action = new QAction("CW ESM", this);
+      esm_toggle_action->setCheckable(true);
+      esm_toggle_action->setChecked(config.cw_esm_enabled != 0);
+      esm_toggle_action->setShortcut(QKeySequence("Ctrl+Shift+E"));
+      esm_toggle_action->setShortcutContext(Qt::ApplicationShortcut);
+      connect(esm_toggle_action, &QAction::toggled, this, [this](bool checked) {
+        config.cw_esm_enabled = checked ? 1 : 0;
+        config_save("logger.conf");
+        refresh_ui();
+      });
+      esm_toggle_action_ = esm_toggle_action;
+
+      operations_menu->addAction(reset_cat_cw_action);
+      operations_menu->addSeparator();
+      operations_menu->addAction(band_up_action);
+      operations_menu->addAction(band_down_action);
+      operations_menu->addSeparator();
+      operations_menu->addAction(mode_cw_action);
+      operations_menu->addAction(mode_ssb_action);
+      operations_menu->addSeparator();
+      operations_menu->addAction(esm_toggle_action);
 
     cw_dialog_ = new CwKeyerDialog(this);
     cw_messages_dialog_ = new CwMessagesConfigDialog(this);
@@ -734,7 +886,34 @@ protected:
       return;
     }
 
+    int esm_pre_fn = 0;
+    int esm_post_fn_candidate = 0;
+    int esm_radio = 1;
+    if (key == APP_KEY_ENTER) {
+      AppRenderState pre_state;
+      app_controller_get_render_state(&pre_state);
+      esm_radio = pre_state.active_radio == 2 ? 2 : 1;
+      (void)app_controller_plan_cw_esm_enter(&pre_state, &esm_pre_fn,
+                                              &esm_post_fn_candidate);
+      if (esm_pre_fn > 0)
+        on_cw_fn_key(esm_pre_fn);
+    }
+
     AppControllerEvent ctrl_event = app_controller_handle_key(key);
+
+    if (key == APP_KEY_ENTER && esm_post_fn_candidate > 0) {
+      AppRenderState post_state;
+      app_controller_get_render_state(&post_state);
+      const bool qso_saved = post_state.status &&
+        (std::strstr(post_state.status, "QSO OK") != nullptr ||
+         std::strstr(post_state.status, "QSO DUPE") != nullptr);
+      if (qso_saved) {
+        esm_post_enter_fn_pending_ = esm_post_fn_candidate;
+        esm_post_enter_radio_pending_ = esm_radio;
+        esm_post_enter_poll_budget_ = 80;
+      }
+    }
+
     if (ctrl_event == APP_CTRL_EVENT_REQUEST_CTY_UPDATE) {
       start_cty_update_worker();
       refresh_ui();
@@ -776,6 +955,62 @@ private:
         app_controller_submit_command_text(bytes.constData());
     if (ctrl_event == APP_CTRL_EVENT_EXIT)
       close();
+  }
+
+  void on_dxcluster_connect() {
+    if (dxcluster_connect() != 0) {
+      QMessageBox::warning(this, "DX Cluster",
+                           "DXCluster connect failed. Check logger.conf and network connectivity.");
+      return;
+    }
+
+    refresh_ui();
+  }
+
+  void on_dxcluster_disconnect() {
+    dxcluster_disconnect();
+    refresh_ui();
+  }
+
+  void prompt_dxcluster_spot() {
+    AppRenderState state;
+    app_controller_get_render_state(&state);
+
+    const int active_radio = state.active_radio == 2 ? 2 : 1;
+    const int freq_khz = active_radio == 2 ? state.radio2_freq_khz : state.radio1_freq_khz;
+    const char *active_call = active_radio == 2 ? state.input_call_r2 : state.input_call_r1;
+
+    QString preset;
+    const QString call = QString::fromLatin1(active_call ? active_call : "").trimmed();
+    if (freq_khz > 0 && !call.isEmpty())
+      preset = QString("%1 %2").arg(freq_khz).arg(call);
+
+    bool ok = false;
+    const QString spot_text = QInputDialog::getText(
+        this,
+        "Send Spot",
+        "Spot command (without leading DX):",
+        QLineEdit::Normal,
+        preset,
+        &ok);
+
+    if (!ok)
+      return;
+
+    const QString trimmed = spot_text.trimmed();
+    if (trimmed.isEmpty()) {
+      QMessageBox::information(this, "Send Spot", "Spot command cannot be empty.");
+      return;
+    }
+
+    const QByteArray bytes = trimmed.toLatin1();
+    if (dxcluster_send_spot(bytes.constData()) != 0) {
+      QMessageBox::warning(this, "Send Spot",
+                           "Failed to send spot. Connect to DXCluster first.");
+      return;
+    }
+
+    refresh_ui();
   }
 
   void prompt_create_named_log() {
@@ -1183,6 +1418,26 @@ private:
           "SHA-256 fingerprint serwera, np. AA:BB:CC:...");
         form->addRow("NET_TLS_PEER_FINGERPRINT:", fingerprint_edit);
 
+          auto *live_upload_enabled_check = new QCheckBox(&dialog);
+          live_upload_enabled_check->setChecked(config.live_upload_enabled != 0);
+          form->addRow("LIVE_UPLOAD_ENABLED:", live_upload_enabled_check);
+
+          auto *live_upload_host_edit =
+            new QLineEdit(QString::fromLatin1(config.live_upload_host), &dialog);
+          live_upload_host_edit->setPlaceholderText("np. 192.168.1.50");
+          form->addRow("LIVE_UPLOAD_HOST:", live_upload_host_edit);
+
+          auto *live_upload_port_spin = new QSpinBox(&dialog);
+          live_upload_port_spin->setRange(1, 65535);
+          live_upload_port_spin->setValue(config.live_upload_port);
+          form->addRow("LIVE_UPLOAD_PORT:", live_upload_port_spin);
+
+          auto *live_upload_token_edit =
+            new QLineEdit(QString::fromLatin1(config.live_upload_token), &dialog);
+          live_upload_token_edit->setEchoMode(QLineEdit::PasswordEchoOnEdit);
+          live_upload_token_edit->setPlaceholderText("opcjonalny token");
+          form->addRow("LIVE_UPLOAD_TOKEN:", live_upload_token_edit);
+
       layout->addLayout(form);
 
       auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
@@ -1215,6 +1470,12 @@ private:
       copy_field(config.net_tls_peer_fingerprint,
                  sizeof(config.net_tls_peer_fingerprint),
                  fingerprint_edit->text());
+      config.live_upload_enabled = live_upload_enabled_check->isChecked() ? 1 : 0;
+      copy_field(config.live_upload_host, sizeof(config.live_upload_host),
+             live_upload_host_edit->text());
+      config.live_upload_port = live_upload_port_spin->value();
+      copy_field(config.live_upload_token, sizeof(config.live_upload_token),
+             live_upload_token_edit->text());
 
       if (config_save_active() != 0) {
         QMessageBox::warning(this, "Konfiguracja sieci",
@@ -1928,6 +2189,40 @@ private:
     bool band_enabled[(int)kBandLabels.size()];
     const QString call_filter =
       cluster_search_edit_ ? cluster_search_edit_->text().trimmed() : QString();
+    const int wanted_mode_group =
+      cluster_mode_combo_ ? cluster_mode_combo_->currentData().toInt() : 0;
+    const int max_age_minutes =
+      cluster_max_age_spin_ ? cluster_max_age_spin_->value() : 0;
+    const bool hide_worked =
+      cluster_hide_worked_check_ && cluster_hide_worked_check_->isChecked();
+    const bool only_new_dxcc =
+      cluster_only_new_dxcc_check_ && cluster_only_new_dxcc_check_->isChecked();
+
+    QSet<QString> worked_calls;
+    QSet<QString> worked_dxcc;
+    if (hide_worked || only_new_dxcc) {
+      AppRenderState state;
+      app_controller_get_render_state(&state);
+      const QString active_contest =
+          QString::fromLatin1(state.contest_name ? state.contest_name : "");
+
+      for (int i = 0; i < qso_count; i++) {
+        const QSO *q = &logbook[i];
+        if (!q || q->invalid)
+          continue;
+
+        if (!active_contest.isEmpty()) {
+          const QString q_contest = QString::fromLatin1(q->contest_id);
+          if (q_contest.compare(active_contest, Qt::CaseInsensitive) != 0)
+            continue;
+        }
+
+        if (q->call[0])
+          worked_calls.insert(QString::fromLatin1(q->call).trimmed().toUpper());
+        if (q->country[0] && std::strcmp(q->country, "UNKNOWN") != 0)
+          worked_dxcc.insert(QString::fromLatin1(q->country).trimmed().toUpper());
+      }
+    }
 
     for (int i = 0; i < (int)kBandLabels.size(); i++)
       band_enabled[i] =
@@ -1982,6 +2277,37 @@ private:
           continue;
       }
 
+      char mode[16] = {0};
+      detect_mode(freq_khz, mode);
+      const int spot_mode_group = mode_group_for_label(mode);
+      if (wanted_mode_group != 0 && spot_mode_group != wanted_mode_group)
+        continue;
+
+      if (max_age_minutes > 0) {
+        const int age = spot_age_minutes_utc(QString::fromLatin1(spots[idx].time));
+        if (age >= 0 && age > max_age_minutes)
+          continue;
+      }
+
+      const QString call_upper =
+          QString::fromLatin1(spots[idx].call).trimmed().toUpper();
+      if (hide_worked && !call_upper.isEmpty() && worked_calls.contains(call_upper))
+        continue;
+
+      if (only_new_dxcc) {
+        const QByteArray call_bytes = call_upper.toLatin1();
+        const CtyEntry *entry = cty_lookup(call_bytes.constData());
+        if (!entry || !entry->country[0])
+          continue;
+
+        const QString country =
+            QString::fromLatin1(entry->country).trimmed().toUpper();
+        if (country.isEmpty() || country == "UNKNOWN")
+          continue;
+        if (worked_dxcc.contains(country))
+          continue;
+      }
+
       items.push_back({spots[idx].time, spots[idx].freq, spots[idx].call, spots[idx].comment});
     }
     pthread_mutex_unlock(&dxcluster_mutex);
@@ -1992,6 +2318,10 @@ private:
     signature = hash_qstring(signature, status);
     signature = hash_mix(signature, (std::uint64_t)fullscreen_mode);
     signature = hash_mix(signature, (std::uint64_t)items.size());
+    signature = hash_mix(signature, (std::uint64_t)wanted_mode_group);
+    signature = hash_mix(signature, (std::uint64_t)max_age_minutes);
+    signature = hash_mix(signature, (std::uint64_t)hide_worked);
+    signature = hash_mix(signature, (std::uint64_t)only_new_dxcc);
     for (const SpotCopy &item : items) {
       signature = hash_qstring(signature, item.time);
       signature = hash_qstring(signature, item.freq);
@@ -2609,14 +2939,54 @@ private:
                    text, sizeof(text));
     if (text[0] == 0) return;
 
+    QString reason;
+    if (software_interlock_blocks_tx(active == 2 ? 2 : 1, &reason)) {
+      cw_feedback_ = reason;
+      cw_feedback_ticks_ = 20;
+      return;
+    }
+
     cw_feedback_ = QString("CW: %1").arg(QString::fromLatin1(text));
     cw_feedback_ticks_ = 20;
 
     if (cat_is_cw_keyer_connected()) {
       cat_cw_send(text);
-    } else if (cat_send_morse_slot(CAT_SLOT_A, text) != 0) {
+    } else if (cat_send_morse_slot(active == 2 ? CAT_SLOT_B : CAT_SLOT_A, text) != 0) {
       cw_feedback_ = QString("CW: brak keyer/CAT — %1").arg(QString::fromLatin1(text));
     }
+  }
+
+  void clear_esm_post_enter_pending() {
+    esm_post_enter_fn_pending_ = 0;
+    esm_post_enter_radio_pending_ = 1;
+    esm_post_enter_poll_budget_ = 0;
+  }
+
+  void process_esm_post_enter_if_ready() {
+    if (esm_post_enter_fn_pending_ <= 0)
+      return;
+
+    if (esm_post_enter_poll_budget_ <= 0) {
+      clear_esm_post_enter_pending();
+      return;
+    }
+
+    esm_post_enter_poll_budget_--;
+    if (cat_cw_is_busy())
+      return;
+
+    const int target_radio =
+      esm_post_enter_radio_pending_ == 2 ? 2 : 1;
+    const int saved_radio = app_controller_get_active_radio();
+
+    if (saved_radio != target_radio)
+      app_controller_set_active_radio(target_radio);
+
+    on_cw_fn_key(esm_post_enter_fn_pending_);
+    clear_esm_post_enter_pending();
+
+    if (saved_radio != target_radio)
+      app_controller_set_active_radio(saved_radio);
   }
 
   void on_cw_connect() {
@@ -2775,10 +3145,17 @@ private:
    * @return Nothing.
    */
   void refresh_ui() {
+    process_esm_post_enter_if_ready();
     AppRenderState state;
     app_controller_get_render_state(&state);
+    if (esm_toggle_action_) {
+      esm_toggle_action_->blockSignals(true);
+      esm_toggle_action_->setChecked(config.cw_esm_enabled != 0);
+      esm_toggle_action_->blockSignals(false);
+    }
     const int active_freq_khz = app_controller_get_active_frequency_khz();
-    set_title_if_changed(log_group_, QString("QSO Log [%1 kHz]").arg(active_freq_khz));
+    const QString utc_text = QDateTime::currentDateTimeUtc().toString("UTC HH:mm:ss");
+    set_title_if_changed(log_group_, QString("QSO Log [%1 kHz] %2").arg(active_freq_khz).arg(utc_text));
 
     const int input_call_cols_r1 =
       std::max(1, input_call_r1_edit_->width() / std::max(1, cell_w_) - 2);
@@ -2847,11 +3224,19 @@ private:
     set_input_style(input_rst_r1_edit_, active_radio == 1 && state.active_input_field_r1 == 1);
     set_input_style(input_call_r2_edit_, active_radio == 2 && state.active_input_field_r2 == 0);
     set_input_style(input_rst_r2_edit_, active_radio == 2 && state.active_input_field_r2 == 1);
+
+    const bool qso_is_dupe = state.status && std::strstr(state.status, "QSO DUPE") != nullptr;
     set_text_if_changed(status_label_, clip_to_cols(
       cw_feedback_ticks_ > 0
         ? (cw_feedback_ticks_--, cw_feedback_)
         : QString("Status: %1").arg(state.status ? state.status : ""),
       std::max(1, status_cols)));
+    set_text_if_changed(dupe_status_label_, "DUPE");
+    set_visible_if_changed(dupe_status_label_, qso_is_dupe);
+    set_stylesheet_if_changed(dupe_status_label_, qso_is_dupe
+        ? "QLabel { background: #b71c1c; color: #ffffff; border: 1px solid #7f1212; border-radius: 6px; padding: 2px 8px; font-weight: bold; }"
+        : "");
+
     QString info_text = QString("Info: %1").arg(state.info ? state.info : "");
     const QString operator_text = QString("OP: %1").arg(
         QString::fromLatin1(config_effective_operator_call()));
@@ -3075,6 +3460,7 @@ private:
 
   QFrame *status_panel_ = nullptr;
   QLabel *status_label_ = nullptr;
+  QLabel *dupe_status_label_ = nullptr;
   ClickableStatusLabel *cat_conn_badge_label_ = nullptr;
   ClickableStatusLabel *cat_conn_badge_r2_label_ = nullptr;
   ClickableStatusLabel *cw_conn_badge_label_ = nullptr;
@@ -3108,6 +3494,9 @@ private:
   QGroupBox *bandmap2_group_ = nullptr;
   QGroupBox *cluster_group_ = nullptr;
   QTableWidget *cluster_table_ = nullptr;
+  QPushButton *dxcluster_connect_button_ = nullptr;
+  QPushButton *dxcluster_disconnect_button_ = nullptr;
+  QPushButton *dxcluster_spot_button_ = nullptr;
   QLabel *bandmap_label_ = nullptr;
   QLabel *bandmap2_label_ = nullptr;
   QListWidget *bandmap_list_ = nullptr;
@@ -3120,6 +3509,10 @@ private:
   int bandmap2_selected_row_ = -1;
   QLineEdit *cluster_search_edit_ = nullptr;
   std::array<QCheckBox *, kBandLabels.size()> cluster_band_checks_{};
+  QComboBox *cluster_mode_combo_ = nullptr;
+  QSpinBox *cluster_max_age_spin_ = nullptr;
+  QCheckBox *cluster_hide_worked_check_ = nullptr;
+  QCheckBox *cluster_only_new_dxcc_check_ = nullptr;
 
   QGroupBox *cat_group_ = nullptr;
   QComboBox *cat_slot_combo_ = nullptr;
@@ -3159,6 +3552,7 @@ private:
   DocumentationDialog *documentation_dialog_ = nullptr;
   QAction *toggle_bandmap_r1_action_ = nullptr;
   QAction *toggle_bandmap_r2_action_ = nullptr;
+  QAction *esm_toggle_action_ = nullptr;
   CwKeyMap    cw_key_map_ = {};
   CwQtcMap    cw_qtc_map_ = {};
   QString cw_keys_path_;
@@ -3167,6 +3561,9 @@ private:
   std::vector<std::pair<QString, QString>> contest_presets_cache_;
   QString cw_feedback_;
   int cw_feedback_ticks_ = 0;
+  int esm_post_enter_fn_pending_ = 0;
+  int esm_post_enter_radio_pending_ = 1;
+  int esm_post_enter_poll_budget_ = 0;
   bool cty_update_worker_running_ = false;
   bool bandmap_r1_visible_ = true;
   bool bandmap_r2_visible_ = true;

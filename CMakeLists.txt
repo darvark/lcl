@@ -63,6 +63,7 @@ add_executable(logger
     src/net_tls.c
     src/net_server.c
     src/net_sync.c
+    src/live_upload.c
     src/export.c
     src/stats.c
     src/maidenhead.c
@@ -119,6 +120,7 @@ add_executable(regression_tests
     src/suggestion.c
     src/config.c
     src/cty.c
+    src/dxcluster.c
     src/contest.c
     src/qso.c
     src/qtc.c
@@ -127,6 +129,7 @@ add_executable(regression_tests
     src/net_tls.c
     src/net_server.c
     src/net_sync.c
+    src/live_upload.c
     src/export.c
     src/stats.c
     src/maidenhead.c
@@ -138,6 +141,7 @@ target_include_directories(regression_tests
 )
 
 target_link_libraries(regression_tests
+    pthread
     m
     ${SQLITE3_LIBRARY}
 )
@@ -170,6 +174,7 @@ add_executable(unit_tests
     src/net_tls.c
     src/net_server.c
     src/net_sync.c
+    src/live_upload.c
     src/export.c
     src/stats.c
     src/maidenhead.c

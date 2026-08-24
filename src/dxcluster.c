@@ -24,9 +24,42 @@ static int worker_started = 0;
 static int retry_requested = 0;
 static int stop_requested = 0;
 static pthread_t thread_id;
+static int active_socket = -1;
+static pthread_mutex_t worker_mutex = PTHREAD_MUTEX_INITIALIZER;
 struct sockaddr_in addr;
 
 static void dxcluster_close_socket(void *arg);
+
+/*
+ * Safely update the active DXCluster socket descriptor.
+ *
+ * @param sock Socket descriptor or -1 when disconnected.
+ * @return Nothing.
+ */
+static void dxcluster_set_active_socket(int sock) {
+  pthread_mutex_lock(&worker_mutex);
+  active_socket = sock;
+  pthread_mutex_unlock(&worker_mutex);
+}
+
+/*
+ * Return whether a command text already starts with DX.
+ *
+ * @param text Input command text.
+ * @return true when text starts with "dx" (case-insensitive).
+ */
+static bool dxcluster_is_dx_command(const char *text) {
+  if (!text)
+    return false;
+
+  while (*text && isspace((unsigned char)*text))
+    text++;
+
+  if (strncasecmp(text, "dx", 2) != 0)
+    return false;
+
+  return text[2] == 0 || isspace((unsigned char)text[2]);
+}
 
 /*
  * Print a DXCluster debug line when --debug mode is enabled.
@@ -419,6 +452,7 @@ static void *cluster_thread(void *arg) {
     dxcluster_set_status("Connected");
     dxcluster_debug_log("TCP connected to %s:%d", config.dxc_host,
                         config.dxc_port);
+    dxcluster_set_active_socket(sock);
 
     bool login_sent = config.dxc_call[0] ? false : true;
     char buf[512];
@@ -568,6 +602,7 @@ static void *cluster_thread(void *arg) {
     }
 
     dxcluster_close_socket(&sock);
+    dxcluster_set_active_socket(-1);
 
     if (stop_requested) {
       break;
@@ -578,7 +613,10 @@ static void *cluster_thread(void *arg) {
     dxcluster_sleep_seconds(1);
   }
 
+  pthread_mutex_lock(&worker_mutex);
   worker_started = 0;
+  active_socket = -1;
+  pthread_mutex_unlock(&worker_mutex);
   dxcluster_set_status("Disconnected");
   dxcluster_debug_log("worker exiting");
   return NULL;
@@ -594,29 +632,79 @@ static void *cluster_thread(void *arg) {
 int dxcluster_start(void) {
   dxcluster_debug_log("dxcluster_start() called");
 
-  if (worker_started)
+  pthread_mutex_lock(&worker_mutex);
+  if (worker_started) {
+    pthread_mutex_unlock(&worker_mutex);
     return 0;
+  }
 
   stop_requested = 0;
+  retry_requested = 0;
 
   if (pthread_create(&thread_id, NULL, cluster_thread, NULL) != 0) {
+    pthread_mutex_unlock(&worker_mutex);
     dxcluster_debug_log("pthread_create() failed: errno=%d (%s)", errno,
                         strerror(errno));
     return -1;
   }
-
-  pthread_detach(thread_id);
   worker_started = 1;
+  pthread_mutex_unlock(&worker_mutex);
 
   dxcluster_debug_log("dxcluster worker thread created");
 
   return 0;
 }
 
+int dxcluster_connect(void) {
+  return dxcluster_start();
+}
+
 int dxcluster_retry_connection(void) {
   retry_requested = 1;
   dxcluster_set_status("Retrying DXCluster...");
   return dxcluster_start();
+}
+
+int dxcluster_send_spot(const char *spot_text) {
+  if (!spot_text) {
+    dxcluster_set_status("Spot send failed: empty text");
+    return -1;
+  }
+
+  while (*spot_text && isspace((unsigned char)*spot_text))
+    spot_text++;
+
+  if (!*spot_text) {
+    dxcluster_set_status("Spot send failed: empty text");
+    return -1;
+  }
+
+  int sock = -1;
+  pthread_mutex_lock(&worker_mutex);
+  sock = active_socket;
+  pthread_mutex_unlock(&worker_mutex);
+
+  if (sock < 0) {
+    dxcluster_set_status("Spot send failed: not connected");
+    return -1;
+  }
+
+  char cmd[256];
+  if (dxcluster_is_dx_command(spot_text))
+    snprintf(cmd, sizeof(cmd), "%s\r\n", spot_text);
+  else
+    snprintf(cmd, sizeof(cmd), "dx %s\r\n", spot_text);
+
+  if (send(sock, cmd, strlen(cmd), 0) < 0) {
+    dxcluster_set_status("Spot send failed");
+    dxcluster_debug_log("send(spot) failed: errno=%d (%s)", errno,
+                        strerror(errno));
+    return -1;
+  }
+
+  dxcluster_set_status("Spot sent");
+  dxcluster_debug_log("spot command sent: '%s'", cmd);
+  return 0;
 }
 
 /* ------------------------------------------------ */
@@ -627,18 +715,36 @@ int dxcluster_retry_connection(void) {
  * @return Nothing.
  */
 void dxcluster_stop(void) {
+  pthread_t worker;
+  int sock = -1;
+
+  pthread_mutex_lock(&worker_mutex);
   if (!worker_started) {
+    pthread_mutex_unlock(&worker_mutex);
     dxcluster_set_status("Disconnected");
     return;
   }
 
   stop_requested = 1;
   retry_requested = 0;
+  worker = thread_id;
+  sock = active_socket;
+  pthread_mutex_unlock(&worker_mutex);
 
-  pthread_cancel(thread_id);
-  pthread_join(thread_id, NULL);
+  if (sock >= 0)
+    shutdown(sock, SHUT_RDWR);
+
+  pthread_join(worker, NULL);
+
+  pthread_mutex_lock(&worker_mutex);
   worker_started = 0;
+  active_socket = -1;
+  pthread_mutex_unlock(&worker_mutex);
 
   dxcluster_set_status("Disconnected");
   dxcluster_debug_log("dxcluster_stop() completed");
+}
+
+void dxcluster_disconnect(void) {
+  dxcluster_stop();
 }

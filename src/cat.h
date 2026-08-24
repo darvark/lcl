@@ -151,6 +151,12 @@ int cat_set_frequency_khz_slot(int slot, int freq_khz);
 int cat_set_frequency_khz_slot_vfo(int slot, CatVfo vfo, int freq_khz);
 
 /*
+ * Set radio operating mode for one rig slot and VFO.
+ * Accepts labels like "CW" or "SSB".
+ */
+int cat_set_mode_label_slot_vfo(int slot, CatVfo vfo, const char *mode_label);
+
+/*
  * Select active VFO in one rig slot.
  */
 int cat_set_active_vfo_slot(int slot, CatVfo vfo);
@@ -202,6 +208,11 @@ void cat_disconnect_cw_keyer(void);
  * Return 1 if the dedicated CW keyer port is open, otherwise 0.
  */
 int cat_is_cw_keyer_connected(void);
+
+/*
+ * Return 1 when dedicated CW keyer is currently sending or has queued text.
+ */
+int cat_cw_is_busy(void);
 
 /*
  * Copy the current CW keyer status message to the destination buffer.

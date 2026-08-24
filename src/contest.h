@@ -26,6 +26,7 @@ typedef enum {
   CONTEST_MULT_MODE_DXCC = 7,
   CONTEST_MULT_DXCC_PLUS_ZONE_PER_BAND = 8,
   CONTEST_MULT_SPDX = 9,
+  CONTEST_MULT_GRID_PER_BAND = 10,
   CONTEST_MULT_BAND_DXCC = CONTEST_MULT_DXCC_PER_BAND,
   CONTEST_MULT_ZONE_BAND = CONTEST_MULT_ZONE_PER_BAND
 } ContestMultiplierType;
@@ -55,6 +56,7 @@ typedef struct {
   int points_same_dxcc;
   int points_new_band_dxcc;
   int points_same_band_dxcc;
+  int points_configured;
   ContestMultiplierType multiplier_type;
   int bonus_points;
 
@@ -72,6 +74,7 @@ typedef struct {
    */
   char qtc_sender_side[8];
   int  points_per_qtc;
+  int  duplicate_qso;
 
   ContestFieldDef fields[CONTEST_DEF_MAX_FIELDS];
   int field_count;

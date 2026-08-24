@@ -8,6 +8,8 @@
 #include "dxcluster.h"
 #include "export.h"
 #include "globals.h"
+#include "maidenhead.h"
+#include "live_upload.h"
 #include "net_sync.h"
 #include "qso.h"
 #include "qtc.h"
@@ -39,7 +41,7 @@ enum {
 };
 
 static char entry_call_by_radio[2][32];
-static char entry_rst_by_radio[2][8];
+static char entry_rst_by_radio[2][32];
 static char entry_comments_by_radio[2][128];
 static int active_entry_field_by_radio[2] = {ENTRY_FIELD_CALL, ENTRY_FIELD_CALL};
 

@@ -733,12 +733,22 @@ int net_sync_poll_once(void) {
 
   char response[16384] = {0};
   int recv_ok = 0;
+  time_t pull_start_utc = time(NULL);
   for (;;) {
     if (net_protocol_recv_framed_io_limited(&transport, net_transport_read_cb,
                                             response, sizeof(response),
                                             (size_t)config.net_max_frame_bytes) !=
         0)
       break;
+
+    if (time(NULL) - pull_start_utc > (time_t)config.net_heartbeat_sec) {
+      recv_ok = 0;
+      pthread_mutex_lock(&sync_mutex);
+      snprintf(sync_status.last_error, sizeof(sync_status.last_error),
+               "PULL response exceeded heartbeat");
+      pthread_mutex_unlock(&sync_mutex);
+      break;
+    }
 
     if (net_protocol_validate_protocol_version(response) != 0) {
       recv_ok = 0;

@@ -66,6 +66,7 @@ Jeśli dla danego klawisza nie ma definicji, program pokaże status `F<n>: brak 
 | `Ctrl+F7` | pobiera `wl_cty.dat` i blokuje klawiaturę na czas aktualizacji |
 | `Ctrl+F8` | otwiera okno konfiguracji zawodów |
 | `Ctrl+F9` | pokazuje albo ukrywa panel konfiguracji CAT/CW |
+| `Ctrl+Shift+E` | włącza albo wyłącza CW ESM |
 | `Ctrl+F10` | kończy program |
 | `Ctrl+Up` | przechodzi do poprzedniego spotu w bandmapie i ustawia jego częstotliwość |
 | `Ctrl+Down` | przechodzi do następnego spotu w bandmapie i ustawia jego częstotliwość |
@@ -77,6 +78,25 @@ Jeśli dla danego klawisza nie ma definicji, program pokaże status `F<n>: brak 
 | `Ctrl+K` | otwiera okno ręcznego keyera CW |
 | `Esc` | zatrzymuje nadawanie CW i jednocześnie czyści aktywne pola wejściowe |
 | `Alt+W` | czyści pola `Call` i `Exchange` dla aktywnego radia |
+
+### ESM dla CW pod `Enter`
+
+Po ustawieniu `CW_ESM=1` w `logger.conf` klawisz `Enter` uruchamia logikę ESM wyłącznie w trybie CW.
+
+Reguły decyzyjne używają trzech sygnałów:
+
+- tryb operatorski `RUN` / `S&P`
+- aktywne pole wejścia (`Call` albo `Exchange`)
+- to, czy `Call` i `Exchange` są puste
+
+Akcje ESM używają istniejących makr z `cw_keys.ini`:
+
+- `F1` gdy aktywne `Call` jest puste w `RUN`
+- `F9` gdy aktywne `Call` nie jest puste
+- `F2` gdy aktywne `Exchange` jest puste
+- po zapisaniu QSO z pełnym `Exchange`: `F8` w `RUN`, `F4` w `S&P`
+
+Wysłanie makra „po QSO" jest opóźnione do chwili, gdy keyer CW zgłosi stan bez aktywnego nadawania.
 
 ## Panel wiadomości CW (F1–F10)
 
@@ -98,6 +118,7 @@ Najważniejsze pozycje:
 - `Update SCP (Check Partial)` - pobiera `MASTER.SCP` z supercheckpartial.com
 - `DX Cluster` - przełącza widoczność okna clustera
 - `Show CAT/CW Config` - pokazuje albo ukrywa panel konfiguracji CAT/CW (to samo co `Ctrl+F9`)
+- `CW ESM` - włącza albo wyłącza ESM dla CW (to samo co `Ctrl+Shift+E`)
 
 ## Znaczniki połączenia CAT i CW
 

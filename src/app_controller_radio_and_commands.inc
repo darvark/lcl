@@ -37,6 +37,73 @@ int app_controller_set_active_frequency_khz(int freq_khz) {
   return 0;
 }
 
+static int app_controller_band_step_target_khz(int current_khz, int direction) {
+  static const int band_edges_khz[] = {
+    1800, 3500, 7000, 10100, 14000, 18068, 21000, 24890, 28000, 50000, 70000,
+    144000, 219000, 420000
+  };
+
+  if (direction == 0)
+    return current_khz;
+
+  const int bandcount = (int)(sizeof(band_edges_khz) / sizeof(band_edges_khz[0]));
+  int best = current_khz;
+  for (int i = 0; i < bandcount; i++) {
+    const int candidate = band_edges_khz[i];
+    if (direction > 0 && candidate > current_khz) {
+      best = candidate;
+      break;
+    }
+    if (direction < 0 && candidate < current_khz) {
+      best = candidate;
+    }
+  }
+
+  if (best == current_khz) {
+    int fallback = current_khz;
+    if (direction > 0) {
+      fallback = band_edges_khz[0];
+    } else {
+      fallback = band_edges_khz[bandcount - 1];
+    }
+    return fallback;
+  }
+
+  return best;
+}
+
+void app_controller_set_active_mode(const char *mode_label) {
+  if (!mode_label || !mode_label[0])
+    return;
+
+  const int radio_idx = radio_index_from_nr(active_radio_nr);
+  const int slot = cat_slot_for_radio(radio_idx);
+  const CatVfo vfo = cat_vfo_for_radio(radio_idx);
+
+  if (cat_is_connected_slot(slot) &&
+      cat_set_mode_label_slot_vfo(slot, vfo, mode_label) == 0) {
+    snprintf(status_text, sizeof(status_text), "Mode set to %s via CAT", mode_label);
+    return;
+  }
+
+  snprintf(status_text, sizeof(status_text), "Mode set to %s (manual)", mode_label);
+}
+
+void app_controller_band_up(void) {
+  const int radio_idx = radio_index_from_nr(active_radio_nr);
+  const int current_khz = resolve_qso_frequency_khz();
+  const int target_khz = app_controller_band_step_target_khz(current_khz, 1);
+  app_controller_set_active_frequency_khz(target_khz);
+  if (radio_idx == 0 && config.contest_technique == CONTEST_TECH_SO2V)
+    app_controller_set_active_radio(active_radio_nr);
+}
+
+void app_controller_band_down(void) {
+  const int current_khz = resolve_qso_frequency_khz();
+  const int target_khz = app_controller_band_step_target_khz(current_khz, -1);
+  app_controller_set_active_frequency_khz(target_khz);
+}
+
 void app_controller_set_active_call(const char *call_text) {
   const int idx = active_radio_index();
   char *entry_call = entry_call_for_idx(idx);

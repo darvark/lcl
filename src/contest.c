@@ -31,6 +31,20 @@ static void uppercase_in_place(char *text) {
     text[i] = (char)toupper((unsigned char)text[i]);
 }
 
+static int parse_truthy_flag(const char *value) {
+  if (!value || !value[0])
+    return 0;
+
+  char upper[32] = {0};
+  snprintf(upper, sizeof(upper), "%s", value);
+  uppercase_in_place(upper);
+
+  return strcmp(upper, "1") == 0 || strcmp(upper, "ON") == 0 ||
+         strcmp(upper, "YES") == 0 || strcmp(upper, "TRUE") == 0 ||
+         strcmp(upper, "Y") == 0 || strcmp(upper, "ENABLE") == 0 ||
+         strcmp(upper, "ENABLED") == 0;
+}
+
 static void set_error(char *error_text, size_t error_size, const char *text) {
   if (!error_text || error_size < 2)
     return;
@@ -88,8 +102,89 @@ static ContestMultiplierType map_dxlog_multiplier(const char *type,
     return per_band ? CONTEST_MULT_DXCC_PER_BAND : CONTEST_MULT_DXCC;
   if (strcmp(up_type, "CQZONE") == 0 || strcmp(up_type, "ZONE") == 0)
     return per_band ? CONTEST_MULT_ZONE_PER_BAND : CONTEST_MULT_ZONE;
+  if (strcmp(up_type, "WWL") == 0 || strcmp(up_type, "GRID") == 0 ||
+      strcmp(up_type, "LOCATOR") == 0)
+    return CONTEST_MULT_GRID_PER_BAND;
 
   return CONTEST_MULT_DXCC;
+}
+
+static int text_contains_token_ci(const char *text, const char *token) {
+  if (!text || !text[0] || !token || !token[0])
+    return 0;
+
+  char up_text[192] = {0};
+  char up_token[48] = {0};
+  snprintf(up_text, sizeof(up_text), "%s", text);
+  snprintf(up_token, sizeof(up_token), "%s", token);
+  uppercase_in_place(up_text);
+  uppercase_in_place(up_token);
+
+  return strstr(up_text, up_token) != NULL;
+}
+
+static void apply_dxlog_received_field_type(const char *value,
+                                            ContestDefinition *out) {
+  if (!value || !value[0] || !out)
+    return;
+
+  out->field_count = 0;
+
+  if ((text_contains_token_ci(value, "NR") ||
+       text_contains_token_ci(value, "SERIAL") ||
+       text_contains_token_ci(value, "QSONR")) &&
+      (text_contains_token_ci(value, "GRID") ||
+       text_contains_token_ci(value, "LOC"))) {
+    snprintf(out->fields[0].name, sizeof(out->fields[0].name), "%s",
+             "SERIAL_GRID");
+    snprintf(out->fields[0].label, sizeof(out->fields[0].label), "%s",
+             "Serial + Grid");
+    out->fields[0].required = 1;
+    out->field_count = 1;
+    return;
+  }
+
+  if (text_contains_token_ci(value, "NR") ||
+      text_contains_token_ci(value, "SERIAL") ||
+      text_contains_token_ci(value, "QSONR")) {
+    snprintf(out->fields[0].name, sizeof(out->fields[0].name), "%s",
+             "SERIAL");
+    snprintf(out->fields[0].label, sizeof(out->fields[0].label), "%s",
+             "Serial");
+    out->fields[0].required = 1;
+    out->field_count = 1;
+    return;
+  }
+
+  if (text_contains_token_ci(value, "CQZONE")) {
+    snprintf(out->fields[0].name, sizeof(out->fields[0].name), "%s",
+             "CQZONE");
+    snprintf(out->fields[0].label, sizeof(out->fields[0].label), "%s",
+             "CQ Zone");
+    out->fields[0].required = 1;
+    out->field_count = 1;
+    return;
+  }
+
+  if (text_contains_token_ci(value, "ITUZONE") ||
+      text_contains_token_ci(value, "ITU")) {
+    snprintf(out->fields[0].name, sizeof(out->fields[0].name), "%s",
+             "ITUZONE");
+    snprintf(out->fields[0].label, sizeof(out->fields[0].label), "%s",
+             "ITU Zone");
+    out->fields[0].required = 1;
+    out->field_count = 1;
+    return;
+  }
+
+  if (text_contains_token_ci(value, "GRID") ||
+      text_contains_token_ci(value, "LOC")) {
+    snprintf(out->fields[0].name, sizeof(out->fields[0].name), "%s", "GRID");
+    snprintf(out->fields[0].label, sizeof(out->fields[0].label), "%s",
+             "Grid");
+    out->fields[0].required = 1;
+    out->field_count = 1;
+  }
 }
 
 static int is_dxlog_key_potentially_ignored(const char *key_upper) {
@@ -264,10 +359,12 @@ void contest_definition_init_defaults(ContestDefinition *out) {
   out->points_same_dxcc = 0;
   out->points_new_band_dxcc = 0;
   out->points_same_band_dxcc = 0;
+  out->points_configured = 0;
   out->multiplier_type = CONTEST_MULT_DXCC;
   out->bonus_points = 0;
   snprintf(out->qtc_sender_side, sizeof(out->qtc_sender_side), "%s", "NONE");
   out->points_per_qtc = 0;
+  out->duplicate_qso = 0;
   out->field_count = 0;
 }
 
@@ -330,6 +427,11 @@ ContestMultiplierType contest_multiplier_from_text(const char *text) {
     return CONTEST_MULT_DXCC_PLUS_ZONE_PER_BAND;
   if (strcmp(upper, "SPDX") == 0)
     return CONTEST_MULT_SPDX;
+  if (strcmp(upper, "GRID_PER_BAND") == 0 ||
+      strcmp(upper, "GRID-PER-BAND") == 0 ||
+      strcmp(upper, "WWL_PER_BAND") == 0 ||
+      strcmp(upper, "LOCATOR_PER_BAND") == 0)
+    return CONTEST_MULT_GRID_PER_BAND;
 
   /* Backward-compatible aliases. */
   if (strcmp(upper, "BAND_DXCC") == 0 || strcmp(upper, "BAND-DXCC") == 0)
@@ -360,6 +462,8 @@ static const char *contest_multiplier_to_text(ContestMultiplierType type) {
     return "DXCC_PLUS_ZONE_PER_BAND";
   case CONTEST_MULT_SPDX:
     return "SPDX";
+  case CONTEST_MULT_GRID_PER_BAND:
+    return "GRID_PER_BAND";
   case CONTEST_MULT_MODE_DXCC:
     return "MODE_DXCC";
   default:
@@ -416,6 +520,8 @@ int contest_definition_import_dxlog(const char *source_path,
   fprintf(f, "POINTS_SAME_BAND_DXCC=%d\n", def.points_same_band_dxcc);
   fprintf(f, "MULTIPLIER=%s\n", contest_multiplier_to_text(def.multiplier_type));
   fprintf(f, "BONUS_POINTS=%d\n", def.bonus_points);
+  if (def.duplicate_qso)
+    fprintf(f, "DOUBLE_QSO=1\n");
   if (def.qtc_sender_side[0] && strcmp(def.qtc_sender_side, "NONE") != 0) {
     fprintf(f, "QTC_SENDER=%s\n", def.qtc_sender_side);
     fprintf(f, "POINTS_PER_QTC=%d\n", def.points_per_qtc > 0 ? def.points_per_qtc : 1);
@@ -573,34 +679,44 @@ int contest_definition_load(const char *path, ContestDefinition *out,
       out->points_per_qso = atoi(value);
       if (out->points_per_qso <= 0)
         out->points_per_qso = 1;
+      out->points_configured = 1;
     } else if (strcmp(key, "POINTS_CW") == 0) {
       out->points_cw = atoi(value);
       if (out->points_cw < 0)
         out->points_cw = 0;
+      out->points_configured = 1;
     } else if (strcmp(key, "POINTS_PHONE") == 0) {
       out->points_phone = atoi(value);
       if (out->points_phone < 0)
         out->points_phone = 0;
+      out->points_configured = 1;
     } else if (strcmp(key, "POINTS_DIGI") == 0) {
       out->points_digi = atoi(value);
       if (out->points_digi < 0)
         out->points_digi = 0;
+      out->points_configured = 1;
     } else if (strcmp(key, "POINTS_NEW_DXCC") == 0) {
       out->points_new_dxcc = atoi(value);
       if (out->points_new_dxcc < 0)
         out->points_new_dxcc = 0;
+      out->points_configured = 1;
     } else if (strcmp(key, "POINTS_SAME_DXCC") == 0) {
       out->points_same_dxcc = atoi(value);
       if (out->points_same_dxcc < 0)
         out->points_same_dxcc = 0;
+      out->points_configured = 1;
     } else if (strcmp(key, "POINTS_NEW_BAND_DXCC") == 0) {
       out->points_new_band_dxcc = atoi(value);
       if (out->points_new_band_dxcc < 0)
         out->points_new_band_dxcc = 0;
+      out->points_configured = 1;
     } else if (strcmp(key, "POINTS_SAME_BAND_DXCC") == 0) {
       out->points_same_band_dxcc = atoi(value);
       if (out->points_same_band_dxcc < 0)
         out->points_same_band_dxcc = 0;
+      out->points_configured = 1;
+    } else if (strcmp(key, "POINTS_TYPE") == 0) {
+      out->points_configured = 1;
     } else if (strcmp(key, "MULTIPLIER") == 0) {
       out->multiplier_type = contest_multiplier_from_text(value);
     } else if (strcmp(key, "MULT1_TYPE") == 0) {
@@ -612,19 +728,22 @@ int contest_definition_load(const char *path, ContestDefinition *out,
     } else if (strcmp(key, "MULT2_COUNT") == 0) {
       snprintf(dxlog_mult2_count, sizeof(dxlog_mult2_count), "%s", value);
     } else if (strcmp(key, "FIELD_RCVD_TYPE") == 0) {
-      out->field_count = 0;
-      if (strstr(value, "NR")) {
-        snprintf(out->fields[0].name, sizeof(out->fields[0].name), "%s", "SERIAL");
-        snprintf(out->fields[0].label, sizeof(out->fields[0].label), "%s", "Serial");
-        out->fields[0].required = 1;
-        out->field_count = 1;
-      } else if (strstr(value, "CQZONE")) {
-        snprintf(out->fields[0].name, sizeof(out->fields[0].name), "%s", "CQZONE");
-        snprintf(out->fields[0].label, sizeof(out->fields[0].label), "%s", "CQ Zone");
-        out->fields[0].required = 1;
-        out->field_count = 1;
-      }
+      apply_dxlog_received_field_type(value, out);
       dxlog_field_set = out->field_count > 0;
+    } else if (strcmp(key, "QSO_NUMBER_CATEGORY") == 0) {
+      if (!text_contains_token_ci(value, "NONE")) {
+        snprintf(out->exchange_sent_template,
+                 sizeof(out->exchange_sent_template), "%s", "#");
+        if (!dxlog_field_set) {
+          out->field_count = 1;
+          snprintf(out->fields[0].name, sizeof(out->fields[0].name), "%s",
+                   "SERIAL");
+          snprintf(out->fields[0].label, sizeof(out->fields[0].label), "%s",
+                   "Serial");
+          out->fields[0].required = 1;
+          dxlog_field_set = 1;
+        }
+      }
     } else if (strcmp(key, "BONUS_POINTS") == 0) {
       out->bonus_points = atoi(value);
       if (out->bonus_points < 0)
@@ -636,6 +755,8 @@ int contest_definition_load(const char *path, ContestDefinition *out,
       out->points_per_qtc = atoi(value);
       if (out->points_per_qtc < 0)
         out->points_per_qtc = 0;
+    } else if (strcmp(key, "DOUBLE_QSO") == 0) {
+      out->duplicate_qso = parse_truthy_flag(value);
     } else if (strcmp(key, "FIELD") == 0) {
       parse_field_line(value, out);
     } else {

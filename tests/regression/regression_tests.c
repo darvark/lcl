@@ -1,6 +1,7 @@
 #include "config.h"
 #include "contest.h"
 #include "cty.h"
+#include "dxcluster.h"
 #include "export.h"
 #include "maidenhead.h"
 #include "qso.h"
@@ -9,9 +10,14 @@
 #include "stats.h"
 
 #include <errno.h>
+#include <arpa/inet.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <math.h>
+#include <netinet/in.h>
+#include <pthread.h>
+#include <signal.h>
+#include <sys/socket.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <sys/stat.h>
@@ -19,6 +25,9 @@
 #include <unistd.h>
 
 static int g_failures = 0;
+
+/* Required by dxcluster.c debug logging path in regression build. */
+int app_debug_enabled = 0;
 
 static void failf(const char *fmt, ...) {
   va_list ap;
@@ -124,6 +133,7 @@ static void test_config_loading(const char *tmp_dir) {
       "DXC_CALL = SP9XYZ\n"
       "CAT_MODE_FROM_RIG = 1\n"
       "CONTEST_TX_EXCHANGE = 28\n"
+      "CW_ESM = 1\n"
       "NET_STATION_ID = RUN1\n"
       "NET_SHARED_KEY = secret123\n"
       "NET_TLS_CERT_FILE = cert.pem\n"
@@ -149,6 +159,8 @@ static void test_config_loading(const char *tmp_dir) {
   expect_str_eq(config.dxc_call, "SP9XYZ", "config call parsed");
   expect_int_eq(config.cat_mode_from_rig, 1,
                 "config CAT mode-from-rig parsed");
+  expect_int_eq(config.cw_esm_enabled, 1,
+                "config CW_ESM parsed");
   expect_str_eq(config.contest_tx_exchange, "28",
                 "config contest tx exchange parsed");
   expect_str_eq(config.net_station_id, "RUN1",
@@ -185,6 +197,8 @@ static void test_config_loading(const char *tmp_dir) {
                 "default port restored when config file is missing");
   expect_int_eq(config.cat_mode_from_rig, 0,
                 "default CAT mode-from-rig restored when config file is missing");
+  expect_int_eq(config.cw_esm_enabled, 0,
+                "default CW_ESM restored when config file is missing");
 }
 
 static void test_config_save_roundtrip(const char *tmp_dir) {
@@ -199,6 +213,7 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
   snprintf(config.cat_parity, sizeof(config.cat_parity), "%s", "Odd");
   snprintf(config.cat_handshake, sizeof(config.cat_handshake), "%s", "XONXOFF");
   config.cat_mode_from_rig = 1;
+  config.cw_esm_enabled = 1;
   snprintf(config.contest_tx_exchange, sizeof(config.contest_tx_exchange),
            "%s", "28");
   snprintf(config.net_station_id, sizeof(config.net_station_id), "%s",
@@ -232,6 +247,7 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
   config.cat_parity[0] = 0;
   config.cat_handshake[0] = 0;
   config.cat_mode_from_rig = 0;
+  config.cw_esm_enabled = 0;
   config.contest_tx_exchange[0] = 0;
   config.net_station_id[0] = 0;
   config.net_shared_key[0] = 0;
@@ -259,6 +275,8 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
                 "saved CAT handshake restored");
   expect_int_eq(config.cat_mode_from_rig, 1,
                 "saved CAT mode-from-rig restored");
+  expect_int_eq(config.cw_esm_enabled, 1,
+                "saved CW_ESM restored");
   expect_str_eq(config.contest_tx_exchange, "28",
                 "saved contest tx exchange restored");
   expect_str_eq(config.net_station_id, "RUN2",
@@ -541,6 +559,265 @@ static void test_call_suggestions(void) {
   call_suggestion_refresh(&list, "SP9 ", history, 8);
   expect_int_eq(list.count, 0,
                 "no suggestions after first token is completed");
+}
+
+static void test_dxcluster_send_spot_disconnected_regression(void) {
+  dxcluster_disconnect();
+
+  expect_int_eq(dxcluster_send_spot(NULL), -1,
+                "DXCluster spot send should reject null payload");
+  expect_true(strstr(dxcluster_status, "empty text") != NULL,
+              "DXCluster status should explain empty payload failure");
+
+  expect_int_eq(dxcluster_send_spot("14074 SP9REG CQ TEST"), -1,
+                "DXCluster spot send should fail when disconnected");
+  expect_true(strstr(dxcluster_status, "not connected") != NULL,
+              "DXCluster status should report disconnected spot send");
+}
+
+static void test_dxcluster_connect_disconnect_regression(void) {
+  snprintf(config.dxc_host, sizeof(config.dxc_host), "%s", "127.0.0.1");
+  config.dxc_port = 9;
+  snprintf(config.dxc_call, sizeof(config.dxc_call), "%s", "SP9REG");
+
+  expect_int_eq(dxcluster_connect(), 0,
+                "DXCluster connect should start worker thread");
+  usleep(50000);
+
+  dxcluster_disconnect();
+
+  expect_true(strstr(dxcluster_status, "Disconnected") != NULL ||
+                  strstr(dxcluster_status, "Connect") != NULL ||
+                  strstr(dxcluster_status, "failed") != NULL ||
+                  strstr(dxcluster_status, "timeout") != NULL,
+              "DXCluster disconnect should finish worker lifecycle");
+}
+
+typedef struct {
+  int port;
+  int ok;
+  char received[2048];
+} MockDxclusterPrefixArgs;
+
+static void *mock_dxcluster_prefix_server_thread(void *arg) {
+  MockDxclusterPrefixArgs *ctx = (MockDxclusterPrefixArgs *)arg;
+  if (!ctx)
+    return NULL;
+
+  int srv = socket(AF_INET, SOCK_STREAM, 0);
+  if (srv < 0)
+    return NULL;
+
+  int reuse = 1;
+  setsockopt(srv, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+
+  struct sockaddr_in addr;
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons((uint16_t)ctx->port);
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+  if (bind(srv, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+    close(srv);
+    return NULL;
+  }
+
+  if (listen(srv, 1) != 0) {
+    close(srv);
+    return NULL;
+  }
+
+  int cli = accept(srv, NULL, NULL);
+  if (cli < 0) {
+    close(srv);
+    return NULL;
+  }
+
+  struct timeval tv;
+  tv.tv_sec = 1;
+  tv.tv_usec = 0;
+  setsockopt(cli, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+  const char *prompt = "login: ";
+  (void)send(cli, prompt, strlen(prompt), 0);
+
+  for (int i = 0; i < 30; i++) {
+    char buf[256] = {0};
+    int n = (int)recv(cli, buf, sizeof(buf) - 1, 0);
+    if (n > 0) {
+      const size_t cur = strlen(ctx->received);
+      const size_t room = sizeof(ctx->received) - cur - 1;
+      if (room > 0)
+        strncat(ctx->received, buf, room);
+
+      if (strstr(ctx->received, "DX 14075 SP9REG CQ TEST") != NULL) {
+        ctx->ok = 1;
+        break;
+      }
+    } else {
+      usleep(100000);
+    }
+  }
+
+  /* Keep connection alive briefly to avoid client-side SIGPIPE races while
+   * the worker finishes its startup command burst. */
+  usleep(400000);
+
+  close(cli);
+  close(srv);
+  return NULL;
+}
+
+static void test_dxcluster_spot_prefix_regression(void) {
+  snprintf(config.dxc_host, sizeof(config.dxc_host), "%s", "127.0.0.1");
+  config.dxc_port = 19432;
+  snprintf(config.dxc_call, sizeof(config.dxc_call), "%s", "SP9REG");
+
+  MockDxclusterPrefixArgs server;
+  memset(&server, 0, sizeof(server));
+  server.port = config.dxc_port;
+
+  pthread_t tid;
+  expect_int_eq(pthread_create(&tid, NULL, mock_dxcluster_prefix_server_thread,
+                               &server),
+                0, "DX prefix mock server should start");
+  usleep(120000);
+
+  expect_int_eq(dxcluster_connect(), 0,
+                "DXCluster connect should succeed for DX prefix regression");
+
+  int sent_ok = 0;
+  for (int i = 0; i < 30; i++) {
+    if (dxcluster_send_spot("DX 14075 SP9REG CQ TEST") == 0) {
+      sent_ok = 1;
+      break;
+    }
+    usleep(100000);
+  }
+
+  dxcluster_disconnect();
+  pthread_join(tid, NULL);
+
+  expect_true(sent_ok,
+              "DX-prefixed spot should be accepted once connection is ready");
+  expect_true(server.ok == 1,
+              "mock server should receive prefixed DX spot line");
+  expect_true(strstr(server.received, "DX DX 14075") == NULL,
+              "DX-prefixed spot must not be double-prefixed");
+}
+
+typedef struct {
+  int port;
+  int ok;
+  char received[2048];
+} MockDxclusterAutoprefixArgs;
+
+static void *mock_dxcluster_autoprefix_server_thread(void *arg) {
+  MockDxclusterAutoprefixArgs *ctx = (MockDxclusterAutoprefixArgs *)arg;
+  if (!ctx)
+    return NULL;
+
+  int srv = socket(AF_INET, SOCK_STREAM, 0);
+  if (srv < 0)
+    return NULL;
+
+  int reuse = 1;
+  setsockopt(srv, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+
+  struct sockaddr_in addr;
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons((uint16_t)ctx->port);
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+  if (bind(srv, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+    close(srv);
+    return NULL;
+  }
+
+  if (listen(srv, 1) != 0) {
+    close(srv);
+    return NULL;
+  }
+
+  int cli = accept(srv, NULL, NULL);
+  if (cli < 0) {
+    close(srv);
+    return NULL;
+  }
+
+  struct timeval tv;
+  tv.tv_sec = 1;
+  tv.tv_usec = 0;
+  setsockopt(cli, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+  const char *prompt = "login: ";
+  (void)send(cli, prompt, strlen(prompt), 0);
+
+  for (int i = 0; i < 30; i++) {
+    char buf[256] = {0};
+    int n = (int)recv(cli, buf, sizeof(buf) - 1, 0);
+    if (n > 0) {
+      const size_t cur = strlen(ctx->received);
+      const size_t room = sizeof(ctx->received) - cur - 1;
+      if (room > 0)
+        strncat(ctx->received, buf, room);
+
+      if (strstr(ctx->received, "dx 14074 SP9AUTO CQ TEST") != NULL) {
+        ctx->ok = 1;
+        break;
+      }
+    } else {
+      usleep(100000);
+    }
+  }
+
+  usleep(400000);
+
+  close(cli);
+  close(srv);
+  return NULL;
+}
+
+static void test_dxcluster_spot_autoprefix_regression(void) {
+  snprintf(config.dxc_host, sizeof(config.dxc_host), "%s", "127.0.0.1");
+  config.dxc_port = 19433;
+  snprintf(config.dxc_call, sizeof(config.dxc_call), "%s", "SP9REG");
+
+  MockDxclusterAutoprefixArgs server;
+  memset(&server, 0, sizeof(server));
+  server.port = config.dxc_port;
+
+  pthread_t tid;
+  expect_int_eq(
+      pthread_create(&tid, NULL, mock_dxcluster_autoprefix_server_thread,
+                     &server),
+      0, "DX autoprefix mock server should start");
+  usleep(120000);
+
+  expect_int_eq(dxcluster_connect(), 0,
+                "DXCluster connect should succeed for autoprefix regression");
+
+  int sent_ok = 0;
+  for (int i = 0; i < 30; i++) {
+    if (dxcluster_send_spot("14074 SP9AUTO CQ TEST") == 0) {
+      sent_ok = 1;
+      break;
+    }
+    usleep(100000);
+  }
+
+  dxcluster_disconnect();
+  pthread_join(tid, NULL);
+
+  expect_true(sent_ok,
+              "spot without DX prefix should be accepted once connected");
+  expect_true(server.ok == 1,
+              "mock server should receive auto-prefixed dx spot line");
+  expect_true(strstr(server.received, "DX 14074 SP9AUTO CQ TEST") == NULL,
+              "autoprefix should use single lowercase dx form");
+  expect_true(strstr(server.received, "dx dx 14074") == NULL,
+              "autoprefix must not duplicate dx token");
 }
 
 static int bandmap_target_row_for_frequency(const int *freqs, int count,
@@ -941,6 +1218,8 @@ static void test_new_contest_defs_load(const char *tmp_dir) {
 }
 
 int main(void) {
+  signal(SIGPIPE, SIG_IGN);
+
   char tmp_dir[256];
   if (make_temp_dir(tmp_dir, sizeof(tmp_dir)) != 0) {
     fprintf(stderr, "Cannot create temp dir: %s\n", strerror(errno));
@@ -959,6 +1238,10 @@ int main(void) {
   test_contest_definition_and_cabrillo(tmp_dir);
   test_maidenhead_conversion();
   test_call_suggestions();
+  test_dxcluster_send_spot_disconnected_regression();
+  test_dxcluster_connect_disconnect_regression();
+  test_dxcluster_spot_prefix_regression();
+  test_dxcluster_spot_autoprefix_regression();
 
   /* QTC regression tests */
   test_wae_definition_qtc_round_trip(tmp_dir);

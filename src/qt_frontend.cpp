@@ -4,6 +4,7 @@
 #include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -42,6 +43,7 @@
 #include <QTextDocument>
 #include <QTimer>
 #include <QToolBar>
+#include <QTimeZone>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -72,9 +74,10 @@ extern "C" {
 }
 
 namespace {
-constexpr std::array<const char *, 11> kBandLabels = {
-    "160M", "80M", "40M", "30M", "20M", "17M", "15M", "12M",
-    "10M", "6M", "2M"};
+constexpr std::array<const char *, 18> kBandLabels = {
+  "160M", "80M", "40M", "30M", "20M", "17M", "15M", "12M",
+  "10M", "6M", "4M", "2M", "1.25M", "70CM", "33CM", "23CM",
+  "13CM", "9CM"};
 
 /*
  * Return the band index for a known band label.
@@ -110,6 +113,76 @@ int parse_spot_khz(const char *freq_text) {
     return 0;
 
   return (int)std::lround(value);
+}
+
+/*
+ * Convert one spot time text to UTC age in minutes.
+ *
+ * Accepts common cluster forms such as HHMM, HHMMZ and HH:MM.
+ * Returns -1 when the value cannot be parsed.
+ */
+int spot_age_minutes_utc(const QString &spot_time_text) {
+  QString value = spot_time_text.trimmed().toUpper();
+  if (value.endsWith("Z"))
+    value.chop(1);
+
+  int hour = -1;
+  int minute = -1;
+
+  if (value.size() == 5 && value[2] == ':') {
+    bool ok_h = false;
+    bool ok_m = false;
+    hour = value.mid(0, 2).toInt(&ok_h);
+    minute = value.mid(3, 2).toInt(&ok_m);
+    if (!ok_h || !ok_m)
+      return -1;
+  } else if (value.size() == 4) {
+    bool ok = false;
+    const int packed = value.toInt(&ok);
+    if (!ok)
+      return -1;
+    hour = packed / 100;
+    minute = packed % 100;
+  } else {
+    return -1;
+  }
+
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59)
+    return -1;
+
+  const QDateTime now = QDateTime::currentDateTimeUtc();
+  QDateTime spot(now.date(), QTime(hour, minute), QTimeZone::UTC);
+
+  if (spot > now)
+    spot = spot.addDays(-1);
+
+  const qint64 age = spot.secsTo(now) / 60;
+  if (age < 0)
+    return -1;
+
+  return (int)age;
+}
+
+enum SpotModeGroup {
+  SPOT_MODE_GROUP_ALL = 0,
+  SPOT_MODE_GROUP_CW = 1,
+  SPOT_MODE_GROUP_PHONE = 2,
+  SPOT_MODE_GROUP_DIGI = 3,
+};
+
+int mode_group_for_label(const char *mode_text) {
+  if (!mode_text || !mode_text[0])
+    return SPOT_MODE_GROUP_ALL;
+
+  const QString mode = QString::fromLatin1(mode_text).toUpper();
+  if (mode == "CW")
+    return SPOT_MODE_GROUP_CW;
+  if (mode == "SSB" || mode == "AM" || mode == "FM")
+    return SPOT_MODE_GROUP_PHONE;
+  if (mode == "FT8" || mode == "FT4" || mode == "RTTY" || mode == "PSK31")
+    return SPOT_MODE_GROUP_DIGI;
+
+  return SPOT_MODE_GROUP_ALL;
 }
 
 QString render_rst_sr(const QSO &q) {
@@ -357,6 +430,38 @@ void set_text_if_changed(QPushButton *button, const QString &text) {
 void set_title_if_changed(QGroupBox *group, const QString &title) {
   if (group && group->title() != title)
     group->setTitle(title);
+}
+
+bool software_interlock_blocks_tx(int tx_radio_nr, QString *reason) {
+  if (app_controller_get_contest_technique() == CONTEST_TECH_SO1R)
+    return false;
+
+  if (tx_radio_nr != 1 && tx_radio_nr != 2)
+    tx_radio_nr = 1;
+
+  AppRenderState state;
+  app_controller_get_render_state(&state);
+
+  const int tx_freq = tx_radio_nr == 2 ? state.radio2_freq_khz : state.radio1_freq_khz;
+  const int other_freq = tx_radio_nr == 2 ? state.radio1_freq_khz : state.radio2_freq_khz;
+  if (tx_freq <= 0 || other_freq <= 0)
+    return false;
+
+  char tx_band[8] = {0};
+  char other_band[8] = {0};
+  detect_band(tx_freq, tx_band);
+  detect_band(other_freq, other_band);
+
+  if (!tx_band[0] || !other_band[0] || std::strcmp(tx_band, other_band) != 0)
+    return false;
+
+  if (reason) {
+    *reason = QString("Interlock: R%1 i R%2 sa na tym samym pasmie %3")
+                  .arg(tx_radio_nr)
+                  .arg(tx_radio_nr == 2 ? 1 : 2)
+                  .arg(QString::fromLatin1(tx_band));
+  }
+  return true;
 }
 
 void set_stylesheet_if_changed(QWidget *widget, const QString &style) {

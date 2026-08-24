@@ -1,12 +1,41 @@
 #include "stats.h"
 
 #include "config.h"
+#include "maidenhead.h"
 #include "qtc.h"
 
 #include <ctype.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+
+static int extract_locator_fragment(const char *text, char *out,
+                                    size_t out_size) {
+  if (!text || !text[0] || !out || out_size < 5)
+    return 0;
+
+  out[0] = 0;
+  size_t len = strlen(text);
+  for (size_t width = 6; width >= 4; width -= 2) {
+    if (len < width)
+      continue;
+
+    for (size_t start = 0; start + width <= len; start++) {
+      char candidate[16] = {0};
+      memcpy(candidate, text + start, width);
+      candidate[width] = 0;
+      if (locator_is_valid(candidate)) {
+        snprintf(out, out_size, "%s", candidate);
+        return 1;
+      }
+    }
+
+    if (width == 4)
+      break;
+  }
+
+  return 0;
+}
 
 Statistics stats;
 
@@ -222,6 +251,13 @@ static void maybe_add_multiplier(const QSO *q, int own_is_sp) {
 
       snprintf(key, sizeof(key), "V|%s|%s", q->band, exch);
     }
+    break;
+  }
+  case CONTEST_MULT_GRID_PER_BAND: {
+    char locator[16] = {0};
+    if (!extract_locator_fragment(q->exchange_recv, locator, sizeof(locator)))
+      return;
+    snprintf(key, sizeof(key), "%s|%s", q->band, locator);
     break;
   }
   case CONTEST_MULT_DXCC:

@@ -85,6 +85,7 @@ Ważna reguła dla wymiany nadawanej:
 | `CW_DEVICE` | tekst | `/dev/ttyUSB2` | Port klucza CW. |
 | `CW_KEYER_LINE` | `DTR` lub `RTS` | `DTR` | Linia sterująca używana przez keyer. |
 | `CW_WPM` | liczba całkowita | `20` | Tempo nadawania. Parser ogranicza zakres do `1..60`. Wartość jest natychmiast stosowana po zmianie w głównym interfejsie. |
+| `CW_ESM` | `0` lub `1` | `0` | Włącza Enter Sends Message (ESM) dla CW. Działa wyłącznie pod `Enter` i opiera decyzje na RUN/S&P, aktywnym polu (`Call`/`Exchange`) oraz tym, czy pola `Call` i `Exchange` są puste. |
 
 ## Przykład `logger.conf`
 
@@ -125,6 +126,7 @@ CONTEST_TECHNIQUE=SO2V
 CW_DEVICE=/dev/ttyUSB1
 CW_KEYER_LINE=DTR
 CW_WPM=20
+CW_ESM=1
 ```
 
 ## Format definicji zawodów

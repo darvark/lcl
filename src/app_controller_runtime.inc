@@ -467,6 +467,9 @@ static void process_qso(const char *line) {
   }
 
   stats_update();
+  (void)live_upload_publish_qso_and_stats(
+      q, &stats,
+      contest_definition_loaded ? active_contest_def.cabrillo_name : "");
 }
 
 /*
@@ -495,6 +498,9 @@ static int apply_saved_qso_state(int idx) {
   }
 
   stats_update();
+  (void)live_upload_publish_qso_and_stats(
+      q, &stats,
+      contest_definition_loaded ? active_contest_def.cabrillo_name : "");
   return 1;
 }
 
@@ -704,6 +710,55 @@ void app_controller_get_render_state(AppRenderState *out) {
   out->contest_name = (contest_definition_loaded && active_contest_def.name[0])
                           ? active_contest_def.name
                           : "";
+}
+
+int app_controller_plan_cw_esm_enter(const AppRenderState *state,
+                                     int *out_pre_fn,
+                                     int *out_post_fn) {
+  if (out_pre_fn)
+    *out_pre_fn = 0;
+  if (out_post_fn)
+    *out_post_fn = 0;
+
+  if (!state || !config.cw_esm_enabled)
+    return 0;
+
+  const int active_radio = state->active_radio == 2 ? 2 : 1;
+  const int is_run = active_radio == 2 ? (state->radio2_run ? 1 : 0)
+                                       : (state->radio1_run ? 1 : 0);
+  const char *mode = active_radio == 2 ? state->radio2_mode : state->radio1_mode;
+
+  if (!mode || strstr(mode, "CW") == NULL)
+    return 0;
+
+  const char *call = state->input_call ? state->input_call : "";
+  const char *exch = state->input_rst ? state->input_rst : "";
+  const int call_empty = call[0] == 0;
+  const int exch_empty = exch[0] == 0;
+
+  int pre_fn = 0;
+  int post_fn = 0;
+
+  if (state->active_input_field == ENTRY_FIELD_CALL) {
+    if (call_empty)
+      pre_fn = is_run ? 1 : 0;
+    else
+      pre_fn = 9;
+  } else if (state->active_input_field == ENTRY_FIELD_RST) {
+    if (call_empty) {
+      pre_fn = is_run ? 1 : 0;
+    } else if (exch_empty) {
+      pre_fn = 2;
+    } else {
+      post_fn = is_run ? 8 : 4;
+    }
+  }
+
+  if (out_pre_fn)
+    *out_pre_fn = pre_fn;
+  if (out_post_fn)
+    *out_post_fn = post_fn;
+  return 1;
 }
 
 AppControllerEvent app_controller_submit_command_text(const char *command_text) {
@@ -1029,8 +1084,18 @@ AppControllerEvent app_controller_handle_key(int key) {
           char exchange_sent[32] = {0};
           char exchange_recv_storage[32] = {0};
           build_exchange_sent(exchange_sent, sizeof(exchange_sent));
+
+          const int use_remote_number_server =
+              config.net_enabled && strcasecmp(config.net_role, "client") == 0 &&
+              contest_definition_loaded && contest_exchange_uses_serial_counter() &&
+              !config.contest_tx_exchange[0];
+
+          if (use_remote_number_server)
+            exchange_sent[0] = 0;
+
           const int qso_points = resolve_contest_points(
-            mode, qso_band, country, entry_call, active_contest_def.cabrillo_name);
+            mode, qso_band, country, entry_call,
+            active_contest_def.cabrillo_name, entry_exchange);
 
           const char *qso_rst = contest_definition_loaded
                                     ? (strcmp(mode, "CW") == 0 ? "599" : "59")

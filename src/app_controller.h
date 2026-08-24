@@ -106,6 +106,17 @@ void app_controller_shutdown(void);
 void app_controller_get_render_state(AppRenderState *out);
 
 /*
+ * Plan CW ESM actions for one Enter press using current render-state values.
+ *
+ * Returns non-zero when ESM is enabled and active for the current context.
+ * out_pre_fn/out_post_fn receive function-key numbers (1..10) or 0 when no
+ * action is needed before/after Enter.
+ */
+int app_controller_plan_cw_esm_enter(const AppRenderState *state,
+                                     int *out_pre_fn,
+                                     int *out_post_fn);
+
+/*
  * Execute one full command line directly, without split-field key emulation.
  *
  * @param command_text Command text such as "contest contest_defs/cq_wpx_cw.conf".
@@ -215,6 +226,17 @@ void app_controller_toggle_run_sp(int radio_nr);
 int app_controller_get_radio_state(int radio_nr, int *out_freq_khz,
                                    char *out_mode, size_t out_mode_size,
                                    int *out_is_run);
+
+/*
+ * Set the active radio mode using the CAT interface when connected.
+ */
+void app_controller_set_active_mode(const char *mode_label);
+
+/*
+ * Step the active radio to the next or previous band edge.
+ */
+void app_controller_band_up(void);
+void app_controller_band_down(void);
 
 /* ------------------------------------------------------------------ */
 /* QTC API                                                              */

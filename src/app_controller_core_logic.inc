@@ -10,8 +10,13 @@ static const ContestFieldDef *active_exchange_field_def(void) {
   return &active_contest_def.fields[0];
 }
 
+static int contest_exchange_is_serial_locator(const ContestFieldDef *field);
+
 static int contest_exchange_is_numeric(const ContestFieldDef *field) {
   if (!field || !field->name[0])
+    return 0;
+
+  if (contest_exchange_is_serial_locator(field))
     return 0;
 
   char upper_name[sizeof(field->name)];
@@ -22,6 +27,62 @@ static int contest_exchange_is_numeric(const ContestFieldDef *field) {
   return strstr(upper_name, "SERIAL") != NULL || strstr(upper_name, "NR") != NULL ||
          strstr(upper_name, "NUMBER") != NULL || strstr(upper_name, "NUM") != NULL ||
          strstr(upper_name, "ZONE") != NULL;
+}
+
+static int contest_exchange_is_locator(const ContestFieldDef *field) {
+  if (!field || !field->name[0])
+    return 0;
+
+  char upper_name[sizeof(field->name)];
+  snprintf(upper_name, sizeof(upper_name), "%s", field->name);
+  for (size_t i = 0; upper_name[i]; i++)
+    upper_name[i] = (char)toupper((unsigned char)upper_name[i]);
+
+  return strstr(upper_name, "GRID") != NULL ||
+         strstr(upper_name, "LOC") != NULL;
+}
+
+static int extract_locator_from_exchange(const char *exchange, char *out,
+                                         size_t out_size) {
+  if (!exchange || !exchange[0] || !out || out_size < 5)
+    return 0;
+
+  out[0] = 0;
+  const size_t len = strlen(exchange);
+  for (size_t width = 6; width >= 4; width -= 2) {
+    if (len < width)
+      continue;
+
+    for (size_t start = 0; start + width <= len; start++) {
+      char candidate[16] = {0};
+      memcpy(candidate, exchange + start, width);
+      candidate[width] = 0;
+      if (locator_is_valid(candidate)) {
+        snprintf(out, out_size, "%s", candidate);
+        return 1;
+      }
+    }
+
+    if (width == 4)
+      break;
+  }
+
+  return 0;
+}
+
+static int contest_exchange_is_serial_locator(const ContestFieldDef *field) {
+  if (!field || !field->name[0])
+    return 0;
+
+  char upper_name[sizeof(field->name)];
+  snprintf(upper_name, sizeof(upper_name), "%s", field->name);
+  for (size_t i = 0; upper_name[i]; i++)
+    upper_name[i] = (char)toupper((unsigned char)upper_name[i]);
+
+  return strstr(upper_name, "SERIAL_GRID") != NULL ||
+         strstr(upper_name, "NRGRID") != NULL ||
+         (strstr(upper_name, "SERIAL") != NULL &&
+          strstr(upper_name, "GRID") != NULL);
 }
 
 static const char *contest_exchange_label(void) {
@@ -49,6 +110,36 @@ static int validate_contest_exchange(const char *exchange, char *status,
 
   if (field && contest_exchange_is_numeric(field) && !is_digits_only(exchange)) {
     snprintf(status, status_size, "%s must be numeric", label);
+    return 0;
+  }
+
+  if (field && contest_exchange_is_serial_locator(field)) {
+    char locator[16] = {0};
+    if (!extract_locator_from_exchange(exchange, locator, sizeof(locator))) {
+      snprintf(status, status_size, "%s must contain valid serial + locator",
+               label);
+      return 0;
+    }
+
+    int has_digit = 0;
+    for (size_t i = 0; exchange[i]; i++) {
+      if (isdigit((unsigned char)exchange[i])) {
+        has_digit = 1;
+        break;
+      }
+    }
+    if (!has_digit) {
+      snprintf(status, status_size, "%s must contain valid serial + locator",
+               label);
+      return 0;
+    }
+
+    return 1;
+  }
+
+  if (field && contest_exchange_is_locator(field) &&
+      !locator_is_valid(exchange)) {
+    snprintf(status, status_size, "%s must be a valid locator", label);
     return 0;
   }
 
@@ -590,7 +681,48 @@ static void build_exchange_sent(char *out, size_t out_size) {
     return;
   }
 
+  if (strcmp(tpl, "LOCATOR") == 0 || strcmp(tpl, "GRID") == 0 ||
+      strcmp(tpl, "WWL") == 0) {
+    snprintf(out, out_size, "%s",
+             config.locator[0] ? config.locator : tpl);
+    return;
+  }
+
+  if (strcmp(tpl, "SERIAL+LOCATOR") == 0 || strcmp(tpl, "SERIAL_GRID") == 0 ||
+      strcmp(tpl, "#GRID") == 0 || strcmp(tpl, "#LOCATOR") == 0) {
+    const int largest_serial = highest_numeric_exchange_sent();
+    const int next_serial = (qso_count > largest_serial ? qso_count : largest_serial) + 1;
+    if (config.locator[0])
+      snprintf(out, out_size, "%d%s", next_serial, config.locator);
+    else
+      snprintf(out, out_size, "%d", next_serial);
+    return;
+  }
+
   snprintf(out, out_size, "%s", tpl);
+}
+
+static int band_is_vhf_uhf_shf(const char *band) {
+  if (!band || !band[0])
+    return 0;
+
+  return strcmp(band, "6M") == 0 || strcmp(band, "4M") == 0 ||
+         strcmp(band, "2M") == 0 || strcmp(band, "1.25M") == 0 ||
+         strcmp(band, "70CM") == 0 || strcmp(band, "33CM") == 0 ||
+         strcmp(band, "23CM") == 0 || strcmp(band, "13CM") == 0 ||
+         strcmp(band, "9CM") == 0 || strcmp(band, "6CM") == 0 ||
+         strcmp(band, "3CM") == 0;
+}
+
+static int contest_uses_locator_exchange(void) {
+  const ContestFieldDef *field = active_exchange_field_def();
+  return contest_exchange_is_locator(field) ||
+         contest_exchange_is_serial_locator(field);
+}
+
+static int contest_exchange_uses_serial_counter(void) {
+  const char *tpl = active_contest_def.exchange_sent_template;
+  return !tpl || !tpl[0] || strcmp(tpl, "#") == 0;
 }
 
 static const char *active_operator_mode_text(void) {
@@ -730,7 +862,8 @@ static int logbook_has_qtc_capable_contest_hint(void) {
 static int resolve_contest_points(const char *mode, const char *band,
                                   const char *country,
                                   const char *call,
-                                  const char *contest_id) {
+                                  const char *contest_id,
+                                  const char *exchange_recv) {
   const CtyEntry *src_cty = cty_lookup(config.station_call);
   const CtyEntry *dst_cty = cty_lookup(call);
   const char *src_country = src_cty ? src_cty->country : "";
@@ -741,7 +874,24 @@ static int resolve_contest_points(const char *mode, const char *band,
                            strcmp(src_country, dst_country) == 0;
   const int same_cont = src_cont[0] && dst_cont[0] && strcmp(src_cont, dst_cont) == 0;
 
-  if (contest_name_contains("CQ WPX")) {
+  const int prefer_definition_points =
+      contest_definition_loaded && active_contest_def.points_configured;
+
+  if (band_is_vhf_uhf_shf(band) && contest_uses_locator_exchange() &&
+      config.locator[0] && exchange_recv && exchange_recv[0]) {
+    char locator_recv[16] = {0};
+    const char *locator_text = exchange_recv;
+    if (extract_locator_from_exchange(exchange_recv, locator_recv,
+                                      sizeof(locator_recv)))
+      locator_text = locator_recv;
+
+    int distance_km = 0;
+    if (locator_distance_km(config.locator, locator_text, &distance_km) == 0 &&
+        distance_km > 0)
+      return distance_km;
+  }
+
+  if (!prefer_definition_points && contest_name_contains("CQ WPX")) {
     if (same_country)
       return 1;
 
@@ -754,7 +904,8 @@ static int resolve_contest_points(const char *mode, const char *band,
     return is_low_band(band) ? 6 : 3;
   }
 
-  if (contest_name_contains("CQ WW") || contest_name_contains("CQ WORLD WIDE")) {
+  if (!prefer_definition_points &&
+      (contest_name_contains("CQ WW") || contest_name_contains("CQ WORLD WIDE"))) {
     if (same_country)
       return 0;
     if (call_is_maritime_mobile(call))
@@ -767,7 +918,7 @@ static int resolve_contest_points(const char *mode, const char *band,
     return 3;
   }
 
-  if (contest_name_contains("SP DX")) {
+  if (!prefer_definition_points && contest_name_contains("SP DX")) {
     const int src_is_sp = src_country[0] && strcmp(src_country, "Poland") == 0;
     const int dst_is_sp = dst_country && strcmp(dst_country, "Poland") == 0;
     if (src_is_sp && dst_is_sp)
@@ -784,7 +935,8 @@ static int resolve_contest_points(const char *mode, const char *band,
    * EU–EU or DX–DX QSOs score 0 points.
    * Match both the short name "WAE" and the Cabrillo token "WAEDC".
    */
-  if (contest_name_contains("WAE") || contest_name_contains("WAEDC")) {
+  if (!prefer_definition_points &&
+      (contest_name_contains("WAE") || contest_name_contains("WAEDC"))) {
     const int src_is_eu = src_cont[0] && strcmp(src_cont, "EU") == 0;
     const int dst_is_eu = dst_cont[0] && strcmp(dst_cont, "EU") == 0;
     /* Both EU or both DX → 0 points */
@@ -798,7 +950,7 @@ static int resolve_contest_points(const char *mode, const char *band,
    * Same zone/country → 1 pt, same continent → 3 pts, diff continent → 5 pts.
    * HQ station bonus (1 pt) requires a lookup table and is not implemented.
    */
-  if (contest_name_contains("IARU")) {
+  if (!prefer_definition_points && contest_name_contains("IARU")) {
     if (same_country)
       return 1;
     return same_cont ? 3 : 5;
@@ -809,7 +961,7 @@ static int resolve_contest_points(const char *mode, const char *band,
    * Scandinavian DXCC (LA/OH/SM/OZ/OX/OY/JW/JX/OJ0/OH0/TF) detection uses
    * the main CTY prefix.
    */
-  if (contest_name_contains("SAC")) {
+  if (!prefer_definition_points && contest_name_contains("SAC")) {
     static const char * const scand[] = {
       "JW", "JX", "LA", "OH", "OH0", "OJ0", "OX", "OY", "OZ", "SM", "TF", NULL
     };
@@ -847,7 +999,8 @@ static int resolve_contest_points(const char *mode, const char *band,
   /*
    * ARRL DX scoring: K/VE ↔ DX = 3 pts each way; same DXCC = 0.
    */
-  if (contest_name_contains("ARRL DX") || contest_name_contains("ARRL-DX")) {
+  if (!prefer_definition_points &&
+      (contest_name_contains("ARRL DX") || contest_name_contains("ARRL-DX"))) {
     const int src_is_na = src_cty &&
                           (strncmp(src_cty->prefix, "K",  1) == 0 ||
                            strncmp(src_cty->prefix, "VE", 2) == 0 ||
@@ -866,7 +1019,7 @@ static int resolve_contest_points(const char *mode, const char *band,
    * DL source: DL-DL=1, DL-EU=3, DL-non-EU=5.
    * non-DL source: works DL=3, else=0.
    */
-  if (contest_name_contains("WAG")) {
+  if (!prefer_definition_points && contest_name_contains("WAG")) {
     const int src_is_dl = src_cty && strcmp(src_cty->prefix, "DL") == 0;
     const int dst_is_dl = dst_cty && strcmp(dst_cty->prefix, "DL") == 0;
     if (src_is_dl) {
@@ -881,7 +1034,7 @@ static int resolve_contest_points(const char *mode, const char *band,
    * OC ↔ non-OC QSOs only; points are band-dependent.
    * non-OC to non-OC = 0.
    */
-  if (contest_name_contains("OCEANIA")) {
+  if (!prefer_definition_points && contest_name_contains("OCEANIA")) {
     const int src_is_oc = src_cont[0] && strcmp(src_cont, "OC") == 0;
     const int dst_is_oc = dst_cont[0] && strcmp(dst_cont, "OC") == 0;
     if (src_is_oc == dst_is_oc) return 0;
@@ -899,7 +1052,7 @@ static int resolve_contest_points(const char *mode, const char *band,
    * Russian DX Contest (RDXC) scoring (simplified).
    * Working Russia = 10 pts; same DXCC = 2 pts; same cont = 3 pts; diff = 5 pts.
    */
-  if (contest_name_contains("RDXC")) {
+  if (!prefer_definition_points && contest_name_contains("RDXC")) {
     if (dst_cty) {
       if (strncmp(dst_cty->prefix, "UA", 2) == 0 ||
           strncmp(dst_cty->prefix, "R1", 2) == 0)
@@ -916,7 +1069,7 @@ static int resolve_contest_points(const char *mode, const char *band,
    * /MM: 4 pts.
    * Same cont: 2 pts. Diff cont: 4 pts.
    */
-  if (contest_name_contains("HOLYLAND")) {
+  if (!prefer_definition_points && contest_name_contains("HOLYLAND")) {
     if (call_is_maritime_mobile(call)) return 4;
     const int src_is_4x = src_cty && strcmp(src_cty->prefix, "4X") == 0;
     const int dst_is_4x = dst_cty && strcmp(dst_cty->prefix, "4X") == 0;

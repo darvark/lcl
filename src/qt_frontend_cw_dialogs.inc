@@ -79,6 +79,13 @@ private:
     const QString new_chars = text.mid(last_sent_pos_);
     last_sent_pos_ = current_len;
 
+    const int slot = slot_combo_->currentData().toInt();
+    QString reason;
+    if (software_interlock_blocks_tx(slot == CAT_SLOT_B ? 2 : 1, &reason)) {
+      status_label_->setText(reason);
+      return;
+    }
+
     const QByteArray bytes = new_chars.toUpper().toLatin1();
 
     if (cat_is_cw_keyer_connected()) {
@@ -89,7 +96,6 @@ private:
     }
 
     /* fall back to CAT rig send_morse */
-    const int slot = slot_combo_->currentData().toInt();
     if (cat_send_morse_slot(slot, bytes.constData()) == 0)
       status_label_->setText(QString("CAT rig: wysyłanie \"%1\"").arg(new_chars));
     else

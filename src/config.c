@@ -74,6 +74,7 @@ static void set_defaults(void) {
   strcpy(config.cw_keyer_line, "DTR");
   config.cw_wpm = 20;
   config.cw_auto_connect = 1;
+  config.cw_esm_enabled = 0;
 
   config.net_enabled = 0;
   strcpy(config.net_role, "client");
@@ -93,6 +94,11 @@ static void set_defaults(void) {
   config.net_rate_limit_window_sec = 1;
   config.net_rate_limit_burst = 32;
   config.net_max_frame_bytes = 65536;
+
+  config.live_upload_enabled = 0;
+  strcpy(config.live_upload_host, "");
+  config.live_upload_port = 9871;
+  strcpy(config.live_upload_token, "");
 
   config.ui_monokai_theme = 0;
 }
@@ -242,6 +248,8 @@ int config_load(const char *filename) {
       if (config.cw_wpm > 60) config.cw_wpm = 60;
     } else if (strcmp(key, "CW_AUTO_CONNECT") == 0) {
       config.cw_auto_connect = atoi(value) ? 1 : 0;
+    } else if (strcmp(key, "CW_ESM") == 0) {
+      config.cw_esm_enabled = atoi(value) ? 1 : 0;
     } else if (strcmp(key, "NET_ENABLED") == 0) {
       config.net_enabled = atoi(value) ? 1 : 0;
     } else if (strcmp(key, "NET_ROLE") == 0) {
@@ -312,6 +320,18 @@ int config_load(const char *filename) {
       config.net_max_frame_bytes = atoi(value);
       if (config.net_max_frame_bytes < 1024) config.net_max_frame_bytes = 1024;
       if (config.net_max_frame_bytes > 1048576) config.net_max_frame_bytes = 1048576;
+    } else if (strcmp(key, "LIVE_UPLOAD_ENABLED") == 0) {
+      config.live_upload_enabled = atoi(value) ? 1 : 0;
+    } else if (strcmp(key, "LIVE_UPLOAD_HOST") == 0) {
+      strncpy(config.live_upload_host, value, sizeof(config.live_upload_host));
+      config.live_upload_host[sizeof(config.live_upload_host) - 1] = 0;
+    } else if (strcmp(key, "LIVE_UPLOAD_PORT") == 0) {
+      config.live_upload_port = atoi(value);
+      if (config.live_upload_port < 1) config.live_upload_port = 1;
+      if (config.live_upload_port > 65535) config.live_upload_port = 65535;
+    } else if (strcmp(key, "LIVE_UPLOAD_TOKEN") == 0) {
+      strncpy(config.live_upload_token, value, sizeof(config.live_upload_token));
+      config.live_upload_token[sizeof(config.live_upload_token) - 1] = 0;
     } else if (strcmp(key, "UI_THEME_MONOKAI") == 0 ||
                strcmp(key, "UI_MONOKAI_THEME") == 0) {
       config.ui_monokai_theme = atoi(value) ? 1 : 0;
@@ -382,6 +402,7 @@ int config_save(const char *filename) {
   fprintf(f, "CW_KEYER_LINE=%s\n", config.cw_keyer_line);
   fprintf(f, "CW_WPM=%d\n", config.cw_wpm);
   fprintf(f, "CW_AUTO_CONNECT=%d\n", config.cw_auto_connect ? 1 : 0);
+  fprintf(f, "CW_ESM=%d\n", config.cw_esm_enabled ? 1 : 0);
   fprintf(f, "\n");
   fprintf(f, "# Network Basic\n");
   fprintf(f, "NET_ENABLED=%d\n", config.net_enabled ? 1 : 0);
@@ -406,6 +427,12 @@ int config_save(const char *filename) {
   fprintf(f, "NET_RATE_LIMIT_WINDOW_SEC=%d\n", config.net_rate_limit_window_sec);
   fprintf(f, "NET_RATE_LIMIT_BURST=%d\n", config.net_rate_limit_burst);
   fprintf(f, "NET_MAX_FRAME_BYTES=%d\n", config.net_max_frame_bytes);
+  fprintf(f, "\n");
+  fprintf(f, "# Live Upload\n");
+  fprintf(f, "LIVE_UPLOAD_ENABLED=%d\n", config.live_upload_enabled ? 1 : 0);
+  fprintf(f, "LIVE_UPLOAD_HOST=%s\n", config.live_upload_host);
+  fprintf(f, "LIVE_UPLOAD_PORT=%d\n", config.live_upload_port);
+  fprintf(f, "LIVE_UPLOAD_TOKEN=%s\n", config.live_upload_token);
   fprintf(f, "\n");
   fprintf(f, "UI_THEME_MONOKAI=%d\n", config.ui_monokai_theme ? 1 : 0);
   fprintf(f, "\n");

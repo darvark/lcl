@@ -141,6 +141,13 @@ private:
     if (!text || !text[0])
       return;
 
+    const int tx_radio_nr = app_controller_get_active_radio() == 2 ? 2 : 1;
+    QString reason;
+    if (software_interlock_blocks_tx(tx_radio_nr, &reason)) {
+      status_label_->setText(reason);
+      return;
+    }
+
     const QByteArray bytes = QByteArray(text).toUpper();
 
     if (cat_is_cw_keyer_connected()) {
@@ -148,7 +155,8 @@ private:
       return;
     }
 
-    cat_send_morse_slot(CAT_SLOT_A, bytes.constData());
+    cat_send_morse_slot(tx_radio_nr == 2 ? CAT_SLOT_B : CAT_SLOT_A,
+                        bytes.constData());
   }
 
   /* Build expanded CW text from a QTC template and current dialog state. */

@@ -1,4 +1,5 @@
 #include "app_controller.h"
+#include "cat.h"
 #include "config.h"
 #include "contest.h"
 #include "cty.h"
@@ -174,7 +175,12 @@ static void test_config_load(const char *tmp_dir) {
       "OPERATOR_CALL = SP9OPER\n"
       "CAT_MODE_FROM_RIG = 1\n"
       "CONTEST_TX_EXCHANGE = 28\n"
-      "CONTEST_TECHNIQUE = SO2R\n";
+      "CONTEST_TECHNIQUE = SO2R\n"
+      "CW_ESM = 1\n"
+      "LIVE_UPLOAD_ENABLED = 1\n"
+      "LIVE_UPLOAD_HOST = upload.local\n"
+      "LIVE_UPLOAD_PORT = 9991\n"
+      "LIVE_UPLOAD_TOKEN = secret-token\n";
 
   expect_int_eq(write_text_file(conf_path, conf_text), 0,
                 "write unit logger.conf");
@@ -192,8 +198,18 @@ static void test_config_load(const char *tmp_dir) {
                 "config CAT mode-from-rig parsed");
   expect_int_eq((int)config.contest_technique, (int)CONTEST_TECH_SO2R,
                 "contest technique parsed");
+  expect_int_eq(config.cw_esm_enabled, 1,
+                "CW ESM flag parsed");
   expect_str_eq(config.contest_tx_exchange, "28",
                 "contest tx exchange override parsed");
+  expect_int_eq(config.live_upload_enabled, 1,
+                "live upload enabled parsed");
+  expect_str_eq(config.live_upload_host, "upload.local",
+                "live upload host parsed");
+  expect_int_eq(config.live_upload_port, 9991,
+                "live upload port parsed");
+  expect_str_eq(config.live_upload_token, "secret-token",
+                "live upload token parsed");
 
   expect_int_eq(config_load("/definitely/missing/logger.conf"), -1,
                 "missing config should return -1");
@@ -209,6 +225,10 @@ static void test_config_load(const char *tmp_dir) {
                 "default operator call restored on missing config");
   expect_int_eq(config.cat_mode_from_rig, 0,
                 "default CAT mode-from-rig restored on missing config");
+  expect_int_eq(config.cw_esm_enabled, 0,
+                "default CW ESM restored on missing config");
+  expect_int_eq(config.live_upload_enabled, 0,
+                "default live upload enabled restored on missing config");
 }
 
 static void test_config_save_roundtrip(const char *tmp_dir) {
@@ -229,8 +249,15 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
   snprintf(config.cat_parity, sizeof(config.cat_parity), "%s", "Even");
   snprintf(config.cat_handshake, sizeof(config.cat_handshake), "%s", "RTSCTS");
   config.cat_mode_from_rig = 1;
+  config.cw_esm_enabled = 1;
   snprintf(config.contest_tx_exchange, sizeof(config.contest_tx_exchange),
            "%s", "28");
+  config.live_upload_enabled = 1;
+  snprintf(config.live_upload_host, sizeof(config.live_upload_host), "%s",
+           "persist-upload.local");
+  config.live_upload_port = 9875;
+  snprintf(config.live_upload_token, sizeof(config.live_upload_token), "%s",
+           "persist-token");
 
   expect_int_eq(config_save(conf_path), 0, "config_save should succeed");
 
@@ -242,7 +269,12 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
   config.cat_parity[0] = 0;
   config.cat_handshake[0] = 0;
   config.cat_mode_from_rig = 0;
+  config.cw_esm_enabled = 0;
   config.contest_tx_exchange[0] = 0;
+  config.live_upload_enabled = 0;
+  config.live_upload_host[0] = 0;
+  config.live_upload_port = 0;
+  config.live_upload_token[0] = 0;
 
   expect_int_eq(config_load(conf_path), 0,
                 "config_load should read saved config");
@@ -256,8 +288,18 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
                 "saved CAT handshake restored");
   expect_int_eq(config.cat_mode_from_rig, 1,
                 "saved CAT mode-from-rig restored");
+  expect_int_eq(config.cw_esm_enabled, 1,
+                "saved CW ESM restored");
   expect_str_eq(config.contest_tx_exchange, "28",
                 "saved contest tx exchange restored");
+  expect_int_eq(config.live_upload_enabled, 1,
+                "saved live upload enabled restored");
+  expect_str_eq(config.live_upload_host, "persist-upload.local",
+                "saved live upload host restored");
+  expect_int_eq(config.live_upload_port, 9875,
+                "saved live upload port restored");
+  expect_str_eq(config.live_upload_token, "persist-token",
+                "saved live upload token restored");
 }
 
 static void test_controller_static_tx_exchange_override(const char *tmp_dir) {
@@ -742,6 +784,100 @@ static void test_qso_helpers(void) {
 
   detect_mode(14150, mode);
   expect_str_eq(mode, "SSB", "detect_mode SSB");
+}
+
+static void test_cw_esm_enter_planner(void) {
+  AppRenderState state;
+  memset(&state, 0, sizeof(state));
+
+  const int saved_cw_esm_enabled = config.cw_esm_enabled;
+  config.cw_esm_enabled = 1;
+
+  state.active_radio = 1;
+  state.radio1_mode = "CW";
+  state.radio1_run = true;
+  state.radio2_mode = "CW";
+  state.radio2_run = false;
+
+  int pre = 0;
+  int post = 0;
+
+  /* Active CALL field, empty CALL in RUN -> CQ macro (F1). */
+  state.active_input_field = 0;
+  state.input_call = "";
+  state.input_rst = "";
+  expect_true(app_controller_plan_cw_esm_enter(&state, &pre, &post) != 0,
+              "ESM planner should be active in CW when enabled");
+  expect_int_eq(pre, 1, "RUN empty CALL should pick F1 before Enter");
+  expect_int_eq(post, 0, "RUN empty CALL should not queue post macro");
+
+  /* Active CALL field, non-empty CALL -> call repeat macro (F9). */
+  state.input_call = "SP9ABC";
+  state.input_rst = "";
+  pre = 0;
+  post = 0;
+  expect_true(app_controller_plan_cw_esm_enter(&state, &pre, &post) != 0,
+              "ESM planner should remain active for filled CALL");
+  expect_int_eq(pre, 9, "filled CALL should pick F9 before Enter");
+  expect_int_eq(post, 0, "filled CALL should not queue post macro");
+
+  /* Active EXCH field, empty EXCH -> exchange macro (F2). */
+  state.active_input_field = 1;
+  state.input_call = "SP9ABC";
+  state.input_rst = "";
+  pre = 0;
+  post = 0;
+  expect_true(app_controller_plan_cw_esm_enter(&state, &pre, &post) != 0,
+              "ESM planner should be active on EXCH field");
+  expect_int_eq(pre, 2, "empty EXCH should pick F2 before Enter");
+  expect_int_eq(post, 0, "empty EXCH should not queue post macro");
+
+  /* Active EXCH field, filled EXCH in RUN -> post-QSO QRZ macro (F8). */
+  state.input_rst = "001";
+  pre = 0;
+  post = 0;
+  expect_true(app_controller_plan_cw_esm_enter(&state, &pre, &post) != 0,
+              "ESM planner should be active for filled EXCH in RUN");
+  expect_int_eq(pre, 0, "filled EXCH in RUN should not send pre macro");
+  expect_int_eq(post, 8, "filled EXCH in RUN should queue F8 post macro");
+
+  /* Same EXCH case in S&P -> post-QSO own-call macro (F4). */
+  state.radio1_run = false;
+  pre = 0;
+  post = 0;
+  expect_true(app_controller_plan_cw_esm_enter(&state, &pre, &post) != 0,
+              "ESM planner should be active for filled EXCH in S&P");
+  expect_int_eq(pre, 0, "filled EXCH in S&P should not send pre macro");
+  expect_int_eq(post, 4, "filled EXCH in S&P should queue F4 post macro");
+
+  /* Non-CW mode should disable ESM decisions. */
+  state.radio1_mode = "SSB";
+  pre = 11;
+  post = 12;
+  expect_int_eq(app_controller_plan_cw_esm_enter(&state, &pre, &post), 0,
+                "ESM planner should be inactive outside CW");
+  expect_int_eq(pre, 0, "non-CW should zero pre action");
+  expect_int_eq(post, 0, "non-CW should zero post action");
+
+  /* Disabled config should also disable planner. */
+  config.cw_esm_enabled = 0;
+  state.radio1_mode = "CW";
+  pre = 13;
+  post = 14;
+  expect_int_eq(app_controller_plan_cw_esm_enter(&state, &pre, &post), 0,
+                "ESM planner should be inactive when disabled in config");
+  expect_int_eq(pre, 0, "disabled ESM should zero pre action");
+  expect_int_eq(post, 0, "disabled ESM should zero post action");
+
+  config.cw_esm_enabled = saved_cw_esm_enabled;
+}
+
+static void test_cat_cw_busy_state_disconnected(void) {
+  cat_disconnect_cw_keyer();
+  expect_int_eq(cat_is_cw_keyer_connected(), 0,
+                "CW keyer should be disconnected in baseline busy-state test");
+  expect_int_eq(cat_cw_is_busy(), 0,
+                "CW keyer should not be busy when disconnected");
 }
 
 static void test_db_sync_identity_and_sequence(const char *tmp_dir) {
@@ -2589,10 +2725,57 @@ static void test_contest_definition_and_cabrillo(const char *tmp_dir) {
                 "MULTIPLIER PREFIX_PER_BAND parsed");
 
   const int base_qso_count = qso_count;
+
+  char dupe_contest_path[512];
+  snprintf(dupe_contest_path, sizeof(dupe_contest_path), "%s/dupe_contest.conf",
+           tmp_dir);
+  expect_int_eq(write_text_file(dupe_contest_path,
+      "NAME=DUPE-CONTEST\n"
+      "CABRILLO_NAME=DUPE-CONTEST\n"
+      "MODE=CW\n"
+      "CATEGORY_OPERATOR=SINGLE-OP\n"
+      "CATEGORY_BAND=ALL\n"
+      "CATEGORY_POWER=LOW\n"
+      "EXCHANGE_SENT=#\n"
+      "DOUBLE_QSO=1\n"
+      "FIELD=SERIAL,Serial Number,required\n"),
+      0, "write duplicate-check contest definition");
+  expect_int_eq(contest_definition_load(dupe_contest_path, &def, err, sizeof(err)),
+                0, "duplicate-rule contest definition should load");
+  expect_int_eq(def.duplicate_qso, 1, "DOUBLE_QSO should parse as enabled");
+
+  snprintf(config.contest_definition_path, sizeof(config.contest_definition_path),
+           "%s", dupe_contest_path);
+
+  int dupe_idx_1 = qso_add_contest_fields("DUPE01", 7020, "599", "CW", "",
+                                          "001", "", "RUN",
+                                          def.cabrillo_name, 1, 1,
+                                          status, sizeof(status));
+  expect_int_eq(dupe_idx_1, base_qso_count,
+                "first duplicate-check QSO should be saved");
+  expect_str_eq(status, "QSO OK TX:001 RX:-",
+                "first QSO should be accepted normally");
+
+  int dupe_idx_2 = qso_add_contest_fields("DUPE01", 7020, "599", "CW", "",
+                                          "002", "", "RUN",
+                                          def.cabrillo_name, 1, 1,
+                                          status, sizeof(status));
+  expect_int_eq(dupe_idx_2, base_qso_count + 1,
+                "second duplicate-check QSO should still be stored");
+  expect_true(logbook[dupe_idx_2].invalid,
+              "duplicate QSO should be marked invalid");
+  expect_str_eq(status, "QSO DUPE", "duplicate QSO should be flagged as DUPE");
+
+  qso_init();
+  expect_int_eq(contest_definition_load(contest_path, &def, err, sizeof(err)),
+                0, "restore original contest definition after duplicate test");
+  snprintf(config.contest_definition_path, sizeof(config.contest_definition_path),
+           "%s", contest_path);
+  const int post_dupe_qso_count = qso_count;
   snprintf(expected_serial_1, sizeof(expected_serial_1), "%d",
-           base_qso_count + 1);
+           post_dupe_qso_count + 1);
   snprintf(expected_serial_2, sizeof(expected_serial_2), "%d",
-           base_qso_count + 2);
+           post_dupe_qso_count + 2);
   snprintf(expected_fragment_1, sizeof(expected_fragment_1), "599 %-6s SP9SER",
            expected_serial_1);
   snprintf(expected_fragment_2, sizeof(expected_fragment_2), "599 %-6s SP9SEQ",
@@ -2601,12 +2784,12 @@ static void test_contest_definition_and_cabrillo(const char *tmp_dir) {
   expect_int_eq(qso_add_contest_fields("SP9SER", 7020, "599", "CW", "", "",
                                        "101", "RUN", def.cabrillo_name, 1, 1,
                                        status, sizeof(status)),
-                base_qso_count,
+                post_dupe_qso_count,
                 "first contest QSO for Cabrillo serial fallback should save");
   expect_int_eq(qso_add_contest_fields("SP9SEQ", 7020, "599", "CW", "", "",
                                        "102", "RUN", def.cabrillo_name, 1, 1,
                                        status, sizeof(status)),
-                base_qso_count + 1,
+                post_dupe_qso_count + 1,
                 "second contest QSO for Cabrillo serial fallback should save");
 
   expect_int_eq(export_cabrillo(cabrillo_path, &def, "SP9ABC"), 0,
@@ -2635,12 +2818,16 @@ static void test_dxlog_definition_compatibility(const char *tmp_dir) {
   char path_wpx[512];
   char path_ww[512];
   char path_spdx[512];
+  char path_iaru[512];
+  char path_iaru_vhf[512];
   char err[128] = {0};
   ContestDefinition def;
 
   snprintf(path_wpx, sizeof(path_wpx), "%s/dxlog_cqwpx.txt", tmp_dir);
   snprintf(path_ww, sizeof(path_ww), "%s/dxlog_cqww.txt", tmp_dir);
   snprintf(path_spdx, sizeof(path_spdx), "%s/dxlog_spdx.txt", tmp_dir);
+  snprintf(path_iaru, sizeof(path_iaru), "%s/dxlog_iaru.txt", tmp_dir);
+  snprintf(path_iaru_vhf, sizeof(path_iaru_vhf), "%s/dxlog_iaru_vhf.txt", tmp_dir);
 
   expect_int_eq(write_text_file(path_wpx,
       "CONTESTNAME=CQ WPX Contest\n"
@@ -2686,6 +2873,39 @@ static void test_dxlog_definition_compatibility(const char *tmp_dir) {
                 "load DXLog SPDX sample");
   expect_int_eq((int)def.multiplier_type, (int)CONTEST_MULT_SPDX,
                 "DXLog SPDX should map to dedicated SPDX multiplier mode");
+
+  expect_int_eq(write_text_file(path_iaru,
+      "CONTESTNAME=IARU HF\n"
+      "MODES=CW;SSB\n"
+      "POINTS_TYPE=STANDARD\n"
+      "QSO_NUMBER_CATEGORY=ALL\n"
+      "FIELD_RCVD_TYPE=ITUZONE\n"),
+      0, "write DXLog IARU sample");
+  expect_int_eq(contest_definition_load(path_iaru, &def, err, sizeof(err)), 0,
+                "load DXLog IARU sample");
+  expect_str_eq(def.exchange_sent_template, "#",
+                "DXLog QSO_NUMBER_CATEGORY should enable serial TX exchange");
+  expect_str_eq(def.fields[0].name, "ITUZONE",
+                "DXLog ITUZONE should map to ITUZONE exchange field");
+  expect_true(def.points_configured,
+              "DXLog POINTS_TYPE should mark explicit points configuration");
+
+  expect_int_eq(write_text_file(path_iaru_vhf,
+      "CONTESTNAME=IARU VHF\n"
+      "MODES=CW;SSB\n"
+      "MULT1_TYPE=WWL\n"
+      "MULT1_COUNT=PER_BAND\n"
+      "FIELD_RCVD_TYPE=NR;GRID\n"
+      "QSO_NUMBER_CATEGORY=ALL\n"),
+      0, "write DXLog IARU VHF sample");
+  expect_int_eq(contest_definition_load(path_iaru_vhf, &def, err, sizeof(err)), 0,
+                "load DXLog IARU VHF sample");
+  expect_str_eq(def.exchange_sent_template, "#",
+                "DXLog IARU VHF should still enable serial numbering");
+  expect_str_eq(def.fields[0].name, "SERIAL_GRID",
+                "DXLog NR+GRID should map to serial+grid field");
+  expect_int_eq((int)def.multiplier_type, (int)CONTEST_MULT_GRID_PER_BAND,
+                "DXLog WWL per band should map to grid-per-band multiplier");
 }
 
 static void test_dxlog_importer_generates_local_conf(const char *tmp_dir) {
@@ -2734,6 +2954,7 @@ static void test_dxlog_importer_generates_local_conf(const char *tmp_dir) {
 static void test_maidenhead(void) {
   double lat = 0.0;
   double lon = 0.0;
+  int distance_km = 0;
 
   expect_int_eq(locator_to_latlon("JO90", &lat, &lon), 0,
                 "locator JO90 should parse");
@@ -2749,6 +2970,147 @@ static void test_maidenhead(void) {
                 "invalid locator should fail");
   expect_int_eq(locator_to_latlon(NULL, &lat, &lon), -1,
                 "NULL locator should fail");
+  expect_true(locator_is_valid("JO90AA"),
+              "valid 6-char locator should be accepted");
+  expect_true(!locator_is_valid("BAD"),
+              "short invalid locator should be rejected");
+  expect_int_eq(locator_distance_km("JO90AA", "JO91AA", &distance_km), 0,
+                "locator distance should be calculable");
+  expect_true(distance_km > 0,
+              "locator distance should be positive for different locators");
+}
+
+static void test_controller_vhf_locator_exchange_and_distance_points(const char *tmp_dir) {
+  char case_dir[512];
+  snprintf(case_dir, sizeof(case_dir), "%s/vhf_locator_case", tmp_dir);
+  expect_int_eq(mkdir(case_dir, 0777), 0,
+                "create isolated directory for VHF locator test");
+
+  char contest_path[512];
+  join_path(contest_path, sizeof(contest_path), case_dir, "contest.conf");
+  const char *contest_text =
+      "NAME=VHF-LOCATOR\n"
+      "CABRILLO_NAME=VHF-LOCATOR\n"
+      "MODE=MIXED\n"
+      "EXCHANGE_SENT=LOCATOR\n"
+      "FIELD=GRID,Grid,required\n";
+  expect_int_eq(write_text_file(contest_path, contest_text), 0,
+                "write VHF locator contest definition");
+
+  char conf_path[512];
+  join_path(conf_path, sizeof(conf_path), case_dir, "logger.conf");
+  const char *conf_text =
+      "CONTEST_DEF_FILE=contest.conf\n"
+      "LOCATOR=JO90AA\n";
+  expect_int_eq(write_text_file(conf_path, conf_text), 0,
+                "write logger.conf for VHF locator test");
+
+  set_test_db_path(case_dir);
+
+  char old_cwd[512];
+  expect_true(getcwd(old_cwd, sizeof(old_cwd)) != NULL,
+              "getcwd before VHF locator test");
+  expect_int_eq(chdir(case_dir), 0,
+                "chdir to VHF locator test directory");
+
+  app_controller_init();
+  const int base_qso_count = qso_count;
+
+  AppRenderState state;
+  app_controller_get_render_state(&state);
+  expect_true(state.contest_exchange_sent != NULL,
+              "VHF contest exchange should be visible");
+  if (state.contest_exchange_sent)
+    expect_str_eq(state.contest_exchange_sent, "JO90AA",
+                  "VHF locator contest should send local locator");
+
+  send_controller_text("144300");
+  send_controller_chars("SP9VHF");
+  app_controller_handle_key(APP_KEY_SPACE);
+  send_controller_chars("JO91AA");
+  app_controller_handle_key(APP_KEY_ENTER);
+
+  expect_int_eq(qso_count, base_qso_count + 1,
+                "one VHF locator QSO should be saved");
+  expect_str_eq(logbook[base_qso_count].exchange_sent, "JO90AA",
+                "saved VHF QSO should use local locator as sent exchange");
+  expect_str_eq(logbook[base_qso_count].exchange_recv, "JO91AA",
+                "saved VHF QSO should preserve received locator");
+  expect_true(logbook[base_qso_count].points > 0,
+              "VHF locator QSO should receive positive distance-based points");
+
+  app_controller_shutdown();
+  expect_int_eq(chdir(old_cwd), 0,
+                "restore cwd after VHF locator test");
+}
+
+static void test_controller_vhf_serial_locator_exchange_and_distance_points(const char *tmp_dir) {
+  char case_dir[512];
+  snprintf(case_dir, sizeof(case_dir), "%s/vhf_serial_locator_case", tmp_dir);
+  expect_int_eq(mkdir(case_dir, 0777), 0,
+                "create isolated directory for VHF serial+locator test");
+
+  char contest_path[512];
+  join_path(contest_path, sizeof(contest_path), case_dir, "contest.conf");
+  const char *contest_text =
+      "NAME=IARU-VHF\n"
+      "CABRILLO_NAME=IARU-VHF\n"
+      "MODE=MIXED\n"
+      "EXCHANGE_SENT=SERIAL_GRID\n"
+      "MULTIPLIER=GRID_PER_BAND\n"
+      "FIELD=SERIAL_GRID,Serial + Locator,required\n";
+  expect_int_eq(write_text_file(contest_path, contest_text), 0,
+                "write VHF serial+locator contest definition");
+
+  char conf_path[512];
+  join_path(conf_path, sizeof(conf_path), case_dir, "logger.conf");
+  const char *conf_text =
+      "CONTEST_DEF_FILE=contest.conf\n"
+      "LOCATOR=JO90AA\n";
+  expect_int_eq(write_text_file(conf_path, conf_text), 0,
+                "write logger.conf for VHF serial+locator test");
+
+  set_test_db_path(case_dir);
+
+  char old_cwd[512];
+  expect_true(getcwd(old_cwd, sizeof(old_cwd)) != NULL,
+              "getcwd before VHF serial+locator test");
+  expect_int_eq(chdir(case_dir), 0,
+                "chdir to VHF serial+locator test directory");
+
+  app_controller_init();
+  const int base_qso_count = qso_count;
+
+  AppRenderState state;
+  app_controller_get_render_state(&state);
+  expect_true(state.contest_exchange_sent != NULL,
+              "VHF serial+locator exchange should be visible");
+  char expected_sent[32] = {0};
+  if (state.contest_exchange_sent) {
+    snprintf(expected_sent, sizeof(expected_sent), "%s",
+             state.contest_exchange_sent);
+    expect_str_eq(state.contest_exchange_sent, expected_sent,
+                  "VHF serial+locator contest should send serial plus locator");
+  }
+
+  send_controller_text("144300");
+  send_controller_chars("SP9IVH");
+  app_controller_handle_key(APP_KEY_SPACE);
+  send_controller_chars("001JO91AA");
+  app_controller_handle_key(APP_KEY_ENTER);
+
+  expect_int_eq(qso_count, base_qso_count + 1,
+                "one VHF serial+locator QSO should be saved");
+  expect_str_eq(logbook[base_qso_count].exchange_sent, expected_sent,
+                "saved VHF QSO should use serial plus local locator");
+  expect_str_eq(logbook[base_qso_count].exchange_recv, "001JO91AA",
+                "saved VHF QSO should preserve composite received exchange");
+  expect_true(logbook[base_qso_count].points > 0,
+              "VHF serial+locator QSO should receive positive distance-based points");
+
+  app_controller_shutdown();
+  expect_int_eq(chdir(old_cwd), 0,
+                "restore cwd after VHF serial+locator test");
 }
 
 static void test_dxcluster_set_status(void) {
@@ -2792,6 +3154,140 @@ static void test_dxcluster_start_stop(void) {
                   strstr(dxcluster_status, "timeout") != NULL ||
                   strstr(dxcluster_status, "Connecting") != NULL,
               "dxcluster_stop should finish worker lifecycle");
+}
+
+typedef struct {
+  int port;
+  int ok;
+  char received[4096];
+} MockDxclusterServerArgs;
+
+static void *mock_dxcluster_server_thread(void *arg) {
+  MockDxclusterServerArgs *ctx = (MockDxclusterServerArgs *)arg;
+  if (!ctx)
+    return NULL;
+
+  int srv = socket(AF_INET, SOCK_STREAM, 0);
+  if (srv < 0)
+    return NULL;
+
+  int reuse = 1;
+  setsockopt(srv, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+
+  struct sockaddr_in addr;
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons((uint16_t)ctx->port);
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+  if (bind(srv, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+    close(srv);
+    return NULL;
+  }
+
+  if (listen(srv, 1) != 0) {
+    close(srv);
+    return NULL;
+  }
+
+  int cli = accept(srv, NULL, NULL);
+  if (cli < 0) {
+    close(srv);
+    return NULL;
+  }
+
+  struct timeval tv;
+  tv.tv_sec = 1;
+  tv.tv_usec = 0;
+  setsockopt(cli, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+  const char *prompt = "login: ";
+  (void)send(cli, prompt, strlen(prompt), 0);
+
+  for (int i = 0; i < 30; i++) {
+    char buf[512] = {0};
+    int n = (int)recv(cli, buf, sizeof(buf) - 1, 0);
+    if (n > 0) {
+      const size_t cur = strlen(ctx->received);
+      const size_t room = sizeof(ctx->received) - cur - 1;
+      if (room > 0)
+        strncat(ctx->received, buf, room);
+
+      if (strstr(ctx->received, "dx 14074 SP9TEST CQ TEST") != NULL &&
+          strstr(ctx->received, "DX 14075 SP9TEST2 CQ TEST") != NULL) {
+        ctx->ok = 1;
+        break;
+      }
+    } else {
+      usleep(100000);
+    }
+  }
+
+  close(cli);
+  close(srv);
+  return NULL;
+}
+
+static void test_dxcluster_send_spot_requires_connection(void) {
+  dxcluster_disconnect();
+
+  expect_int_eq(dxcluster_send_spot(NULL), -1,
+                "dxcluster_send_spot should reject NULL input");
+  expect_true(strstr(dxcluster_status, "empty text") != NULL,
+              "spot status should explain empty payload failure");
+
+  expect_int_eq(dxcluster_send_spot("   \t"), -1,
+                "dxcluster_send_spot should reject blank input");
+  expect_true(strstr(dxcluster_status, "empty text") != NULL,
+              "spot status should explain blank payload failure");
+
+  expect_int_eq(dxcluster_send_spot("14074 SP9TEST CQ TEST"), -1,
+                "dxcluster_send_spot should fail when disconnected");
+  expect_true(strstr(dxcluster_status, "not connected") != NULL,
+              "spot status should report disconnected state");
+}
+
+static void test_dxcluster_connect_disconnect_and_send_spot(void) {
+  snprintf(config.dxc_host, sizeof(config.dxc_host), "%s", "127.0.0.1");
+  config.dxc_port = 19431;
+  snprintf(config.dxc_call, sizeof(config.dxc_call), "%s", "SP9UNIT");
+
+  MockDxclusterServerArgs server;
+  memset(&server, 0, sizeof(server));
+  server.port = config.dxc_port;
+
+  pthread_t tid;
+  expect_int_eq(pthread_create(&tid, NULL, mock_dxcluster_server_thread, &server),
+                0, "mock DXCluster server thread should start");
+  usleep(120000);
+
+  expect_int_eq(dxcluster_connect(), 0,
+                "dxcluster_connect should start worker thread");
+
+  int sent_ok = 0;
+  for (int i = 0; i < 30; i++) {
+    if (dxcluster_send_spot("14074 SP9TEST CQ TEST") == 0 &&
+        dxcluster_send_spot("DX 14075 SP9TEST2 CQ TEST") == 0) {
+      sent_ok = 1;
+      break;
+    }
+    usleep(100000);
+  }
+
+  dxcluster_disconnect();
+  pthread_join(tid, NULL);
+
+  expect_true(sent_ok,
+              "dxcluster_send_spot should succeed after connection is established");
+  expect_true(server.ok == 1,
+              "mock DXCluster server should receive both spot commands");
+  expect_true(strstr(server.received, "dx 14074 SP9TEST CQ TEST") != NULL,
+              "spot without DX prefix should be normalized to dx command");
+  expect_true(strstr(server.received, "DX 14075 SP9TEST2 CQ TEST") != NULL,
+              "spot with DX prefix should be sent unchanged");
+  expect_true(strstr(dxcluster_status, "Disconnected") != NULL ||
+                  strstr(dxcluster_status, "Spot sent") != NULL,
+              "disconnect after spot send should leave valid cluster status");
 }
 
 static void test_app_controller_shutdown_stops_cluster(const char *tmp_dir) {
@@ -4044,6 +4540,8 @@ int main(void) {
   test_cty_load_and_lookup(tmp_dir);
   test_cty_download_latest_failure_path(tmp_dir);
   test_qso_helpers();
+  test_cw_esm_enter_planner();
+  test_cat_cw_busy_state_disconnected();
   test_db_sync_identity_and_sequence(tmp_dir);
   test_db_sync_outbox_lifecycle(tmp_dir);
   test_db_sync_outbox_retry_limit_marks_failed(tmp_dir);
@@ -4070,8 +4568,12 @@ int main(void) {
   test_dxlog_definition_compatibility(tmp_dir);
   test_dxlog_importer_generates_local_conf(tmp_dir);
   test_maidenhead();
+  test_controller_vhf_locator_exchange_and_distance_points(tmp_dir);
+  test_controller_vhf_serial_locator_exchange_and_distance_points(tmp_dir);
   test_dxcluster_set_status();
   test_dxcluster_start_stop();
+  test_dxcluster_send_spot_requires_connection();
+  test_dxcluster_connect_disconnect_and_send_spot();
   test_app_controller_shutdown_stops_cluster(tmp_dir);
   test_call_suggestions();
   test_app_controller_key_flow(tmp_dir);

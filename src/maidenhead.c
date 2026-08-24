@@ -69,3 +69,41 @@ int locator_to_latlon(const char *locator, double *lat, double *lon) {
 
   return 0;
 }
+
+int locator_is_valid(const char *locator) {
+  double lat = 0.0;
+  double lon = 0.0;
+  return locator_to_latlon(locator, &lat, &lon) == 0;
+}
+
+int locator_distance_km(const char *locator_a, const char *locator_b,
+                        int *distance_km) {
+  if (!locator_a || !locator_b || !distance_km)
+    return -1;
+
+  double lat_a = 0.0;
+  double lon_a = 0.0;
+  double lat_b = 0.0;
+  double lon_b = 0.0;
+
+  if (locator_to_latlon(locator_a, &lat_a, &lon_a) != 0 ||
+      locator_to_latlon(locator_b, &lat_b, &lon_b) != 0)
+    return -1;
+
+  const double lat1 = DEG2RAD(lat_a);
+  const double lon1 = DEG2RAD(lon_a);
+  const double lat2 = DEG2RAD(lat_b);
+  const double lon2 = DEG2RAD(lon_b);
+  const double dlat = lat2 - lat1;
+  const double dlon = lon2 - lon1;
+
+  const double sin_dlat = sin(dlat / 2.0);
+  const double sin_dlon = sin(dlon / 2.0);
+  const double a = sin_dlat * sin_dlat +
+                   cos(lat1) * cos(lat2) * sin_dlon * sin_dlon;
+  const double c = 2.0 * atan2(sqrt(a), sqrt(1.0 - a));
+  const double earth_km = 6371.0;
+
+  *distance_km = (int)lround(earth_km * c);
+  return 0;
+}

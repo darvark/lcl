@@ -479,6 +479,83 @@ int cat_set_frequency_khz_slot_vfo(int slot, CatVfo vfo, int freq_khz) {
 #endif
 }
 
+#ifdef HAVE_HAMLIB
+static rmode_t cat_mode_to_hamlib(const char *mode_label, int freq_khz) {
+  if (!mode_label || !mode_label[0])
+    return RIG_MODE_USB;
+
+  if (strcasecmp(mode_label, "CW") == 0)
+    return RIG_MODE_CW;
+
+  if (strcasecmp(mode_label, "USB") == 0)
+    return RIG_MODE_USB;
+
+  if (strcasecmp(mode_label, "LSB") == 0)
+    return RIG_MODE_LSB;
+
+  if (strcasecmp(mode_label, "SSB") == 0)
+    return (freq_khz < 10000) ? RIG_MODE_LSB : RIG_MODE_USB;
+
+  if (strcasecmp(mode_label, "AM") == 0)
+    return RIG_MODE_AM;
+
+  if (strcasecmp(mode_label, "FM") == 0)
+    return RIG_MODE_FM;
+
+  if (strcasecmp(mode_label, "RTTY") == 0 || strcasecmp(mode_label, "RTTY-U") == 0)
+    return RIG_MODE_RTTY;
+
+  if (strcasecmp(mode_label, "DATA") == 0)
+    return RIG_MODE_PKTLSB;
+
+  return RIG_MODE_USB;
+}
+#endif
+
+int cat_set_mode_label_slot_vfo(int slot, CatVfo vfo, const char *mode_label) {
+  if (!mode_label || !mode_label[0])
+    return -1;
+
+  if (!cat_slot_valid(slot))
+    return -1;
+
+#ifdef HAVE_HAMLIB
+  pthread_mutex_lock(&cat_mutex);
+
+  if (!active_rigs[slot]) {
+    pthread_mutex_unlock(&cat_mutex);
+    return -1;
+  }
+
+  if (!cat_slot_device_present(slot)) {
+    cat_disconnect_slot_locked_with_reason(slot, "device lost");
+    pthread_mutex_unlock(&cat_mutex);
+    return -1;
+  }
+
+  int current_freq_khz = 0;
+  if (cat_get_frequency_khz_slot_vfo(slot, vfo, &current_freq_khz) != 0)
+    current_freq_khz = 14074;
+
+  const rmode_t mode = cat_mode_to_hamlib(mode_label, current_freq_khz);
+  const int rc = rig_set_mode(active_rigs[slot], cat_map_vfo(vfo), mode,
+                              RIG_PASSBAND_NORMAL);
+  if (rc != RIG_OK)
+    cat_disconnect_slot_locked_with_reason(slot, rigerror(rc));
+  pthread_mutex_unlock(&cat_mutex);
+
+  if (rc != RIG_OK)
+    return -1;
+
+  return 0;
+#else
+  (void)slot;
+  (void)vfo;
+  (void)mode_label;
+  return -1;
+#endif
+}
+
 int cat_set_active_vfo_slot(int slot, CatVfo vfo) {
   if (!cat_slot_valid(slot))
     return -1;
@@ -640,6 +717,7 @@ static pthread_t cw_thread;
 static int cw_thread_created = 0;
 static volatile int cw_thread_running = 0;
 static volatile int cw_abort_flag = 0;
+static volatile int cw_tx_active = 0;
 
 static const char *cw_encode(char c) {
   switch (c) {
@@ -727,7 +805,9 @@ static void *cw_thread_func(void *arg) {
     pthread_mutex_unlock(&cw_mutex);
 
     cw_abort_flag = 0;
+    cw_tx_active = 1;
     const int rc = cw_send_char(c);
+    cw_tx_active = 0;
     if (rc == -2) {
       pthread_mutex_lock(&cw_mutex);
       cw_queue_len = 0;
@@ -821,6 +901,7 @@ void cat_disconnect_cw_keyer(void) {
     return;
 
   cw_abort_flag = 1;
+  cw_tx_active = 0;
 
   pthread_mutex_lock(&cw_mutex);
   cw_thread_running = 0;
@@ -845,6 +926,17 @@ void cat_disconnect_cw_keyer(void) {
 
 int cat_is_cw_keyer_connected(void) {
   return cw_fd >= 0 ? 1 : 0;
+}
+
+int cat_cw_is_busy(void) {
+  int busy = 0;
+
+  pthread_mutex_lock(&cw_mutex);
+  if (cw_fd >= 0 && (cw_queue_len > 0 || cw_tx_active))
+    busy = 1;
+  pthread_mutex_unlock(&cw_mutex);
+
+  return busy;
 }
 
 void cat_get_cw_keyer_status(char *out, size_t out_size) {
@@ -901,6 +993,7 @@ int cat_cw_send(const char *text) {
 
 void cat_cw_stop(void) {
   cw_abort_flag = 1;
+  cw_tx_active = 0;
   pthread_mutex_lock(&cw_mutex);
   cw_queue_len = 0;
   pthread_mutex_unlock(&cw_mutex);

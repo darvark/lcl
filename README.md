@@ -345,9 +345,11 @@ Najkrótsza wersja do codziennej pracy: [docs/sciaga-operatora.md](docs/sciaga-o
 Najważniejsze zasady operacyjne:
 
 - `F1..F10` wysyłają wiadomości CW zdefiniowane w `cw_keys.ini`; klawisze są też wyświetlane jako klikalne przyciski w panelu między statusem a DXCC
+- opcjonalny `CW_ESM=1` w `logger.conf` włącza Enter Sends Message dla CW pod klawiszem `Enter` (decyzje: RUN/S&P + aktywne pole + pusty/niepusty `Call` i `Exchange`, akcje przez istniejące makra F1-F10)
 - `Ctrl+F2` tworzy nowy log i umożliwia przypisanie presetu zawodów
 - `Ctrl+F8` otwiera dialog konfiguracji zawodów
 - `Ctrl+F9` pokazuje lub ukrywa panel konfiguracji CAT/CW
+- `Ctrl+Shift+E` włącza albo wyłącza CW ESM
 - `Ctrl+Up` i `Ctrl+Down` przechodzą do poprzedniego/następnego spotu na bandmapie bieżącego pasma i stroją częstotliwość
 - `Menu → Show CAT/CW Config` pokazuje lub ukrywa panel konfiguracji CAT/CW
 - stan połączeń CAT i CW jest zawsze widoczny jako dwie odznaki obok kontrolek RUN/S&P

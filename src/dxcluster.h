@@ -30,11 +30,34 @@ extern pthread_mutex_t dxcluster_mutex;
 int dxcluster_start(void);
 
 /*
+ * Start or resume the DXCluster connection worker.
+ *
+ * @return 0 on success, or -1 on failure.
+ */
+int dxcluster_connect(void);
+
+/*
  * Force an immediate retry of the DXCluster connection.
  *
  * @return 0 on success, or -1 on failure.
  */
 int dxcluster_retry_connection(void);
+
+/*
+ * Disconnect from DXCluster and stop the worker thread.
+ *
+ * @return Nothing.
+ */
+void dxcluster_disconnect(void);
+
+/*
+ * Send a spot command to the currently connected DXCluster server.
+ *
+ * @param spot_text Spot payload. Both "DX ..." and payload-only forms are
+ *                  accepted.
+ * @return 0 on success, or -1 when disconnected/invalid.
+ */
+int dxcluster_send_spot(const char *spot_text);
 
 /*
  * Stop the background DXCluster worker thread and release its resources.
