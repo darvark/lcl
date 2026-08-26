@@ -1,5 +1,7 @@
 # Self-Signed TLS dla Central Log
 
+> Dokument archiwalny. Funkcjonalność sieci z centralnym logiem została usunięta z aktywnej wersji aplikacji, więc ten opis nie dotyczy obecnej konfiguracji runtime.
+
 ## Cel
 
 Dokument opisuje operacyjny model TLS dla obecnej implementacji centralnego logu. Model jest celowo prosty:

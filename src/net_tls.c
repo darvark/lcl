@@ -22,7 +22,8 @@ static void ignore_sigpipe_once(void) {
   if (initialized)
     return;
 
-  signal(SIGPIPE, SIG_IGN);
+    signal(SIGPIPE, SIG_IGN);
+
   initialized = 1;
 }
 
@@ -366,18 +367,27 @@ ssize_t net_transport_write_cb(void *ctx, const void *buf, size_t len) {
     return -1;
 
 #ifdef HAVE_OPENSSL
-  if (transport->use_tls && transport->ssl)
-    return (ssize_t)SSL_write((SSL *)transport->ssl, buf, (int)len);
-#endif
+  if (transport->use_tls && transport->ssl) {
+    ignore_sigpipe_once();
+      ssize_t written = SSL_write((SSL *)transport->ssl, buf, (int)len);
+      if (written <= 0) {
+        int ssl_err = SSL_get_error((SSL *)transport->ssl, (int)written);
+        if (ssl_err == SSL_ERROR_ZERO_RETURN || ssl_err == SSL_ERROR_SYSCALL)
+          return -1;
+      }
+      return written;
+    }
+  #endif
 
-  int flags = 0;
-#ifdef MSG_NOSIGNAL
-  flags |= MSG_NOSIGNAL;
-#endif
-  return send(transport->fd, buf, len, flags);
-}
-
-void net_transport_close(NetTransport *transport) {
+    int flags = 0;
+  #ifdef MSG_NOSIGNAL
+    flags |= MSG_NOSIGNAL;
+  #endif
+    ignore_sigpipe_once();
+    ssize_t written = send(transport->fd, buf, len, flags);
+    if (written < 0 && (errno == EPIPE || errno == ECONNRESET))
+      return -1;
+    return written;
   if (!transport)
     return;
 

@@ -282,15 +282,6 @@ public:
         op_layout->addWidget(radio1_label_, 1, 0, 1, 2);
         op_layout->addWidget(radio2_label_, 2, 0, 1, 2);
 
-        op_layout->addWidget(new QLabel("TX Exchange:", op_panel_), 2, 2);
-        contest_tx_exchange_edit_ = new QLineEdit(op_panel_);
-        contest_tx_exchange_edit_->clear();
-        contest_tx_exchange_edit_->setPlaceholderText("auto (from EXCHANGE_SENT)");
-        contest_tx_exchange_edit_->setToolTip(
-          "Read-only preview of current TX exchange generated from contest definition.");
-        contest_tx_exchange_edit_->setReadOnly(true);
-        op_layout->addWidget(contest_tx_exchange_edit_, 2, 3, 1, 2);
-
         op_layout->addWidget(new QLabel("CW WPM:", op_panel_), 3, 2);
         cw_wpm_spin_ = new QSpinBox(op_panel_);
         cw_wpm_spin_->setRange(1, 60);
@@ -300,7 +291,7 @@ public:
         connect(cw_wpm_spin_, QOverload<int>::of(&QSpinBox::valueChanged), this,
                 [this](int value) {
                   config.cw_wpm = value;
-                  config_save("logger.conf");
+                  config_save_active();
                   cat_set_cw_wpm(value);
                 });
         op_layout->addWidget(cw_wpm_spin_, 3, 3, 1, 1);
@@ -531,20 +522,6 @@ public:
         refresh_ui();
       });
 
-            QAction *network_config_action = new QAction("Network Config", this);
-      network_config_action->setShortcut(QKeySequence("Ctrl+Shift+F9"));
-      connect(network_config_action, &QAction::triggered, this, [this]() {
-        prompt_network_configuration();
-        refresh_ui();
-      });
-
-            QAction *contest_action = new QAction("Contest Config", this);
-      contest_action->setShortcut(QKeySequence("Ctrl+F8"));
-      connect(contest_action, &QAction::triggered, this, [this]() {
-        prompt_contest_configuration();
-        refresh_ui();
-      });
-
             QAction *cluster_action = new QAction("DX Cluster", this);
       cluster_action->setShortcut(QKeySequence("Ctrl+F5"));
       connect(cluster_action, &QAction::triggered, this,
@@ -647,8 +624,6 @@ public:
       main_menu->addAction(export_action);
       main_menu->addSeparator();
       main_menu->addAction(station_config_action);
-      main_menu->addAction(network_config_action);
-      main_menu->addAction(contest_action);
       main_menu->addAction(cty_action);
       main_menu->addAction(scp_action);
       main_menu->addSeparator();
@@ -745,7 +720,7 @@ public:
       esm_toggle_action->setShortcutContext(Qt::ApplicationShortcut);
       connect(esm_toggle_action, &QAction::toggled, this, [this](bool checked) {
         config.cw_esm_enabled = checked ? 1 : 0;
-        config_save("logger.conf");
+        config_save_active();
         refresh_ui();
       });
       esm_toggle_action_ = esm_toggle_action;
@@ -779,7 +754,13 @@ public:
 
     /* try app dir (build), then CWD, then one level up (source tree) */
     reload_cw_maps_from_disk();
-    scp_load("MASTER.SCP");
+    char scp_path[768] = {0};
+    const char *runtime_scp =
+      config_resolve_runtime_path("MASTER.SCP", scp_path,
+                    sizeof(scp_path)) == 0
+        ? scp_path
+        : "MASTER.SCP";
+    scp_load(runtime_scp);
 
     qtc_dialog_ = new QtcDialog(&cw_qtc_map_, this);
     qtc_history_dialog_ = new QtcHistoryDialog(this);
@@ -937,7 +918,13 @@ private:
 
     cty_update_worker_running_ = true;
     std::thread([this]() {
-      const int download_ok = cty_download_latest("wl_cty.dat") == 0 ? 1 : 0;
+      char cty_path[768] = {0};
+      const char *runtime_cty =
+          config_resolve_runtime_path("wl_cty.dat", cty_path,
+                                      sizeof(cty_path)) == 0
+              ? cty_path
+              : "wl_cty.dat";
+      const int download_ok = cty_download_latest(runtime_cty) == 0 ? 1 : 0;
       QMetaObject::invokeMethod(
           this,
           [this, download_ok]() {
@@ -1033,55 +1020,9 @@ private:
       return;
     }
 
-    /* Use cached preset list (populated once at construction). */
-    const auto &presets = contest_presets_cache_;
-
-    QStringList contest_options;
-    contest_options << "None";
-    for (const auto &p : presets)
-      contest_options << p.first;
-
-    /* Fallback to compiled-in list when directory cannot be found. */
-    if (presets.empty()) {
-      for (const auto &preset : kContestPresets)
-        contest_options << QString::fromLatin1(preset.label);
-    }
-
-    const QString selected_contest = QInputDialog::getItem(
-        this,
-        "Create New Log",
-        "Select contest:",
-        contest_options,
-        0,
-        false,
-        &ok);
-
-    if (!ok || selected_contest.isEmpty())
-      return;
-
     submit_command_text(QString("newlog %1").arg(trimmed));
-
-    if (selected_contest == "None") {
-      submit_command_text("contest none");
-      return;
-    }
-
-    /* Try dynamic list first. */
-    for (const auto &p : presets) {
-      if (selected_contest == p.first) {
-        submit_command_text(QString("contest %1").arg(p.second));
-        return;
-      }
-    }
-
-    /* Fallback to compiled-in list. */
-    for (const auto &preset : kContestPresets) {
-      if (selected_contest == QString::fromLatin1(preset.label)) {
-        submit_command_text(
-            QString("contest %1").arg(QString::fromLatin1(preset.path)));
-        return;
-      }
-    }
+    prompt_contest_configuration();
+    refresh_ui();
   }
 
   void prompt_open_named_log() {
@@ -1338,160 +1279,13 @@ private:
       copy_field(config.cw_keyer_line, sizeof(config.cw_keyer_line), cw_keyer_line_combo->currentText());
       config.cw_wpm = cw_wpm_spin->value();
 
-      if (config_save("logger.conf") != 0) {
+      if (config_save_active() != 0) {
         QMessageBox::warning(this, "Konfiguracja stacji",
                              "Nie mozna zapisac logger.conf.");
         return;
       }
 
       apply_theme();
-      refresh_ui();
-    }
-
-    void prompt_network_configuration() {
-      QDialog dialog(this);
-      dialog.setWindowTitle("Konfiguracja sieci");
-      dialog.setModal(true);
-      dialog.resize(620, 460);
-
-      auto *layout = new QVBoxLayout(&dialog);
-      auto *hint = new QLabel(
-          "Konfiguracja pracy sieciowej. Zmiany sa zapisywane do logger.conf.",
-          &dialog);
-      hint->setWordWrap(true);
-      layout->addWidget(hint);
-
-      auto *form = new QFormLayout();
-      form->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
-
-      auto *net_enabled_check = new QCheckBox(&dialog);
-      net_enabled_check->setChecked(config.net_enabled != 0);
-      form->addRow("NET_ENABLED:", net_enabled_check);
-
-      auto *station_name_edit =
-          new QLineEdit(QString::fromLatin1(config.net_station_id), &dialog);
-      station_name_edit->setPlaceholderText("np. RUN1");
-      form->addRow("NET_STATION_ID:", station_name_edit);
-
-      auto *role_combo = new QComboBox(&dialog);
-      role_combo->addItem("client", "client");
-      role_combo->addItem("server", "server");
-      const int role_index =
-          QString::fromLatin1(config.net_role).trimmed().compare("server", Qt::CaseInsensitive) == 0
-              ? 1
-              : 0;
-      role_combo->setCurrentIndex(role_index);
-      form->addRow("NET_ROLE:", role_combo);
-
-      auto *host_edit =
-          new QLineEdit(QString::fromLatin1(config.net_server_host), &dialog);
-      host_edit->setPlaceholderText("127.0.0.1 lub nazwa hosta");
-      host_edit->setVisible(role_combo->currentData().toString().compare("server", Qt::CaseInsensitive) != 0);
-      host_edit->setEnabled(host_edit->isVisible());
-      form->addRow("NET_SERVER_HOST (client only):", host_edit);
-      QObject::connect(role_combo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-                       [&](int) {
-                         const bool is_server =
-                             role_combo->currentData().toString().compare("server", Qt::CaseInsensitive) == 0;
-                         host_edit->setVisible(!is_server);
-                         host_edit->setEnabled(!is_server);
-                       });
-
-      auto *port_spin = new QSpinBox(&dialog);
-      port_spin->setRange(1, 65535);
-      port_spin->setValue(config.net_server_port);
-      form->addRow("NET_SERVER_PORT:", port_spin);
-
-        auto *tls_check = new QCheckBox(&dialog);
-        tls_check->setChecked(config.net_tls != 0);
-        form->addRow("NET_TLS:", tls_check);
-
-        auto *shared_key_edit =
-          new QLineEdit(QString::fromLatin1(config.net_shared_key), &dialog);
-        shared_key_edit->setEchoMode(QLineEdit::PasswordEchoOnEdit);
-        shared_key_edit->setPlaceholderText("wspolny klucz autoryzacji");
-        form->addRow("NET_SHARED_KEY:", shared_key_edit);
-
-        auto *fingerprint_edit = new QLineEdit(
-          QString::fromLatin1(config.net_tls_peer_fingerprint), &dialog);
-        fingerprint_edit->setPlaceholderText(
-          "SHA-256 fingerprint serwera, np. AA:BB:CC:...");
-        form->addRow("NET_TLS_PEER_FINGERPRINT:", fingerprint_edit);
-
-          auto *live_upload_enabled_check = new QCheckBox(&dialog);
-          live_upload_enabled_check->setChecked(config.live_upload_enabled != 0);
-          form->addRow("LIVE_UPLOAD_ENABLED:", live_upload_enabled_check);
-
-          auto *live_upload_host_edit =
-            new QLineEdit(QString::fromLatin1(config.live_upload_host), &dialog);
-          live_upload_host_edit->setPlaceholderText("np. 192.168.1.50");
-          form->addRow("LIVE_UPLOAD_HOST:", live_upload_host_edit);
-
-          auto *live_upload_port_spin = new QSpinBox(&dialog);
-          live_upload_port_spin->setRange(1, 65535);
-          live_upload_port_spin->setValue(config.live_upload_port);
-          form->addRow("LIVE_UPLOAD_PORT:", live_upload_port_spin);
-
-          auto *live_upload_token_edit =
-            new QLineEdit(QString::fromLatin1(config.live_upload_token), &dialog);
-          live_upload_token_edit->setEchoMode(QLineEdit::PasswordEchoOnEdit);
-          live_upload_token_edit->setPlaceholderText("opcjonalny token");
-          form->addRow("LIVE_UPLOAD_TOKEN:", live_upload_token_edit);
-
-      layout->addLayout(form);
-
-      auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
-                                           Qt::Horizontal, &dialog);
-      connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-      connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-      layout->addWidget(buttons);
-
-      if (dialog.exec() != QDialog::Accepted)
-        return;
-
-      auto copy_field = [](char *dst, size_t dst_size, const QString &text) {
-        QByteArray bytes = text.trimmed().toLatin1();
-        std::snprintf(dst, dst_size, "%s", bytes.constData());
-      };
-
-      config.net_enabled = net_enabled_check->isChecked() ? 1 : 0;
-      copy_field(config.net_station_id, sizeof(config.net_station_id),
-                 station_name_edit->text());
-      copy_field(config.net_role, sizeof(config.net_role),
-                 role_combo->currentData().toString());
-      copy_field(config.net_server_host, sizeof(config.net_server_host),
-                 host_edit->text());
-      config.net_server_port = port_spin->value();
-      config.net_tls = tls_check->isChecked() ? 1 : 0;
-      copy_field(config.net_shared_key, sizeof(config.net_shared_key),
-                 shared_key_edit->text());
-      copy_field(config.net_auth_token, sizeof(config.net_auth_token),
-                 shared_key_edit->text());
-      copy_field(config.net_tls_peer_fingerprint,
-                 sizeof(config.net_tls_peer_fingerprint),
-                 fingerprint_edit->text());
-      config.live_upload_enabled = live_upload_enabled_check->isChecked() ? 1 : 0;
-      copy_field(config.live_upload_host, sizeof(config.live_upload_host),
-             live_upload_host_edit->text());
-      config.live_upload_port = live_upload_port_spin->value();
-      copy_field(config.live_upload_token, sizeof(config.live_upload_token),
-             live_upload_token_edit->text());
-
-      if (config_save_active() != 0) {
-        QMessageBox::warning(this, "Konfiguracja sieci",
-                             "Nie mozna zapisac logger.conf.");
-        return;
-      }
-
-      const bool was_enabled = net_enabled_check->isChecked();
-      submit_command_text("net off");
-      if (was_enabled)
-        submit_command_text("net on");
-
-      QMessageBox::information(this, "Konfiguracja sieci",
-                               was_enabled
-                                   ? "Ustawienia sieci zapisane i sync zostal automatycznie zrestartowany."
-                                   : "Ustawienia sieci zapisane. Sync pozostaje wylaczony.");
       refresh_ui();
     }
 
@@ -1504,9 +1298,16 @@ private:
         def_path = "contest.conf";
 
       {
+        char resolved_def_path[768] = {0};
         QByteArray path_bytes = def_path.toLocal8Bit();
+        const char *load_path = path_bytes.constData();
+        if (config_resolve_contest_path(path_bytes.constData(),
+                                        resolved_def_path,
+                                        sizeof(resolved_def_path)) == 0)
+          load_path = resolved_def_path;
+
         char load_err[128] = {0};
-        if (contest_definition_load(path_bytes.constData(), &def, load_err,
+        if (contest_definition_load(load_path, &def, load_err,
                                     sizeof(load_err)) != 0) {
           contest_definition_init_defaults(&def);
         }
@@ -1549,11 +1350,6 @@ private:
       technique_combo->setCurrentIndex(
           technique_combo_index(config.contest_technique));
       form->addRow("Technika:", technique_combo);
-
-      auto *tx_exchange_edit =
-          new QLineEdit(QString::fromLatin1(config.contest_tx_exchange), &dialog);
-      tx_exchange_edit->setPlaceholderText("puste = auto z EXCHANGE_SENT");
-      form->addRow("TX exchange override:", tx_exchange_edit);
 
       auto *name_edit = new QLineEdit(QString::fromLatin1(def.name), &dialog);
       form->addRow("Nazwa:", name_edit);
@@ -1676,8 +1472,14 @@ private:
                       sizeof(def.exchange_sent_template), "%s", "#");
 
       QByteArray path_bytes = path.toLocal8Bit();
+      char resolved_path[768] = {0};
+      const char *save_path = path_bytes.constData();
+      if (config_resolve_contest_path(path_bytes.constData(), resolved_path,
+                                      sizeof(resolved_path)) == 0)
+        save_path = resolved_path;
+
       char save_err[128] = {0};
-      if (save_contest_definition_file(path_bytes.constData(), &def, save_err,
+      if (save_contest_definition_file(save_path, &def, save_err,
                                        sizeof(save_err)) != 0) {
         QMessageBox::warning(this, "Konfiguracja zawodow",
                              QString("Nie mozna zapisac definicji: %1")
@@ -1687,22 +1489,18 @@ private:
 
       std::snprintf(config.contest_definition_path,
                     sizeof(config.contest_definition_path), "%s",
-                    path_bytes.constData());
-
-      QByteArray tx_bytes = tx_exchange_edit->text().trimmed().toLatin1();
-      std::snprintf(config.contest_tx_exchange,
-                    sizeof(config.contest_tx_exchange), "%s",
-                    tx_bytes.constData());
+                    save_path);
 
       config.contest_technique =
           technique_from_combo_index(technique_combo->currentIndex());
       app_controller_set_contest_technique(config.contest_technique);
 
-      config_save("logger.conf");
+      config_save_active();
 
       // Queue contest reload after dialog closes to avoid temporary UI freeze
       // on the modal window while stats are recalculated.
-      const QString contest_cmd = QString("contest %1").arg(path);
+      const QString contest_cmd = QString("contest %1")
+                  .arg(QString::fromLocal8Bit(save_path));
       QTimer::singleShot(0, this, [this, contest_cmd]() {
         submit_command_text(contest_cmd);
         refresh_ui();
@@ -1986,13 +1784,25 @@ private:
       return;
     scp_update_worker_running_ = true;
     std::thread([this]() {
-      const int ok = scp_download_latest("MASTER.SCP") == 0;
+      char scp_path[768] = {0};
+      const char *runtime_scp =
+          config_resolve_runtime_path("MASTER.SCP", scp_path,
+                                      sizeof(scp_path)) == 0
+              ? scp_path
+              : "MASTER.SCP";
+      const int ok = scp_download_latest(runtime_scp) == 0;
       QMetaObject::invokeMethod(
           this,
           [this, ok]() {
             scp_update_worker_running_ = false;
             if (ok) {
-              scp_load("MASTER.SCP");
+              char scp_load_path[768] = {0};
+              const char *runtime_scp_load =
+                  config_resolve_runtime_path("MASTER.SCP", scp_load_path,
+                                              sizeof(scp_load_path)) == 0
+                      ? scp_load_path
+                      : "MASTER.SCP";
+              scp_load(runtime_scp_load);
               QMessageBox::information(this, "SCP Update",
                 QString("MASTER.SCP downloaded successfully.\n%1 callsigns loaded.")
                     .arg(scp_count()));
@@ -2331,6 +2141,8 @@ private:
 
     if (signature != last_cluster_table_signature_) {
       cluster_table_->setRowCount((int)items.size());
+      const bool monokai = config.ui_monokai_theme != 0;
+      const QColor spot_fg = monokai ? QColor(248, 248, 242) : QColor(14, 90, 20);
       for (int row = 0; row < (int)items.size(); row++) {
         auto *time_item = new QTableWidgetItem(items[row].time);
         auto *freq_item = new QTableWidgetItem(items[row].freq);
@@ -2347,10 +2159,10 @@ private:
         call_item->setTextAlignment(Qt::AlignCenter | Qt::AlignVCenter);
         comment_item->setTextAlignment(Qt::AlignCenter | Qt::AlignVCenter);
 
-        time_item->setForeground(QColor(14, 90, 20));
-        freq_item->setForeground(QColor(14, 90, 20));
-        call_item->setForeground(QColor(14, 90, 20));
-        comment_item->setForeground(QColor(14, 90, 20));
+        time_item->setForeground(spot_fg);
+        freq_item->setForeground(spot_fg);
+        call_item->setForeground(spot_fg);
+        comment_item->setForeground(spot_fg);
 
         cluster_table_->setItem(row, 0, time_item);
         cluster_table_->setItem(row, 1, freq_item);
@@ -2623,6 +2435,7 @@ private:
     int scp_found = 0;
     if (partial && partial[0] != '\0' && strlen(partial) >= 2 && scp_count() > 0)
       scp_found = scp_search(partial, scp_results, SCP_SEARCH_MAX);
+    scp_found = std::clamp(scp_found, 0, SCP_SEARCH_MAX);
 
     const bool monokai = config.ui_monokai_theme != 0;
     const QString panel_bg = monokai ? QString("#3e3d32") : QString("#9be2ef");
@@ -2797,16 +2610,10 @@ private:
   }
 
   QString resolve_cw_keys_path() const {
-    const QString base = QApplication::applicationDirPath();
-    const QString in_app_dir = base + "/cw_keys.ini";
-    if (QFileInfo::exists(in_app_dir))
-      return in_app_dir;
-    if (QFileInfo::exists("cw_keys.ini"))
-      return "cw_keys.ini";
-
-    const QString in_source_dir = base + "/../cw_keys.ini";
-    if (QFileInfo::exists(in_source_dir))
-      return in_source_dir;
+    char runtime_cw_keys[768] = {0};
+    if (config_resolve_runtime_path("cw_keys.ini", runtime_cw_keys,
+                                    sizeof(runtime_cw_keys)) == 0)
+      return QString::fromLocal8Bit(runtime_cw_keys);
 
     return "cw_keys.ini";
   }
@@ -3139,6 +2946,86 @@ private:
     refresh_ui();
   }
 
+  QString normalize_call_for_dupe(const char *raw_call) const {
+    QString call = QString::fromLatin1(raw_call ? raw_call : "").trimmed().toUpper();
+    const int slash = call.indexOf('/');
+    if (slash >= 0)
+      call = call.left(slash);
+    return call;
+  }
+
+  QString canonical_mode_for_dupe(const char *raw_mode, int freq_khz) const {
+    QString mode = QString::fromLatin1(raw_mode ? raw_mode : "").trimmed().toUpper();
+    if (mode.isEmpty()) {
+      char detected[16] = {0};
+      detect_mode(freq_khz, detected);
+      mode = QString::fromLatin1(detected).trimmed().toUpper();
+    }
+
+    if (mode.contains("FT8"))
+      return "FT8";
+    if (mode.contains("FT4"))
+      return "FT4";
+    if (mode.contains("RTTY"))
+      return "RTTY";
+    if (mode.contains("PSK"))
+      return "PSK31";
+    if (mode.contains("CW"))
+      return "CW";
+    if (mode.contains("SSB") || mode.contains("USB") || mode.contains("LSB") ||
+        mode.contains("PHONE"))
+      return "SSB";
+
+    return mode;
+  }
+
+  bool has_live_dupe_for_active_call(const AppRenderState &state,
+                                     int active_freq_khz,
+                                     int active_radio) const {
+    const char *raw_call = active_radio == 2 ? state.input_call_r2 : state.input_call_r1;
+    const char *raw_mode = active_radio == 2 ? state.radio2_mode : state.radio1_mode;
+
+    const QString call = normalize_call_for_dupe(raw_call);
+    if (call.isEmpty())
+      return false;
+
+    char band_buf[8] = {0};
+    detect_band(active_freq_khz, band_buf);
+    const QString band = QString::fromLatin1(band_buf);
+    if (band.isEmpty() || band == "?")
+      return false;
+
+    const QString mode = canonical_mode_for_dupe(raw_mode, active_freq_khz);
+    if (mode.isEmpty())
+      return false;
+
+    const int safe_qso_count = std::clamp(qso_count, 0, MAX_QSO);
+    for (int i = 0; i < safe_qso_count; i++) {
+      const QSO &q = logbook[i];
+      if (!q.call[0] || q.invalid)
+        continue;
+
+      const QString existing_call = normalize_call_for_dupe(q.call);
+      if (existing_call != call)
+        continue;
+
+      const QString existing_band = QString::fromLatin1(q.band ? q.band : "");
+      if (existing_band != band)
+        continue;
+
+      if (q.freq <= 0)
+        continue;
+
+      const QString existing_mode = canonical_mode_for_dupe(q.mode, q.freq);
+      if (existing_mode != mode)
+        continue;
+
+      return true;
+    }
+
+    return false;
+  }
+
   /*
    * Pull the latest controller state into the Qt widgets.
    *
@@ -3178,12 +3065,6 @@ private:
                         clip_cstr_to_cols(state.input_call_r2, input_call_cols_r2));
     set_text_if_changed(input_rst_r2_edit_,
                         clip_cstr_to_cols(state.input_rst_r2, input_rst_cols_r2));
-    if (contest_tx_exchange_edit_) {
-      const QString tx_exchange =
-        QString::fromLatin1(state.contest_exchange_sent ? state.contest_exchange_sent : "").trimmed();
-      set_text_if_changed(contest_tx_exchange_edit_, tx_exchange);
-    }
-
     if (export_filename_edit_) {
       const bool export_prompt_active = app_controller_export_prompt_active();
       if (export_prompt_active) {
@@ -3225,7 +3106,20 @@ private:
     set_input_style(input_call_r2_edit_, active_radio == 2 && state.active_input_field_r2 == 0);
     set_input_style(input_rst_r2_edit_, active_radio == 2 && state.active_input_field_r2 == 1);
 
-    const bool qso_is_dupe = state.status && std::strstr(state.status, "QSO DUPE") != nullptr;
+    const QString status_raw = QString::fromLatin1(state.status ? state.status : "");
+    const QString active_call_text = QString::fromLatin1(
+      active_radio == 2 ? (state.input_call_r2 ? state.input_call_r2 : "")
+                : (state.input_call_r1 ? state.input_call_r1 : ""))
+                       .trimmed();
+    const bool has_active_call = !active_call_text.isEmpty();
+    const bool exchange_field_active =
+      active_radio == 2 ? (state.active_input_field_r2 == 1)
+                : (state.active_input_field_r1 == 1);
+    const bool qso_is_dupe_status = status_raw.contains("DUPE", Qt::CaseInsensitive);
+    const bool qso_is_dupe_live = has_live_dupe_for_active_call(state, active_freq_khz,
+                                  active_radio);
+    const bool qso_is_dupe = has_active_call && exchange_field_active &&
+                 (qso_is_dupe_status || qso_is_dupe_live);
     set_text_if_changed(status_label_, clip_to_cols(
       cw_feedback_ticks_ > 0
         ? (cw_feedback_ticks_--, cw_feedback_)
@@ -3241,28 +3135,7 @@ private:
     const QString operator_text = QString("OP: %1").arg(
         QString::fromLatin1(config_effective_operator_call()));
 
-    NetSyncStatus sync_state;
-    std::memset(&sync_state, 0, sizeof(sync_state));
-    net_sync_get_status(&sync_state);
-
-    QString network_text;
-    if (!config.net_enabled) {
-      network_text = "NET: OFF | SYNC: OFF";
-    } else {
-      const QString station = QString::fromLatin1(
-          sync_state.station_id[0] ? sync_state.station_id : config.net_station_id);
-      const QString role = QString::fromLatin1(config.net_role[0] ? config.net_role : "client");
-      const QString net_state = sync_state.connected ? "ONLINE" : "OFFLINE";
-      const QString sync_state_text = sync_state.connected ? "OK" : "WAIT";
-      network_text = QString("NET: %1 %2 %3 | SYNC: %4 pending=%5")
-                         .arg(station.isEmpty() ? QString("-") : station)
-                         .arg(role)
-                         .arg(net_state)
-                         .arg(sync_state_text)
-                         .arg(sync_state.pending_outbox);
-    }
-
-    info_text = QString("%1 | %2 | %3").arg(info_text, operator_text, network_text);
+    info_text = QString("%1 | %2").arg(info_text, operator_text);
 
     if (contest_entry_mode) {
       const QString exchange_label =
@@ -3484,7 +3357,6 @@ private:
   QPushButton *contest_config_button_ = nullptr;
   QLabel *radio1_label_ = nullptr;
   QLabel *radio2_label_ = nullptr;
-  QLineEdit *contest_tx_exchange_edit_ = nullptr;
   QSpinBox *cw_wpm_spin_ = nullptr;
   QLineEdit *export_filename_edit_ = nullptr;
 

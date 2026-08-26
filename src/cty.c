@@ -1,4 +1,5 @@
 #include "cty.h"
+#include "config.h"
 
 #include <strings.h>
 #include <sys/wait.h>
@@ -37,8 +38,19 @@ static int command_ok(int status) {
  * @return 0 on success, or -1 on failure.
  */
 int cty_download_latest(const char *filename) {
-  const char *target = (filename && filename[0]) ? filename : "wl_cty.dat";
-  const char *tmp_file = "wl_cty.dat.tmp";
+  char target_path[512] = {0};
+  char tmp_file[512] = {0};
+  const char *target = filename && filename[0] ? filename : NULL;
+
+  if (!target) {
+    (void)config_ensure_runtime_layout();
+    if (config_resolve_runtime_path("wl_cty.dat", target_path, sizeof(target_path)) == 0)
+      target = target_path;
+    else
+      target = "wl_cty.dat";
+  }
+
+  snprintf(tmp_file, sizeof(tmp_file), "%s.tmp", target);
 
   char cmd[512];
 

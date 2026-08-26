@@ -89,7 +89,6 @@ cat2_parity="$(ask "CAT2_PARITY" "None")"
 cat2_handshake="$(ask "CAT2_HANDSHAKE" "None")"
 
 contest_def_file="$(ask "CONTEST_DEF_FILE" "contest.conf")"
-contest_tx_exchange="$(ask "CONTEST_TX_EXCHANGE" "")"
 contest_technique="$(ask "CONTEST_TECHNIQUE (SO1R/SO2V/SO2R)" "SO1R")"
 
 cw_device="$(ask "CW_DEVICE" "/dev/ttyUSB2")"
@@ -128,7 +127,6 @@ STATION_CALL=${station_call}
 OPERATOR_CALL=${operator_call}
 OPERATOR_NAME=${operator_name}
 CONTEST_DEF_FILE=${contest_def_file}
-CONTEST_TX_EXCHANGE=${contest_tx_exchange}
 CONTEST_TECHNIQUE=${contest_technique}
 
 CW_DEVICE=${cw_device}

@@ -11,8 +11,8 @@ Wartości typu porty urządzeń, model Hamlib, znak i host DXCluster trzeba dopa
 ## Wspólne założenia
 
 - `EXCHANGE_SENT=#` w definicji zawodów zawsze daje inkrementację `1`, `2`, `3`...
-- `CONTEST_TX_EXCHANGE` ustawiaj tylko dla zawodów ze statyczną wymianą nadawaną
 - `CONTEST_DEF_FILE` może wskazywać preset z `contest_defs/`
+- nadawana wymiana jest zawsze generowana z definicji zawodów; nie ma osobnego override w `logger.conf`
 
 ## Przykład 1: SO1R
 
@@ -47,7 +47,6 @@ CAT2_HANDSHAKE=None
 STATION_CALL=SP6ABC
 OPERATOR_NAME=Jan Operator
 CONTEST_DEF_FILE=contest_defs/cq_wpx_cw.conf
-CONTEST_TX_EXCHANGE=
 CONTEST_TECHNIQUE=SO1R
 
 CW_DEVICE=/dev/ttyUSB2
@@ -94,7 +93,6 @@ CAT2_HANDSHAKE=None
 STATION_CALL=SP6ABC
 OPERATOR_NAME=Jan Operator
 CONTEST_DEF_FILE=contest_defs/cq_wpx_cw.conf
-CONTEST_TX_EXCHANGE=
 CONTEST_TECHNIQUE=SO2V
 
 CW_DEVICE=/dev/ttyUSB2
@@ -141,7 +139,6 @@ CAT2_HANDSHAKE=None
 STATION_CALL=SP6ABC
 OPERATOR_NAME=Jan Operator
 CONTEST_DEF_FILE=contest_defs/cq_wpx_cw.conf
-CONTEST_TX_EXCHANGE=
 CONTEST_TECHNIQUE=SO2R
 
 CW_DEVICE=/dev/ttyUSB2
@@ -157,19 +154,18 @@ Uwagi:
 
 ## Przykład zawodów ze statyczną wymianą nadawaną
 
-Jeżeli zawody mają stałą wymianę, użyj statycznego `EXCHANGE_SENT` w definicji zawodów i opcjonalnie `CONTEST_TX_EXCHANGE` w `logger.conf`.
+Jeżeli zawody mają stałą wymianę, ustaw ją w definicji zawodów jako `EXCHANGE_SENT` i nie używaj osobnego override w `logger.conf`.
 
 Przykład:
 
 ```ini
 CONTEST_DEF_FILE=contest_defs/iaru_hf_championship.conf
-CONTEST_TX_EXCHANGE=28
 ```
 
 W tym scenariuszu:
 
 - jeśli preset ma `EXCHANGE_SENT=ITU`, program nada `28`
-- jeśli preset ma `EXCHANGE_SENT=#`, `CONTEST_TX_EXCHANGE` zostanie zignorowane
+- jeśli preset ma `EXCHANGE_SENT=#`, następuje inkrementacja numeru, bez żadnego override
 
 ## Szybki wybór scenariusza
 

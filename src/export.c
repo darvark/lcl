@@ -38,8 +38,6 @@ static int qtc_export_allowed(const ContestDefinition *definition) {
 
   for (int i = 0; i < qso_count; i++) {
     const QSO *q = &logbook[i];
-    if (q->invalid)
-      continue;
     if (text_contains_token_ci(q->contest_id, "WAE") ||
         text_contains_token_ci(q->contest_id, "WAEDC"))
       return 1;
@@ -97,11 +95,8 @@ int export_csv(const char *filename) {
   for (int i = 0; i < qso_count; i++) {
     QSO *q = &logbook[i];
 
-    if (q->invalid)
-      continue;
-
-        fprintf(f, "%s,%s,%s,%d,%s,%s,%s,%s,%s\n", q->date, q->utc, q->call,
-          q->freq, q->band, q->mode, q->rst, q->comments, q->country);
+    fprintf(f, "%s,%s,%s,%d,%s,%s,%s,%s,%s\n", q->date, q->utc, q->call,
+            q->freq, q->band, q->mode, q->rst, q->comments, q->country);
   }
 
   fclose(f);
@@ -127,9 +122,6 @@ int export_adif(const char *filename) {
 
   for (int i = 0; i < qso_count; i++) {
     QSO *q = &logbook[i];
-
-    if (q->invalid)
-      continue;
 
     fprintf(f, "<CALL:%zu>%s", strlen(q->call), q->call);
     fprintf(f, "<QSO_DATE:8>%s", q->date);
@@ -208,9 +200,6 @@ int export_cabrillo(const char *filename, const ContestDefinition *definition,
   for (int i = 0; i < qso_count; i++) {
     QSO *q = &logbook[i];
     char sent_fallback[16] = {0};
-
-    if (q->invalid)
-      continue;
 
     const char *sent = cabrillo_sent_exchange_for_qso(
         q, definition, i, sent_fallback, sizeof(sent_fallback));
@@ -327,9 +316,6 @@ int export_cabrillo_with_qtc(const char *filename,
   for (int i = 0; i < qso_count; i++) {
     QSO *q = &logbook[i];
     char sent_fallback[16] = {0};
-
-    if (q->invalid)
-      continue;
 
     const char *sent = cabrillo_sent_exchange_for_qso(
         q, definition, i, sent_fallback, sizeof(sent_fallback));

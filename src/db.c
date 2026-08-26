@@ -1,5 +1,6 @@
 #include "db.h"
 
+#include "config.h"
 #include "qtc.h"
 
 #include <ctype.h>
@@ -857,7 +858,20 @@ static int ensure_open(void) {
     return 0;
 
   const char *env_path = getenv("LOGGER_DB_PATH");
-  const char *path = (env_path && env_path[0]) ? env_path : "logger.db";
+  const char *path = NULL;
+
+  if (env_path && env_path[0]) {
+    path = env_path;
+  } else {
+    (void)config_ensure_runtime_layout();
+    const char *runtime_dir = config_runtime_dir();
+    if (runtime_dir && runtime_dir[0]) {
+      snprintf(db_path, sizeof(db_path), "%s/logger.db", runtime_dir);
+      path = db_path;
+    } else {
+      path = "logger.db";
+    }
+  }
 
   snprintf(db_path, sizeof(db_path), "%s", path);
   db_is_default_path = !(env_path && env_path[0]);
@@ -2158,7 +2172,7 @@ int db_export_csv(const char *filename) {
   char sql[256];
   snprintf(sql, sizeof(sql),
            "SELECT date,utc,call,freq,band,mode,rst,comments,country FROM qso "
-           "WHERE logbook_id = %d AND invalid = 0 ORDER BY id ASC;",
+           "WHERE logbook_id = %d ORDER BY id ASC;",
            logbook_id);
 
   int rc = export_qso_rows(sql, f, 0);
@@ -2195,7 +2209,7 @@ int db_export_adif(const char *filename) {
   char sql[256];
   snprintf(sql, sizeof(sql),
            "SELECT date,utc,call,freq,band,mode,rst,comments,country FROM qso "
-           "WHERE logbook_id = %d AND invalid = 0 ORDER BY id ASC;",
+           "WHERE logbook_id = %d ORDER BY id ASC;",
            logbook_id);
 
   int rc = export_qso_rows(sql, f, 1);
@@ -2919,6 +2933,10 @@ int db_sync_apply_remote_op(const char *op_id, const char *station_id,
     if (sqlite3_step(sel) == SQLITE_ROW && out_global_seq)
       *out_global_seq = sqlite3_column_int64(sel, 0);
     sqlite3_finalize(sel);
+  }
+
+  if (changed || sqlite3_changes(db) > 0) {
+    qso_init();
   }
 
   return changed ? DB_SYNC_APPLY_CHANGED : DB_SYNC_APPLY_ALREADY_PRESENT;

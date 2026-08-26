@@ -132,7 +132,6 @@ static void test_config_loading(const char *tmp_dir) {
       "DXC_PORT = 9000\n"
       "DXC_CALL = SP9XYZ\n"
       "CAT_MODE_FROM_RIG = 1\n"
-      "CONTEST_TX_EXCHANGE = 28\n"
       "CW_ESM = 1\n"
       "NET_STATION_ID = RUN1\n"
       "NET_SHARED_KEY = secret123\n"
@@ -161,8 +160,6 @@ static void test_config_loading(const char *tmp_dir) {
                 "config CAT mode-from-rig parsed");
   expect_int_eq(config.cw_esm_enabled, 1,
                 "config CW_ESM parsed");
-  expect_str_eq(config.contest_tx_exchange, "28",
-                "config contest tx exchange parsed");
   expect_str_eq(config.net_station_id, "RUN1",
                 "config NET_STATION_ID parsed");
   expect_str_eq(config.net_shared_key, "secret123",
@@ -214,8 +211,6 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
   snprintf(config.cat_handshake, sizeof(config.cat_handshake), "%s", "XONXOFF");
   config.cat_mode_from_rig = 1;
   config.cw_esm_enabled = 1;
-  snprintf(config.contest_tx_exchange, sizeof(config.contest_tx_exchange),
-           "%s", "28");
   snprintf(config.net_station_id, sizeof(config.net_station_id), "%s",
            "RUN2");
   snprintf(config.net_shared_key, sizeof(config.net_shared_key), "%s",
@@ -248,7 +243,6 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
   config.cat_handshake[0] = 0;
   config.cat_mode_from_rig = 0;
   config.cw_esm_enabled = 0;
-  config.contest_tx_exchange[0] = 0;
   config.net_station_id[0] = 0;
   config.net_shared_key[0] = 0;
   config.net_auth_token[0] = 0;
@@ -277,8 +271,6 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
                 "saved CAT mode-from-rig restored");
   expect_int_eq(config.cw_esm_enabled, 1,
                 "saved CW_ESM restored");
-  expect_str_eq(config.contest_tx_exchange, "28",
-                "saved contest tx exchange restored");
   expect_str_eq(config.net_station_id, "RUN2",
                 "saved NET_STATION_ID restored");
   expect_str_eq(config.net_shared_key, "secret999",

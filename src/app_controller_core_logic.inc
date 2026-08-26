@@ -668,16 +668,24 @@ static void build_exchange_sent(char *out, size_t out_size) {
     return;
   }
 
-  // Contest rule: only '#' means serial; all other templates are static.
-  if (strcmp(tpl, "#") == 0) {
+  const int is_numeric_serial_template =
+      strcmp(tpl, "#") == 0 || strcmp(tpl, "SERIAL") == 0 ||
+      strcmp(tpl, "SERIAL+LOCATOR") == 0 || strcmp(tpl, "SERIAL_GRID") == 0 ||
+      strcmp(tpl, "#GRID") == 0 || strcmp(tpl, "#LOCATOR") == 0 ||
+      strcmp(tpl, "NR") == 0;
+
+  if (is_numeric_serial_template) {
     const int largest_serial = highest_numeric_exchange_sent();
     const int next_serial = (qso_count > largest_serial ? qso_count : largest_serial) + 1;
-    snprintf(out, out_size, "%d", next_serial);
-    return;
-  }
-
-  if (config.contest_tx_exchange[0]) {
-    snprintf(out, out_size, "%s", config.contest_tx_exchange);
+    if (strcmp(tpl, "SERIAL+LOCATOR") == 0 || strcmp(tpl, "SERIAL_GRID") == 0 ||
+        strcmp(tpl, "#GRID") == 0 || strcmp(tpl, "#LOCATOR") == 0) {
+      if (config.locator[0])
+        snprintf(out, out_size, "%d%s", next_serial, config.locator);
+      else
+        snprintf(out, out_size, "%d", next_serial);
+    } else {
+      snprintf(out, out_size, "%d", next_serial);
+    }
     return;
   }
 
@@ -685,17 +693,6 @@ static void build_exchange_sent(char *out, size_t out_size) {
       strcmp(tpl, "WWL") == 0) {
     snprintf(out, out_size, "%s",
              config.locator[0] ? config.locator : tpl);
-    return;
-  }
-
-  if (strcmp(tpl, "SERIAL+LOCATOR") == 0 || strcmp(tpl, "SERIAL_GRID") == 0 ||
-      strcmp(tpl, "#GRID") == 0 || strcmp(tpl, "#LOCATOR") == 0) {
-    const int largest_serial = highest_numeric_exchange_sent();
-    const int next_serial = (qso_count > largest_serial ? qso_count : largest_serial) + 1;
-    if (config.locator[0])
-      snprintf(out, out_size, "%d%s", next_serial, config.locator);
-    else
-      snprintf(out, out_size, "%d", next_serial);
     return;
   }
 

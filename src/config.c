@@ -1,7 +1,173 @@
 #include "config.h"
 
+#include <dirent.h>
+#include <errno.h>
+#include <pwd.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#ifndef LOGGER_SOURCE_DIR
+#define LOGGER_SOURCE_DIR "."
+#endif
+
+#ifndef LOGGER_BUILD_DIR
+#define LOGGER_BUILD_DIR "."
+#endif
+
 Config config;
 static char config_last_loaded_path[512] = {0};
+static char runtime_config_root[512] = {0};
+static char runtime_config_dir[512] = {0};
+static char runtime_contest_defs_dir[640] = {0};
+static int runtime_paths_ready = 0;
+
+static int has_suffix(const char *name, const char *suffix) {
+  if (!name || !suffix)
+    return 0;
+
+  size_t name_len = strlen(name);
+  size_t suffix_len = strlen(suffix);
+  if (suffix_len == 0 || name_len < suffix_len)
+    return 0;
+
+  return strcmp(name + name_len - suffix_len, suffix) == 0;
+}
+
+static int ensure_dir_exists(const char *path) {
+  if (!path || !path[0])
+    return -1;
+
+  struct stat st;
+  if (stat(path, &st) == 0)
+    return S_ISDIR(st.st_mode) ? 0 : -1;
+
+  if (mkdir(path, 0700) == 0)
+    return 0;
+
+  return errno == EEXIST ? 0 : -1;
+}
+
+static int copy_file(const char *src, const char *dst) {
+  FILE *in = fopen(src, "rb");
+  if (!in)
+    return -1;
+
+  FILE *out = fopen(dst, "wb");
+  if (!out) {
+    fclose(in);
+    return -1;
+  }
+
+  char buf[8192];
+  size_t nread = 0;
+  int rc = 0;
+  while ((nread = fread(buf, 1, sizeof(buf), in)) > 0) {
+    if (fwrite(buf, 1, nread, out) != nread) {
+      rc = -1;
+      break;
+    }
+  }
+
+  if (ferror(in))
+    rc = -1;
+
+  fclose(out);
+  fclose(in);
+  return rc;
+}
+
+static int initialize_runtime_paths(void) {
+  if (runtime_paths_ready)
+    return 0;
+
+  const char *home = getenv("HOME");
+  if (!home || !home[0]) {
+    struct passwd *pw = getpwuid(getuid());
+    if (pw && pw->pw_dir && pw->pw_dir[0])
+      home = pw->pw_dir;
+  }
+
+  if (!home || !home[0])
+    return -1;
+
+  snprintf(runtime_config_root, sizeof(runtime_config_root), "%s/.config", home);
+  snprintf(runtime_config_dir, sizeof(runtime_config_dir), "%s/contest-loger",
+           runtime_config_root);
+  snprintf(runtime_contest_defs_dir, sizeof(runtime_contest_defs_dir),
+           "%s/contest_defs", runtime_config_dir);
+
+  runtime_paths_ready = 1;
+  return 0;
+}
+
+static int maybe_migrate_runtime_file(const char *name) {
+  char target[768] = {0};
+  if (config_resolve_runtime_path(name, target, sizeof(target)) != 0)
+    return -1;
+
+  if (access(target, F_OK) == 0)
+    return 0;
+
+  char candidate0[512] = {0};
+  char candidate1[512] = {0};
+  char candidate2[512] = {0};
+  char candidate3[768] = {0};
+  char candidate4[768] = {0};
+
+  snprintf(candidate0, sizeof(candidate0), "%s", name);
+  snprintf(candidate1, sizeof(candidate1), "./%s", name);
+  snprintf(candidate2, sizeof(candidate2), "../%s", name);
+  snprintf(candidate3, sizeof(candidate3), "%s/%s", LOGGER_BUILD_DIR, name);
+  snprintf(candidate4, sizeof(candidate4), "%s/%s", LOGGER_SOURCE_DIR, name);
+
+  const char *candidates[] = {
+      candidate0,
+      candidate1,
+      candidate2,
+      candidate3,
+      candidate4,
+      NULL,
+  };
+
+  for (size_t i = 0; candidates[i]; i++) {
+    if (access(candidates[i], R_OK) == 0)
+      return copy_file(candidates[i], target);
+  }
+
+  return 0;
+}
+
+static int seed_contest_defs_from_directory(const char *source_dir) {
+  if (!source_dir || !source_dir[0])
+    return -1;
+
+  DIR *dir = opendir(source_dir);
+  if (!dir)
+    return -1;
+
+  struct dirent *entry = NULL;
+  while ((entry = readdir(dir)) != NULL) {
+    if (entry->d_name[0] == '.')
+      continue;
+
+    if (!has_suffix(entry->d_name, ".conf"))
+      continue;
+
+    char src[1024] = {0};
+    char dst[1024] = {0};
+    snprintf(src, sizeof(src), "%s/%s", source_dir, entry->d_name);
+    snprintf(dst, sizeof(dst), "%s/%s", runtime_contest_defs_dir,
+             entry->d_name);
+
+    if (access(dst, F_OK) == 0)
+      continue;
+
+    (void)copy_file(src, dst);
+  }
+
+  closedir(dir);
+  return 0;
+}
 
 /*
  * Trim leading and trailing whitespace from a string in place.
@@ -67,7 +233,6 @@ static void set_defaults(void) {
   strcpy(config.operator_call, "N0CALL");
   strcpy(config.operator_name, "");
   strcpy(config.contest_definition_path, "contest.conf");
-  strcpy(config.contest_tx_exchange, "");
   config.contest_technique = CONTEST_TECH_SO1R;
 
   strcpy(config.cw_device, "/dev/ttyUSB2");
@@ -229,11 +394,6 @@ int config_load(const char *filename) {
 
       config.contest_definition_path[sizeof(config.contest_definition_path) -
                                      1] = 0;
-    } else if (strcmp(key, "CONTEST_TX_EXCHANGE") == 0) {
-      strncpy(config.contest_tx_exchange, value,
-              sizeof(config.contest_tx_exchange));
-
-      config.contest_tx_exchange[sizeof(config.contest_tx_exchange) - 1] = 0;
     } else if (strcmp(key, "CONTEST_TECHNIQUE") == 0) {
       config.contest_technique = contest_technique_from_text(value);
     } else if (strcmp(key, "CW_DEVICE") == 0) {
@@ -394,7 +554,6 @@ int config_save(const char *filename) {
   fprintf(f, "OPERATOR_CALL=%s\n", config.operator_call);
   fprintf(f, "OPERATOR_NAME=%s\n", config.operator_name);
   fprintf(f, "CONTEST_DEF_FILE=%s\n", config.contest_definition_path);
-  fprintf(f, "CONTEST_TX_EXCHANGE=%s\n", config.contest_tx_exchange);
   fprintf(f, "CONTEST_TECHNIQUE=%s\n",
           contest_technique_to_text(config.contest_technique));
   fprintf(f, "\n");
@@ -404,29 +563,6 @@ int config_save(const char *filename) {
   fprintf(f, "CW_AUTO_CONNECT=%d\n", config.cw_auto_connect ? 1 : 0);
   fprintf(f, "CW_ESM=%d\n", config.cw_esm_enabled ? 1 : 0);
   fprintf(f, "\n");
-  fprintf(f, "# Network Basic\n");
-  fprintf(f, "NET_ENABLED=%d\n", config.net_enabled ? 1 : 0);
-  fprintf(f, "NET_ROLE=%s\n", config.net_role);
-  fprintf(f, "NET_STATION_ID=%s\n", config.net_station_id);
-  fprintf(f, "NET_SERVER_HOST=%s\n", config.net_server_host);
-  fprintf(f, "NET_SERVER_PORT=%d\n", config.net_server_port);
-  fprintf(f, "\n");
-  fprintf(f, "# Network Security\n");
-  fprintf(f, "NET_AUTH_TOKEN=%s\n", config.net_auth_token);
-  fprintf(f, "NET_SHARED_KEY=%s\n", config.net_shared_key);
-  fprintf(f, "NET_TLS_CERT_FILE=%s\n", config.net_tls_cert_file);
-  fprintf(f, "NET_TLS_KEY_FILE=%s\n", config.net_tls_key_file);
-  fprintf(f, "NET_TLS_PEER_FINGERPRINT=%s\n", config.net_tls_peer_fingerprint);
-  fprintf(f, "NET_TLS=%d\n", config.net_tls ? 1 : 0);
-  fprintf(f, "\n");
-  fprintf(f, "# Network Runtime\n");
-  fprintf(f, "NET_SYNC_INTERVAL_MS=%d\n", config.net_sync_interval_ms);
-  fprintf(f, "NET_HEARTBEAT_SEC=%d\n", config.net_heartbeat_sec);
-  fprintf(f, "NET_RETRY_MIN_MS=%d\n", config.net_retry_min_ms);
-  fprintf(f, "NET_RETRY_MAX_MS=%d\n", config.net_retry_max_ms);
-  fprintf(f, "NET_RATE_LIMIT_WINDOW_SEC=%d\n", config.net_rate_limit_window_sec);
-  fprintf(f, "NET_RATE_LIMIT_BURST=%d\n", config.net_rate_limit_burst);
-  fprintf(f, "NET_MAX_FRAME_BYTES=%d\n", config.net_max_frame_bytes);
   fprintf(f, "\n");
   fprintf(f, "# Live Upload\n");
   fprintf(f, "LIVE_UPLOAD_ENABLED=%d\n", config.live_upload_enabled ? 1 : 0);
@@ -438,6 +574,134 @@ int config_save(const char *filename) {
   fprintf(f, "\n");
 
   fclose(f);
+  return 0;
+}
+
+int config_ensure_runtime_layout(void) {
+  if (initialize_runtime_paths() != 0)
+    return -1;
+
+  if (ensure_dir_exists(runtime_config_root) != 0)
+    return -1;
+  if (ensure_dir_exists(runtime_config_dir) != 0)
+    return -1;
+  if (ensure_dir_exists(runtime_contest_defs_dir) != 0)
+    return -1;
+
+  (void)maybe_migrate_runtime_file("logger.conf");
+  (void)maybe_migrate_runtime_file("cw_keys.ini");
+  (void)maybe_migrate_runtime_file("MASTER.SCP");
+  (void)maybe_migrate_runtime_file("wl_cty.dat");
+
+  char contest_defs_source0[768] = {0};
+  char contest_defs_source1[768] = {0};
+  char contest_defs_source2[768] = {0};
+  snprintf(contest_defs_source0, sizeof(contest_defs_source0),
+           "%s/contest_defs", LOGGER_SOURCE_DIR);
+  snprintf(contest_defs_source1, sizeof(contest_defs_source1), "%s", "contest_defs");
+  snprintf(contest_defs_source2, sizeof(contest_defs_source2), "%s", "../contest_defs");
+
+  (void)seed_contest_defs_from_directory(contest_defs_source0);
+  (void)seed_contest_defs_from_directory(contest_defs_source1);
+  (void)seed_contest_defs_from_directory(contest_defs_source2);
+
+  return 0;
+}
+
+const char *config_runtime_dir(void) {
+  if (initialize_runtime_paths() != 0)
+    return NULL;
+  return runtime_config_dir;
+}
+
+const char *config_runtime_contest_defs_dir(void) {
+  if (initialize_runtime_paths() != 0)
+    return NULL;
+  return runtime_contest_defs_dir;
+}
+
+int config_resolve_runtime_path(const char *name, char *out, size_t out_size) {
+  if (!name || !name[0] || !out || out_size < 2)
+    return -1;
+
+  if (name[0] == '/') {
+    snprintf(out, out_size, "%s", name);
+    return 0;
+  }
+
+  if (access(name, R_OK) == 0) {
+    snprintf(out, out_size, "%s", name);
+    return 0;
+  }
+
+  if (initialize_runtime_paths() != 0)
+    return -1;
+
+  snprintf(out, out_size, "%s/%s", runtime_config_dir, name);
+  return 0;
+}
+
+int config_resolve_contest_path(const char *path, char *out, size_t out_size) {
+  if (!path || !path[0] || !out || out_size < 2)
+    return -1;
+
+  if (path[0] == '/') {
+    snprintf(out, out_size, "%s", path);
+    return 0;
+  }
+
+  char cwd[1024] = {0};
+  if (getcwd(cwd, sizeof(cwd)) != NULL) {
+    char cwd_candidate[1024] = {0};
+    snprintf(cwd_candidate, sizeof(cwd_candidate), "%s/%s", cwd, path);
+
+    if (access(path, R_OK) == 0) {
+      char resolved_path[1024] = {0};
+      if (realpath(path, resolved_path) != NULL) {
+        snprintf(out, out_size, "%s", resolved_path);
+        return 0;
+      }
+      snprintf(out, out_size, "%s", cwd_candidate);
+      return 0;
+    }
+
+    if (access(cwd_candidate, R_OK) == 0) {
+      snprintf(out, out_size, "%s", cwd_candidate);
+      return 0;
+    }
+
+    char trial[1024];
+    snprintf(trial, sizeof(trial), "%s", cwd);
+    for (int depth = 0; depth < 12; depth++) {
+      snprintf(cwd_candidate, sizeof(cwd_candidate), "%s/%s", trial, path);
+      if (access(cwd_candidate, R_OK) == 0) {
+        snprintf(out, out_size, "%s", cwd_candidate);
+        return 0;
+      }
+
+      char *slash = strrchr(trial, '/');
+      if (!slash || strcmp(trial, "/") == 0)
+        break;
+      *slash = 0;
+      if (trial[0] == 0)
+        snprintf(trial, sizeof(trial), "/");
+    }
+  }
+
+  if (initialize_runtime_paths() != 0)
+    return -1;
+
+  if (strncmp(path, "contest_defs/", 13) == 0) {
+    snprintf(out, out_size, "%s/%s", runtime_config_dir, path);
+    return 0;
+  }
+
+  if (!strchr(path, '/')) {
+    snprintf(out, out_size, "%s/%s", runtime_contest_defs_dir, path);
+    return 0;
+  }
+
+  snprintf(out, out_size, "%s/%s", runtime_config_dir, path);
   return 0;
 }
 
@@ -454,5 +718,14 @@ const char *config_effective_operator_call(void) {
 int config_save_active(void) {
   if (config_last_loaded_path[0])
     return config_save(config_last_loaded_path);
+
+  if (access("logger.conf", W_OK) == 0 || access("logger.conf", F_OK) == 0)
+    return config_save("logger.conf");
+
+  char runtime_logger_conf[768] = {0};
+  if (config_resolve_runtime_path("logger.conf", runtime_logger_conf,
+                                  sizeof(runtime_logger_conf)) == 0)
+    return config_save(runtime_logger_conf);
+
   return config_save("logger.conf");
 }

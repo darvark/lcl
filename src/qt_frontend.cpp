@@ -67,7 +67,6 @@ extern "C" {
 #include "db.h"
 #include "dxcluster.h"
 #include "globals.h"
-#include "net_sync.h"
 #include "qso.h"
 #include "qtc.h"
 #include "stats.h"
@@ -258,6 +257,46 @@ constexpr std::array<ContestPreset, 5> kContestPresets = {{
  *   4. <app_dir>/../../contest_defs/
  */
 static std::vector<std::pair<QString, QString>> discover_contest_presets() {
+  const char *runtime_defs = config_runtime_contest_defs_dir();
+  if (runtime_defs && runtime_defs[0]) {
+    QDir runtime_dir(QString::fromLocal8Bit(runtime_defs));
+    if (runtime_dir.exists() &&
+        !runtime_dir.entryList({"*.conf"}, QDir::Files).isEmpty()) {
+      const QStringList files =
+          runtime_dir.entryList({"*.conf"}, QDir::Files, QDir::Name);
+
+      std::vector<std::pair<QString, QString>> result;
+      result.reserve((size_t)files.size());
+
+      for (const QString &filename : files) {
+        const QString abs_path =
+            QFileInfo(runtime_dir.filePath(filename)).canonicalFilePath();
+        const QByteArray abs_bytes = abs_path.toLocal8Bit();
+
+        ContestDefinition def;
+        char err[64] = {0};
+        QString label;
+        if (contest_definition_load(abs_bytes.constData(), &def, err,
+                                    sizeof(err)) == 0 &&
+            def.name[0]) {
+          label = QString::fromLatin1(def.name);
+        } else {
+          label = QFileInfo(filename).completeBaseName();
+        }
+
+        result.emplace_back(label, abs_path);
+      }
+
+      std::sort(result.begin(), result.end(),
+                [](const std::pair<QString, QString> &a,
+                   const std::pair<QString, QString> &b) {
+                  return a.first.compare(b.first, Qt::CaseInsensitive) < 0;
+                });
+
+      return result;
+    }
+  }
+
   /* Search for contest_defs/ relative to the binary location only.
    * CWD is intentionally excluded so the list is always consistent
    * regardless of where the application was launched from. */

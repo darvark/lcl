@@ -1,4 +1,5 @@
 #include "scp.h"
+#include "config.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -93,14 +94,30 @@ int scp_search(const char *partial, char results[][SCP_CALL_LEN], int max) {
       found++;
     }
   }
+
+  /* Return only the number of entries actually written to results. */
+  if (found > max)
+    found = max;
+
   return found;
 }
 
 /* ---------------------------------------------------------- */
 
 int scp_download_latest(const char *filename) {
-  const char *target  = (filename && filename[0]) ? filename : "MASTER.SCP";
-  const char *tmp     = "MASTER.SCP.tmp";
+  char target_path[512] = {0};
+  char tmp[512] = {0};
+  const char *target = filename && filename[0] ? filename : NULL;
+
+  if (!target) {
+    (void)config_ensure_runtime_layout();
+    if (config_resolve_runtime_path("MASTER.SCP", target_path, sizeof(target_path)) == 0)
+      target = target_path;
+    else
+      target = "MASTER.SCP";
+  }
+
+  snprintf(tmp, sizeof(tmp), "%s.tmp", target);
 
   char cmd[512];
 

@@ -69,14 +69,12 @@ Pola `CAT2_*` działają tak samo jak `CAT_*`, ale dotyczą drugiego radia.
 | Klucz | Typ / wartości | Domyślna wartość | Opis |
 | --- | --- | --- | --- |
 | `CONTEST_DEF_FILE` | ścieżka lub nazwa pliku | `contest.conf` | Definicja zawodów. Może wskazywać plik lokalny albo preset z `contest_defs/`. |
-| `CONTEST_TX_EXCHANGE` | tekst | pusty | Nadpisuje nadawaną wymianę tylko wtedy, gdy `EXCHANGE_SENT` w definicji zawodów jest stałym tekstem. |
 | `CONTEST_TECHNIQUE` | `SO1R`, `SO2V`, `SO2R` | `SO1R` | Technika operatorska. |
 
 Ważna reguła dla wymiany nadawanej:
 
 - `EXCHANGE_SENT=#` zawsze oznacza numer inkrementowany od `1` w górę.
-- W takim trybie `CONTEST_TX_EXCHANGE` jest ignorowane.
-- `CONTEST_TX_EXCHANGE` ma sens tylko dla statycznych szablonów typu `ITU`, `CQZONE`, `28`.
+- nadawana wymiana jest wyznaczana wyłącznie przez definicję zawodów, bez osobnego nadpisania w `logger.conf`.
 
 ### CW keyer
 
@@ -120,7 +118,6 @@ OPERATOR_CALL=SP6MI
 OPERATOR_NAME=
 # W GUI: Ctrl+O zmienia aktywnego operatora, a pasek statusu pokazuje OP: SP6MI
 CONTEST_DEF_FILE=contest_defs/cq_wpx_cw.conf
-CONTEST_TX_EXCHANGE=
 CONTEST_TECHNIQUE=SO2V
 
 CW_DEVICE=/dev/ttyUSB1

@@ -36,7 +36,6 @@ typedef struct {
   char operator_call[32];
   char operator_name[64];
   char contest_definition_path[256];
-  char contest_tx_exchange[32];
   ContestTechnique contest_technique;
 
   char cw_device[128];
@@ -99,5 +98,20 @@ int config_save_active(void);
 
 /* Return active operator callsign for logging: explicit operator_call or station_call fallback. */
 const char *config_effective_operator_call(void);
+
+/* Ensure runtime layout under $HOME/.config/contest-loger exists. */
+int config_ensure_runtime_layout(void);
+
+/* Return runtime base directory path, or NULL when unavailable. */
+const char *config_runtime_dir(void);
+
+/* Return runtime contest definitions directory path, or NULL when unavailable. */
+const char *config_runtime_contest_defs_dir(void);
+
+/* Build an absolute path for a runtime file located in config_runtime_dir(). */
+int config_resolve_runtime_path(const char *name, char *out, size_t out_size);
+
+/* Resolve contest definition path into runtime contest_defs when relative. */
+int config_resolve_contest_path(const char *path, char *out, size_t out_size);
 
 #endif

@@ -1,5 +1,7 @@
 # Siec Multi-Station z Centralnym Logiem - Dokument Techniczny
 
+> Dokument archiwalny. Wersja produkcyjna aplikacji nie zawiera już wspólnego logu sieciowego ani synchronizacji klient-serwer. Ten plik zachowano jako źródło historyczne dla poprzedniego projektu.
+
 ## Cel
 
 Celem jest dodanie pracy wielu stacji w topologii gwiazdy:

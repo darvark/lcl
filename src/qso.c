@@ -3,7 +3,6 @@
 #include "contest.h"
 #include "db.h"
 #include "config.h"
-#include "net_sync.h"
 
 #include <stdlib.h>
 #include <strings.h>
@@ -125,46 +124,15 @@ static void sanitize_text(char *dst, size_t dst_size, const char *src) {
 }
 
 static void append_sync_pending_status(char *status, size_t status_size) {
-  if (!status || status_size < 4 || !config.net_enabled)
-    return;
-
-  int pending = 0;
-  if (db_sync_get_pending_outbox_count(&pending) != 0)
-    pending = -1;
-
-  size_t used = strlen(status);
-  if (used >= status_size - 1)
-    return;
-
-  if (pending >= 0) {
-    (void)snprintf(status + used, status_size - used, " SYNC:PENDING:%d",
-                   pending);
-  } else {
-    (void)snprintf(status + used, status_size - used, " SYNC:PENDING:?");
-  }
+  (void)status;
+  (void)status_size;
 }
 
-static int current_contest_duplicate_rule_enabled(void) {
-  if (!config.contest_definition_path[0])
-    return 0;
-
-  ContestDefinition def;
-  char err[128] = {0};
-  if (contest_definition_load(config.contest_definition_path, &def, err,
-                              sizeof(err)) != 0)
-    return 0;
-
-  return def.duplicate_qso != 0;
-}
-
-static int qso_is_duplicate_under_active_contest(const char *call,
-                                                const char *band,
-                                                const char *contest_id,
-                                                int exclude_index) {
-  if (!call || !call[0] || !band || !band[0])
-    return 0;
-
-  if (!current_contest_duplicate_rule_enabled())
+static int qso_is_duplicate_call_band_mode(const char *call,
+                                           const char *band,
+                                           const char *mode,
+                                           int exclude_index) {
+  if (!call || !call[0] || !band || !band[0] || !mode || !mode[0])
     return 0;
 
   for (int i = 0; i < qso_count; i++) {
@@ -180,8 +148,11 @@ static int qso_is_duplicate_under_active_contest(const char *call,
       continue;
     if (strcmp(existing->band, band) != 0)
       continue;
-    if (contest_id && contest_id[0] && existing->contest_id[0] &&
-        strcmp(existing->contest_id, contest_id) != 0)
+    char existing_mode[sizeof(existing->mode)] = {0};
+    char candidate_mode[16] = {0};
+    snprintf(existing_mode, sizeof(existing_mode), "%s", existing->mode);
+    snprintf(candidate_mode, sizeof(candidate_mode), "%s", mode);
+    if (strcasecmp(existing_mode, candidate_mode) != 0)
       continue;
     return 1;
   }
@@ -548,25 +519,9 @@ int qso_add_contest_fields(const char *call, int freq_khz, const char *rst,
   char final_exchange_sent[32] = {0};
   sanitize_text(final_exchange_sent, sizeof(final_exchange_sent), exchange_sent);
 
-  const int needs_remote_serial =
-      config.net_enabled && strcasecmp(config.net_role, "client") == 0 &&
-      (!final_exchange_sent[0] || strcmp(final_exchange_sent, "0") == 0 ||
-       strcmp(final_exchange_sent, "-") == 0);
-
-  if (needs_remote_serial) {
-    int reserved_serial = 0;
-    if (net_sync_reserve_serial_remote_ex(
-            &reserved_serial, serial_reservation_id,
-            sizeof(serial_reservation_id)) != 0 ||
-        reserved_serial <= 0 || !serial_reservation_id[0]) {
-      snprintf(status, status_size,
-               "Number server unavailable: cannot reserve serial");
-      return -1;
-    }
-
-    snprintf(final_exchange_sent, sizeof(final_exchange_sent), "%d",
-             reserved_serial);
-  }
+  const int needs_remote_serial = 0;
+  (void)serial_reservation_id;
+  (void)needs_remote_serial;
 
   int idx = qso_add_fields(call, freq_khz, rst, mode, comments, status,
                            status_size);
@@ -597,8 +552,7 @@ int qso_add_contest_fields(const char *call, int freq_khz, const char *rst,
     points = 0;
   q->points = points;
 
-  if (qso_is_duplicate_under_active_contest(q->call, q->band, q->contest_id,
-                                           idx)) {
+  if (qso_is_duplicate_call_band_mode(q->call, q->band, q->mode, idx)) {
     q->points = 0;
     q->invalid = true;
     db_update_qso_invalid(q->db_id, 1);
@@ -606,10 +560,6 @@ int qso_add_contest_fields(const char *call, int freq_khz, const char *rst,
         q->db_id, q->exchange_sent, q->exchange_recv, q->operator_mode,
         q->contest_id, q->radio_nr, q->points);
     touch_sync_metadata(q);
-
-    if (updated == 0 && serial_reservation_id[0]) {
-      (void)net_sync_commit_serial_remote(serial_reservation_id, q->qso_uid);
-    }
 
     snprintf(status, status_size, "QSO DUPE");
     append_sync_pending_status(status, status_size);
@@ -620,10 +570,6 @@ int qso_add_contest_fields(const char *call, int freq_khz, const char *rst,
       q->db_id, q->exchange_sent, q->exchange_recv, q->operator_mode,
       q->contest_id, q->radio_nr, q->points);
   touch_sync_metadata(q);
-
-  if (updated == 0 && serial_reservation_id[0]) {
-    (void)net_sync_commit_serial_remote(serial_reservation_id, q->qso_uid);
-  }
 
   snprintf(status, status_size, "QSO OK TX:%s RX:%s",
            q->exchange_sent[0] ? q->exchange_sent : "-",

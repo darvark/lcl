@@ -24,7 +24,6 @@ Krótka ściąga do codziennej pracy z programem.
 | `Menu → Update SCP` | aktualizacja bazy Check Partial (`MASTER.SCP`) |
 | `Ctrl+F8` | konfiguracja zawodów |
 | `Ctrl+Shift+F8` | konfiguracja stacji |
-| `Ctrl+Shift+F9` | konfiguracja sieci |
 | `Ctrl+F9` | pokaż/ukryj panel CAT/CW |
 | `Ctrl+Up / Ctrl+Down` | poprzedni/następny spot w bandmapie + strojenie |
 | `Ctrl+F10` | wyjście |
@@ -93,59 +92,16 @@ Ważne:
 | `technique SO2V` | ustaw SO2V |
 | `technique SO2R` | ustaw SO2R |
 
-## Konfiguracja sieci
+## Aktualny status sieci
 
-Okno `Menu -> Network Config` pozwala ustawić podstawowe parametry pracy sieciowej:
-
-- `NET_ENABLED`: czy sync ma być aktywny po starcie,
-- `NET_STATION_ID`: nazwa / identyfikator stacji,
-- `NET_ROLE`: `client` albo `server`,
-- `NET_SERVER_HOST`: adres serwera centralnego tylko dla trybu `client`,
-- `NET_SERVER_PORT`: port TCP serwera; w trybie `server` to port nasłuchu aplikacji,
-- `NET_TLS`: włączenie warstwy TLS,
-- `NET_SHARED_KEY`: wspólny klucz autoryzacji aplikacyjnej,
-- `NET_TLS_PEER_FINGERPRINT`: fingerprint certyfikatu serwera dla pinningu klienta.
-
-Ważne:
-
-- po zapisaniu okna konfiguracji sync jest restartowany automatycznie,
-- jeśli `NET_ENABLED=0`, ustawienia są tylko zapisywane, ale sync pozostaje wyłączony,
-- przy pierwszym połączeniu TLS fingerprint serwera może zostać zapisany automatycznie do `logger.conf`.
-
-## Sekcje NET_* w logger.conf
-
-Pola sieciowe są zapisywane w osobnych sekcjach:
-
-- `# Network Basic`
-	- `NET_ENABLED`
-	- `NET_ROLE`
-	- `NET_STATION_ID`
-	- `NET_SERVER_HOST`
-	- `NET_SERVER_PORT`
-- `# Network Security`
-	- `NET_AUTH_TOKEN`
-	- `NET_SHARED_KEY`
-	- `NET_TLS_CERT_FILE`
-	- `NET_TLS_KEY_FILE`
-	- `NET_TLS_PEER_FINGERPRINT`
-	- `NET_TLS`
-- `# Network Runtime`
-	- `NET_SYNC_INTERVAL_MS`
-	- `NET_HEARTBEAT_SEC`
-	- `NET_RETRY_MIN_MS`
-	- `NET_RETRY_MAX_MS`
-	- `NET_RATE_LIMIT_WINDOW_SEC`
-	- `NET_RATE_LIMIT_BURST`
-	- `NET_MAX_FRAME_BYTES`
+Funkcjonalność sieci z centralnym logiem została usunięta z aktywnej aplikacji. Nie ma już aktywnej konfiguracji `NET_*`, synchronizacji klient-serwer ani UI sieciowego.
 
 ## Co sprawdzić, gdy coś nie działa
 
 - brak CTY: sprawdź `wl_cty.dat`
 - brak CAT: sprawdź `CAT_*` albo `CAT2_*`
-- zła wymiana contestowa: sprawdź `CONTEST_DEF_FILE`, `EXCHANGE_SENT`, `CONTEST_TX_EXCHANGE`
+- zła wymiana contestowa: sprawdź `CONTEST_DEF_FILE` i `EXCHANGE_SENT`
 - brak CW: sprawdź `CW_DEVICE`, `CW_KEYER_LINE`, `cw_keys.ini`
-- brak sync: sprawdź `NET_ENABLED`, `NET_ROLE`, `NET_SERVER_HOST`, `NET_SERVER_PORT`
-- błąd TLS/pinning: sprawdź `NET_TLS`, `NET_SHARED_KEY`, `NET_TLS_PEER_FINGERPRINT`
 
 ## UI pod ręką
 

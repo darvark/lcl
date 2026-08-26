@@ -9,22 +9,27 @@ Dodatkowa dokumentacja:
 - [docs/klawiszologia.md](docs/klawiszologia.md)
 - [docs/przykladowe-konfiguracje.md](docs/przykladowe-konfiguracje.md)
 - [docs/sciaga-operatora.md](docs/sciaga-operatora.md)
-- [docs/siec-centralny-log.md](docs/siec-centralny-log.md)
-- [docs/siec-centralny-log-projekt.md](docs/siec-centralny-log-projekt.md)
+- [docs/siec-centralny-log.md](docs/siec-centralny-log.md) (archiwalna dokumentacja historyczna)
+- [docs/siec-centralny-log-projekt.md](docs/siec-centralny-log-projekt.md) (archiwalna dokumentacja historyczna)
 
 ## Status pracy sieciowej
 
-Topologia gwiazdy z centralnym logiem jest już zaimplementowana w kodzie, a nie tylko opisana w dokumentacji. Aktualny model obejmuje:
+Funkcjonalność pracy w sieci z wspólnym logiem została usunięta z aktywnej wersji aplikacji. Aktualnie program działa jako lokalny logger konkursowy bez synchronizacji klient-serwer, centralnego logu i funkcji sieciowych.
 
-- serwer centralny z nasłuchiwaniem TCP oraz sesjami klienta,
-- klienta z lokalnym outboxem, retry/backoff i synchronizacją catch-up,
-- globalny dziennik operacji, `station_seq` i `global_seq`,
-- centralną rezerwację seriali contestowych oraz walidację logbooków,
-- utrwalanie identyfikatora `qso_uid` i odrzucanie konfliktów duplikatów,
-- opcjonalne TLS i mechanizmy limitowania ruchu oraz timeoutów sesji,
-- testy regresyjne i jednostkowe uruchamiane w WSL.
+Poniższe dokumenty sieciowe są zachowane jako archiwum historyczne i nie opisują obecnej konfiguracji runtime ani aktywnego kodu produktu.
 
-Implementacja jest już dostatecznie dojrzała, aby traktować ten dokument jako opis aktualnego działania systemu, a nie wyłącznie planu rozwoju.
+## Testowanie i konfiguracja runtime
+
+Projekt ma dwa obszary konfiguracji: plik lokalny `logger.conf` w bieżącym katalogu roboczym oraz katalog runtime w `$HOME/.config/contest-logger`. W praktyce aplikacja priorytetowo czyta plik z katalogu roboczego, a dopiero gdy go nie ma, korzysta z runtime. To pozwala uruchamiać testy izolowane w katalogach tymczasowych bez ładowania globalnych ustawień repozytorium.
+
+W środowisku WSL testy należy uruchamiać przez:
+
+```bash
+cd /home/miwaniuk/test_scripts/lcl-main
+cmake -S . -B build
+cmake --build build -- -j2
+ctest --test-dir build --output-on-failure -R unit_tests
+```
 
 ## Architektura
 
@@ -148,8 +153,8 @@ Obsługa zawodów jest podzielona czysto: `contest.c` wczytuje definicje w stylu
 - Lokalne wyszukiwanie DXCC z bazy CTY
 - Wyświetlanie statusu i spotów DXCluster z bezpieczną ścieżką zatrzymania
 - Nawigacja po bandmapie klawiaturą (`Ctrl+Up`/`Ctrl+Down`) i strojenie na aktywację spotu
-- Oznaczanie nieprawidłowych QSO do wykluczenia z eksportu
-- Eksport CSV/ADIF z komentarzami i własną nazwą pliku ADIF
+- Oznaczanie duplikatów jako `invalid` bez pomijania ich w eksporcie
+- Eksport CSV/ADIF z komentarzami i własną nazwą pliku ADIF, w tym wszystkie kontakty, także duplikaty
 - Eksport Cabrillo (`exportcab`) z metadanymi kategorii z definicji zawodów
 - Parser definicji zawodów w stylu DXLog (`contest <plik>`) z deklaracjami pól
 - Import surowych definicji DXLog do znormalizowanego lokalnego formatu
@@ -334,7 +339,7 @@ Najważniejsze zasady:
 
 - `CONTEST_DEF_FILE` może wskazywać lokalny plik lub preset z `contest_defs/`
 - `EXCHANGE_SENT=#` zawsze oznacza numerację inkrementalną `1`, `2`, `3`...
-- `CONTEST_TX_EXCHANGE` dotyczy tylko statycznej nadawanej wymiany i jest ignorowany przy `EXCHANGE_SENT=#`
+- nadawana wymiana jest wyłącznie generowana z definicji zawodów; nie ma już przeładowania z `logger.conf`
 
 ## Obsługa
 

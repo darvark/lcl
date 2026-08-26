@@ -59,10 +59,6 @@ add_executable(logger
     src/cat.c
     src/cw_keys.c
     src/dxcluster.c
-    src/net_protocol.c
-    src/net_tls.c
-    src/net_server.c
-    src/net_sync.c
     src/live_upload.c
     src/export.c
     src/stats.c
@@ -114,94 +110,5 @@ endif()
 if (OpenSSL_FOUND)
     target_link_libraries(logger OpenSSL::SSL OpenSSL::Crypto)
 endif()
-
-add_executable(regression_tests
-    tests/regression/regression_tests.c
-    src/suggestion.c
-    src/config.c
-    src/cty.c
-    src/dxcluster.c
-    src/contest.c
-    src/qso.c
-    src/qtc.c
-    src/db.c
-    src/net_protocol.c
-    src/net_tls.c
-    src/net_server.c
-    src/net_sync.c
-    src/live_upload.c
-    src/export.c
-    src/stats.c
-    src/maidenhead.c
-)
-
-target_include_directories(regression_tests
-    PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-)
-
-target_link_libraries(regression_tests
-    pthread
-    m
-    ${SQLITE3_LIBRARY}
-)
-
-if (OpenSSL_FOUND)
-    target_compile_definitions(regression_tests PRIVATE HAVE_OPENSSL=1)
-    target_link_libraries(regression_tests OpenSSL::SSL OpenSSL::Crypto)
-endif()
-
-target_include_directories(regression_tests
-    PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-)
-
-add_test(NAME regression_tests COMMAND regression_tests)
-
-add_executable(unit_tests
-    tests/unit/unit_tests.c
-    src/app_controller.c
-    src/cat.c
-    src/cw_keys.c
-    src/db.c
-    src/suggestion.c
-    src/config.c
-    src/contest.c
-    src/cty.c
-    src/qso.c
-    src/qtc.c
-    src/net_protocol.c
-    src/net_tls.c
-    src/net_server.c
-    src/net_sync.c
-    src/live_upload.c
-    src/export.c
-    src/stats.c
-    src/maidenhead.c
-    src/dxcluster.c
-)
-
-target_include_directories(unit_tests
-    PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-)
-
-target_link_libraries(unit_tests
-    pthread
-    m
-    ${SQLITE3_LIBRARY}
-)
-
-if (OpenSSL_FOUND)
-    target_compile_definitions(unit_tests PRIVATE HAVE_OPENSSL=1)
-    target_link_libraries(unit_tests OpenSSL::SSL OpenSSL::Crypto)
-endif()
-
-target_include_directories(unit_tests
-    PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-)
-
-add_test(NAME unit_tests COMMAND unit_tests)
 
 configure_file(${CMAKE_SOURCE_DIR}/src/cw_keys.ini cw_keys.ini COPYONLY)

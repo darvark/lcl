@@ -5,6 +5,10 @@ static int resolve_runtime_support_path(const char *path, char *resolved,
 
   resolved[0] = 0;
 
+  if (config_resolve_runtime_path(path, resolved, resolved_size) == 0 &&
+      access(resolved, R_OK) == 0)
+    return 0;
+
   const char *candidates[] = {
       path,
       "logger.conf",
@@ -35,82 +39,8 @@ static int resolve_runtime_support_path(const char *path, char *resolved,
 }
 
 static void render_sync_status(void) {
-  int pending = 0;
-  int failed = 0;
-
-  if (db_sync_get_pending_outbox_count(&pending) != 0 ||
-      db_sync_get_failed_outbox_count(&failed) != 0) {
-    snprintf(status_text, sizeof(status_text), "SYNC status unavailable");
-    return;
-  }
-
-  NetSyncStatus sync_state;
-  memset(&sync_state, 0, sizeof(sync_state));
-  net_sync_get_status(&sync_state);
-
-  if (config.net_enabled && !sync_state.connected) {
-    snprintf(status_text, sizeof(status_text),
-             "NET OFFLINE - local queue: %d failed=%d fs=%d", pending, failed,
-             sync_state.failure_streak);
-    snprintf(info_text, sizeof(info_text),
-             "station=%.20s retry=%d err=%.48s",
-             sync_state.station_id[0] ? sync_state.station_id : "-",
-             sync_state.reconnect_count,
-             sync_state.last_error[0] ? sync_state.last_error : "-");
-    return;
-  }
-
-  snprintf(status_text, sizeof(status_text),
-           "SYNC pending=%d failed=%d connected=%d tls=%d retry=%d fs=%d",
-           pending, failed, sync_state.connected ? 1 : 0,
-           sync_state.tls_enabled ? 1 : 0, sync_state.reconnect_count,
-           sync_state.failure_streak);
-  snprintf(info_text, sizeof(info_text),
-           "station=%.20s seq=%lld hb=%.20s ok=%.20s err=%.32s",
-           sync_state.station_id[0] ? sync_state.station_id : "-",
-           sync_state.last_pulled_global_seq,
-           sync_state.last_heartbeat_utc[0] ? sync_state.last_heartbeat_utc : "-",
-           sync_state.last_success_utc[0] ? sync_state.last_success_utc : "-",
-           sync_state.last_error[0] ? sync_state.last_error : "-");
-}
-
-static int net_polling_running = 0;
-static pthread_t net_poll_thread;
-
-static void *net_poll_worker(void *arg) {
-  (void)arg;
-
-  while (net_polling_running) {
-    (void)db_sync_expire_serial_reservations();
-    (void)net_sync_poll_once();
-
-    int sleep_ms = config.net_sync_interval_ms;
-    if (sleep_ms < 100)
-      sleep_ms = 100;
-    if (sleep_ms > 60000)
-      sleep_ms = 60000;
-
-    usleep((useconds_t)sleep_ms * 1000U);
-  }
-
-  return NULL;
-}
-
-static void start_net_poll_loop(void) {
-  if (net_polling_running)
-    return;
-
-  net_polling_running = 1;
-  if (pthread_create(&net_poll_thread, NULL, net_poll_worker, NULL) != 0)
-    net_polling_running = 0;
-}
-
-static void stop_net_poll_loop(void) {
-  if (!net_polling_running)
-    return;
-
-  net_polling_running = 0;
-  pthread_join(net_poll_thread, NULL);
+  snprintf(status_text, sizeof(status_text), "SYNC disabled");
+  snprintf(info_text, sizeof(info_text), "shared log removed from build");
 }
 
 static int process_command(const char *cmd) {
@@ -141,30 +71,9 @@ static int process_command(const char *cmd) {
   snprintf(normalized_command, sizeof(normalized_command), "%s", command);
   snprintf(normalized_arg, sizeof(normalized_arg), "%s", arg);
 
-  if (strcmp(command, "netsync") == 0) {
-    if (strcmp(arg, "catchup") == 0)
-      snprintf(normalized_arg, sizeof(normalized_arg), "%s", "sync");
-    else if (strcmp(arg, "on") != 0 && strcmp(arg, "off") != 0 &&
-             strcmp(arg, "status") != 0 && strcmp(arg, "sync") != 0) {
-      snprintf(status_text, sizeof(status_text),
-               "Usage: netsync on|off|status|catchup");
-      return 1;
-    }
-
-    snprintf(normalized_command, sizeof(normalized_command), "%s", "net");
-  } else if (strcmp(command, "netserver") == 0) {
-    if (strcmp(arg, "start") == 0) {
-      snprintf(config.net_role, sizeof(config.net_role), "%s", "server");
-      snprintf(normalized_command, sizeof(normalized_command), "%s", "net");
-      snprintf(normalized_arg, sizeof(normalized_arg), "%s", "on");
-    } else if (strcmp(arg, "stop") == 0) {
-      snprintf(normalized_command, sizeof(normalized_command), "%s", "net");
-      snprintf(normalized_arg, sizeof(normalized_arg), "%s", "off");
-    } else {
-      snprintf(status_text, sizeof(status_text),
-               "Usage: netserver start|stop");
-      return 1;
-    }
+  if (strcmp(command, "netsync") == 0 || strcmp(command, "netserver") == 0) {
+    snprintf(status_text, sizeof(status_text), "Network sync removed");
+    return 1;
   }
 
   if (strcmp(normalized_command, "export") == 0) {
@@ -198,71 +107,14 @@ static int process_command(const char *cmd) {
 
   if (strcmp(normalized_command, "sync") == 0 ||
       strcmp(normalized_command, "syncstatus") == 0) {
-    if (strcmp(normalized_command, "sync") == 0)
-      (void)net_sync_poll_once();
-    render_sync_status();
+    snprintf(status_text, sizeof(status_text), "SYNC disabled");
     return 1;
   }
 
-  if (strcmp(normalized_command, "net") == 0) {
-    if (strcmp(normalized_arg, "on") == 0) {
-      config.net_enabled = 1;
-      if (net_sync_start() == 0) {
-        start_net_poll_loop();
-        snprintf(status_text, sizeof(status_text), "NET enabled");
-      } else {
-        snprintf(status_text, sizeof(status_text), "NET start failed");
-      }
-      return 1;
-    }
-
-    if (strcmp(normalized_arg, "off") == 0) {
-      config.net_enabled = 0;
-      stop_net_poll_loop();
-      net_sync_stop();
-      snprintf(status_text, sizeof(status_text), "NET disabled");
-      return 1;
-    }
-
-    if (strcmp(normalized_arg, "status") == 0) {
-      render_sync_status();
-      return 1;
-    }
-
-    if (strcmp(normalized_arg, "sync") == 0) {
-      (void)net_sync_poll_once();
-      render_sync_status();
-      return 1;
-    }
-
-    if (strncmp(normalized_arg, "role ", 5) == 0) {
-      const char *role = normalized_arg + 5;
-      if (strcmp(role, "client") == 0 || strcmp(role, "server") == 0) {
-        if (config.net_enabled) {
-          stop_net_poll_loop();
-          net_sync_stop();
-        }
-        snprintf(config.net_role, sizeof(config.net_role), "%s", role);
-        if (config.net_enabled) {
-          if (net_sync_start() == 0) {
-            start_net_poll_loop();
-            snprintf(status_text, sizeof(status_text), "NET role=%s", role);
-          } else {
-            snprintf(status_text, sizeof(status_text),
-                     "NET role switch failed");
-          }
-        } else {
-          snprintf(status_text, sizeof(status_text), "NET role=%s", role);
-        }
-      } else {
-        snprintf(status_text, sizeof(status_text),
-                 "Usage: net role client|server");
-      }
-      return 1;
-    }
-
-    snprintf(status_text, sizeof(status_text),
-             "Usage: net on|off|status|sync|role client|server");
+  if (strcmp(normalized_command, "net") == 0 ||
+      strcmp(command, "netsync") == 0 ||
+      strcmp(command, "netserver") == 0) {
+    snprintf(status_text, sizeof(status_text), "Network sync removed");
     return 1;
   }
 
@@ -318,9 +170,15 @@ static int process_command(const char *cmd) {
                                           sizeof(resolved_source)) == 0)
         src_path = resolved_source;
 
+      char resolved_dest[512] = {0};
+      const char *dest_path = dest;
+      if (config_resolve_contest_path(dest, resolved_dest,
+                                      sizeof(resolved_dest)) == 0)
+        dest_path = resolved_dest;
+
       char err[128] = {0};
       char warn[256] = {0};
-      if (contest_definition_import_dxlog(src_path, dest, err, sizeof(err),
+      if (contest_definition_import_dxlog(src_path, dest_path, err, sizeof(err),
                                           warn, sizeof(warn)) != 0) {
         snprintf(status_text, sizeof(status_text), "Contest import failed: %.96s",
                  err[0] ? err : "unknown");
@@ -340,10 +198,10 @@ static int process_command(const char *cmd) {
       }
 
       snprintf(config.contest_definition_path,
-               sizeof(config.contest_definition_path), "%s", dest);
-      config_save("logger.conf");
+               sizeof(config.contest_definition_path), "%s", dest_path);
+      config_save_active();
 
-      if (load_contest_definition_file(dest) == 0) {
+      if (load_contest_definition_file(dest_path) == 0) {
         if (warn[0])
           snprintf(status_text, sizeof(status_text),
                    "Contest imported and loaded (with warnings)");
@@ -531,6 +389,9 @@ static void update_display_info(void) {
  * @return 0 on success.
  */
 int app_controller_init(void) {
+  if (config_ensure_runtime_layout() != 0)
+    fprintf(stderr, "Cannot create runtime config directory\n");
+
   memset(input_buffer, 0, sizeof(input_buffer));
   input_len = 0;
   clear_entry_fields();
@@ -559,18 +420,36 @@ int app_controller_init(void) {
   clear_callsign_suggestion();
 
   char config_path[512] = {0};
-  const char *runtime_logger_conf =
-      resolve_runtime_support_path("logger.conf", config_path,
-                                   sizeof(config_path)) == 0
-          ? config_path
-          : "logger.conf";
+  const char *logger_conf_to_load = "logger.conf";
 
-  if (config_load(runtime_logger_conf) != 0)
+  if (access("logger.conf", R_OK) == 0) {
+    logger_conf_to_load = "logger.conf";
+  } else if (access("contest.conf", R_OK) == 0) {
+    /* A local contest.conf without a local logger.conf should use the default
+     * contest path in the current working directory, not a stale runtime copy.
+     * Calling config_load("logger.conf") still resets config defaults before
+     * failing to open the missing file, which keeps the active path at the local
+     * contest.conf and avoids leakage from earlier runs. */
+    logger_conf_to_load = "logger.conf";
+  } else if (config_resolve_runtime_path("logger.conf", config_path,
+                                        sizeof(config_path)) == 0) {
+    if (access(config_path, R_OK) == 0) {
+      logger_conf_to_load = config_path;
+    } else if (config_save(config_path) == 0) {
+      logger_conf_to_load = config_path;
+    }
+  }
+
+  if (config_load(logger_conf_to_load) != 0)
     fprintf(stderr, "Cannot load logger.conf\n");
   else if (app_debug_enabled) {
     fprintf(stderr,
             "[debug] app_controller_init: logger.conf loaded, CONTEST_DEF_FILE=%s\n",
             config.contest_definition_path[0] ? config.contest_definition_path : "<empty>");
+  }
+
+  if (db_init() != 0) {
+    fprintf(stderr, "Cannot initialize logger.db\n");
   }
 
   if (load_configured_contest_definition() != 0 && app_debug_enabled) {
@@ -610,15 +489,8 @@ int app_controller_init(void) {
     return -1;
   }
 
-  if (config.net_enabled) {
-    if (net_sync_start() != 0) {
-      snprintf(status_text, sizeof(status_text), "Net sync start failed");
-      update_display_info();
-      return -1;
-    }
-
-    start_net_poll_loop();
-  }
+  config.net_enabled = 0;
+  config.net_role[0] = 0;
 
   update_display_info();
 
@@ -631,11 +503,6 @@ int app_controller_init(void) {
  * @return Nothing.
  */
 void app_controller_shutdown(void) {
-  stop_net_poll_loop();
-
-  if (config.net_enabled)
-    net_sync_stop();
-
   dxcluster_stop();
   db_shutdown();
 }
@@ -1084,14 +951,6 @@ AppControllerEvent app_controller_handle_key(int key) {
           char exchange_sent[32] = {0};
           char exchange_recv_storage[32] = {0};
           build_exchange_sent(exchange_sent, sizeof(exchange_sent));
-
-          const int use_remote_number_server =
-              config.net_enabled && strcasecmp(config.net_role, "client") == 0 &&
-              contest_definition_loaded && contest_exchange_uses_serial_counter() &&
-              !config.contest_tx_exchange[0];
-
-          if (use_remote_number_server)
-            exchange_sent[0] = 0;
 
           const int qso_points = resolve_contest_points(
             mode, qso_band, country, entry_call,

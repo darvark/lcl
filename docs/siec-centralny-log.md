@@ -1,5 +1,7 @@
 # Praca Sieciowa w Topologii Gwiazdy z Centralnym Logiem
 
+> Dokument archiwalny. Funkcjonalność sieci z centralnym logiem została usunięta z aktywnej wersji aplikacji. Niniejsze materiały istnieją wyłącznie jako historia projektowa i nie opisują obecnego stanu produktu.
+
 ## Cel dokumentu
 
 Dokument opisuje konkretna propozycje techniczna dla tego repo, aby dodac prace wielu stacji w sieci (topologia gwiazdy), gdzie:

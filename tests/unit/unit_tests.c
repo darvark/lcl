@@ -174,7 +174,6 @@ static void test_config_load(const char *tmp_dir) {
       "STATION_CALL = SP9STAC\n"
       "OPERATOR_CALL = SP9OPER\n"
       "CAT_MODE_FROM_RIG = 1\n"
-      "CONTEST_TX_EXCHANGE = 28\n"
       "CONTEST_TECHNIQUE = SO2R\n"
       "CW_ESM = 1\n"
       "LIVE_UPLOAD_ENABLED = 1\n"
@@ -200,8 +199,6 @@ static void test_config_load(const char *tmp_dir) {
                 "contest technique parsed");
   expect_int_eq(config.cw_esm_enabled, 1,
                 "CW ESM flag parsed");
-  expect_str_eq(config.contest_tx_exchange, "28",
-                "contest tx exchange override parsed");
   expect_int_eq(config.live_upload_enabled, 1,
                 "live upload enabled parsed");
   expect_str_eq(config.live_upload_host, "upload.local",
@@ -250,8 +247,6 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
   snprintf(config.cat_handshake, sizeof(config.cat_handshake), "%s", "RTSCTS");
   config.cat_mode_from_rig = 1;
   config.cw_esm_enabled = 1;
-  snprintf(config.contest_tx_exchange, sizeof(config.contest_tx_exchange),
-           "%s", "28");
   config.live_upload_enabled = 1;
   snprintf(config.live_upload_host, sizeof(config.live_upload_host), "%s",
            "persist-upload.local");
@@ -270,7 +265,6 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
   config.cat_handshake[0] = 0;
   config.cat_mode_from_rig = 0;
   config.cw_esm_enabled = 0;
-  config.contest_tx_exchange[0] = 0;
   config.live_upload_enabled = 0;
   config.live_upload_host[0] = 0;
   config.live_upload_port = 0;
@@ -290,8 +284,6 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
                 "saved CAT mode-from-rig restored");
   expect_int_eq(config.cw_esm_enabled, 1,
                 "saved CW ESM restored");
-  expect_str_eq(config.contest_tx_exchange, "28",
-                "saved contest tx exchange restored");
   expect_int_eq(config.live_upload_enabled, 1,
                 "saved live upload enabled restored");
   expect_str_eq(config.live_upload_host, "persist-upload.local",
@@ -323,10 +315,9 @@ static void test_controller_static_tx_exchange_override(const char *tmp_dir) {
   char conf_path[512];
   join_path(conf_path, sizeof(conf_path), case_dir, "logger.conf");
   const char *conf_text =
-      "CONTEST_DEF_FILE=contest.conf\n"
-      "CONTEST_TX_EXCHANGE=28\n";
+      "CONTEST_DEF_FILE=contest.conf\n";
   expect_int_eq(write_text_file(conf_path, conf_text), 0,
-                "write logger.conf with static tx exchange override");
+                "write logger.conf for static exchange test");
 
   char old_cwd[512];
   expect_true(getcwd(old_cwd, sizeof(old_cwd)) != NULL,
@@ -446,8 +437,7 @@ static void test_controller_incremental_exchange_generation(const char *tmp_dir)
   char conf_path[512];
   join_path(conf_path, sizeof(conf_path), case_dir, "logger.conf");
   const char *conf_text =
-      "CONTEST_DEF_FILE=contest.conf\n"
-      "CONTEST_TX_EXCHANGE=28\n";
+      "CONTEST_DEF_FILE=contest.conf\n";
   expect_int_eq(write_text_file(conf_path, conf_text), 0,
                 "write logger.conf for incremental exchange test");
 
@@ -1643,6 +1633,10 @@ static void test_db_sync_apply_remote_op_and_pull(const char *tmp_dir) {
                                       "QSO_INSERT", "q-remote-1", payload,
                                       "2026-01-01T01:00:00Z", &gseq1) >= 0,
               "apply remote op should succeed");
+  expect_int_eq(qso_count, 1,
+                "apply remote op should refresh the in-memory logbook immediately");
+  expect_str_eq(logbook[0].call, "SP9RMT",
+                "remote payload should already be visible in the active log");
 
   long long gseq_dup = 0;
   expect_int_eq(db_sync_apply_remote_op("op-remote-1", "st-remote", 7, 1,
@@ -2609,16 +2603,16 @@ static void test_export_csv_adif(const char *tmp_dir) {
     expect_true(strstr(csv, "DATE,UTC,CALL,FREQ,BAND,MODE,RST,COMMENTS,COUNTRY") != NULL,
                 "CSV header exists");
     expect_true(strstr(csv, "SP9ABC") != NULL, "CSV contains SP9ABC");
-    expect_true(strstr(csv, "K1ABC") == NULL,
-                "CSV excludes invalid entries");
+    expect_true(strstr(csv, "K1ABC") != NULL,
+                "CSV keeps duplicate/invalid entries in export");
   }
 
   if (adi) {
     expect_true(strstr(adi, "<EOH>") != NULL, "ADIF header exists");
     expect_true(strstr(adi, "<CALL:6>SP9ABC") != NULL,
                 "ADIF contains SP9ABC");
-    expect_true(strstr(adi, "<CALL:5>K1ABC") == NULL,
-                "ADIF excludes invalid entries");
+    expect_true(strstr(adi, "<CALL:5>K1ABC") != NULL,
+                "ADIF keeps duplicate/invalid entries in export");
   }
 
   free(csv);
@@ -3805,6 +3799,64 @@ static void test_missing_default_contest_file_is_nonfatal(void) {
                 "restore cwd after missing default contest file test");
 }
 
+static void test_current_directory_config_has_priority_over_runtime_copy(void) {
+  char case_dir[512];
+  snprintf(case_dir, sizeof(case_dir), "%s/cwd_priority_case", "/tmp");
+  if (mkdir(case_dir, 0777) != 0 && errno != EEXIST) {
+    failf("create isolated directory for cwd config priority test");
+    return;
+  }
+
+  char contest_path[512];
+  if (snprintf(contest_path, sizeof(contest_path), "%s/contest.conf", case_dir) >=
+      (int)sizeof(contest_path)) {
+    failf("contest_path buffer too small for cwd config priority test");
+    return;
+  }
+
+  char logger_conf_path[512];
+  if (snprintf(logger_conf_path, sizeof(logger_conf_path), "%s/logger.conf", case_dir) >=
+      (int)sizeof(logger_conf_path)) {
+    failf("logger_conf_path buffer too small for cwd config priority test");
+    return;
+  }
+
+  const char *contest_text =
+      "NAME=CWD-PRIORITY\n"
+      "CABRILLO_NAME=CWD-PRIORITY\n"
+      "MODE=CW\n"
+      "EXCHANGE_SENT=#\n"
+      "FIELD=SERIAL,Serial Number,required\n";
+
+  expect_int_eq(write_text_file(contest_path, contest_text), 0,
+                "write local contest file for cwd priority test");
+  expect_int_eq(write_text_file(logger_conf_path,
+                "CONTEST_DEF_FILE=contest.conf\n"
+                "STATION_CALL=ZZ1LOCAL\n"), 0,
+                "write local logger.conf for cwd priority test");
+
+  char old_cwd[512];
+  expect_true(getcwd(old_cwd, sizeof(old_cwd)) != NULL,
+              "getcwd before cwd config priority test");
+  expect_int_eq(chdir(case_dir), 0,
+                "chdir to cwd config priority test directory");
+
+  config_load("logger.conf");
+  expect_str_eq(config.contest_definition_path, "contest.conf",
+                "cwd logger.conf should keep a relative contest path");
+  expect_str_eq(config.station_call, "ZZ1LOCAL",
+                "cwd logger.conf should override runtime defaults");
+
+  char resolved[512] = {0};
+  expect_int_eq(config_resolve_contest_path("contest.conf", resolved, sizeof(resolved)), 0,
+                "contest path should resolve from the current directory");
+  expect_true(strstr(resolved, "/contest.conf") != NULL,
+              "resolved contest path should point at the local contest file");
+
+  expect_int_eq(chdir(old_cwd), 0,
+                "restore cwd after cwd config priority test");
+}
+
 static void test_openlog_restores_saved_contest_definition(const char *tmp_dir) {
   char case_dir[512];
   snprintf(case_dir, sizeof(case_dir), "%s/openlog_contest_restore", tmp_dir);
@@ -4592,6 +4644,7 @@ int main(void) {
   test_qso_status_includes_sync_pending_when_net_enabled();
   test_contest_preset_from_build_dir_uses_defined_settings();
   test_missing_default_contest_file_is_nonfatal();
+  test_current_directory_config_has_priority_over_runtime_copy();
   test_openlog_restores_saved_contest_definition(tmp_dir);
   test_contest_import_only_does_not_autoload_or_set_active_path(tmp_dir);
 

@@ -1,7 +1,6 @@
 static int resolve_contest_definition_path(const char *path, char *resolved,
                                           size_t resolved_size);
 static int restore_current_log_contest_definition(void);
-
 int app_controller_get_active_frequency_khz(void) {
   return resolve_qso_frequency_khz();
 }
@@ -129,7 +128,7 @@ void app_controller_set_contest_technique(ContestTechnique technique) {
 
   app_controller_set_active_radio(active_radio_nr);
 
-  config_save("logger.conf");
+  config_save_active();
 }
 
 int app_controller_get_active_radio(void) { return active_radio_nr; }
@@ -552,7 +551,7 @@ static int load_contest_definition_file(const char *path) {
            "EXCH");
   snprintf(config.contest_definition_path, sizeof(config.contest_definition_path), "%s",
            path);
-  config_save("logger.conf");
+  config_save_active();
   db_set_current_logbook_contest_path(path);
   stats_set_contest_definition(&active_contest_def);
   stats_update();
@@ -590,6 +589,10 @@ static int resolve_contest_definition_path(const char *path, char *resolved,
                                           size_t resolved_size) {
   if (!path || !path[0] || !resolved || resolved_size == 0)
     return -1;
+
+  if (config_resolve_contest_path(path, resolved, resolved_size) == 0 &&
+      access(resolved, R_OK) == 0)
+    return 0;
 
   if (access(path, R_OK) == 0) {
     snprintf(resolved, resolved_size, "%s", path);
