@@ -789,7 +789,10 @@ public:
     qtc_history_dialog_ = new QtcHistoryDialog(this);
 
     timer_ = new QTimer(this);
-    connect(timer_, &QTimer::timeout, this, [this]() { refresh_ui(); });
+    connect(timer_, &QTimer::timeout, this, [this]() {
+      cat_tick_disconnect_watchdog();
+      refresh_ui();
+    });
     timer_->start(120);
 
     start_auto_connect_if_configured();

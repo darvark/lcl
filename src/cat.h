@@ -83,6 +83,12 @@ void cat_disconnect(void);
 void cat_disconnect_slot(int slot);
 
 /*
+ * Poll the CAT watchdog and disconnect any slot whose connection was lost for
+ * more than 5 seconds.
+ */
+void cat_tick_disconnect_watchdog(void);
+
+/*
  * Report whether CAT is currently connected.
  *
  * @return 1 if connected, otherwise 0.

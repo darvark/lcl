@@ -1,5 +1,6 @@
 #include "config.h"
 #include "db.h"
+#include "qso.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -48,6 +49,23 @@ int main(void) {
   db_shutdown();
   if (db_init() != 0) {
     fprintf(stderr, "db_init failed\n");
+    return 1;
+  }
+
+  char status[64] = {0};
+  qso_count = 0;
+  if (qso_add("OM/DL7AUP 14074 599", status, sizeof(status)) < 0 ||
+      strcmp(logbook[0].call, "OM/DL7AUP") != 0) {
+    fprintf(stderr, "portable callsign text entry failed: %s\n", status);
+    db_shutdown();
+    return 1;
+  }
+
+  if (qso_add_fields("om/dl7aup", 14150, "59", "SSB", "", status,
+                     sizeof(status)) < 0 ||
+      strcmp(logbook[1].call, "OM/DL7AUP") != 0) {
+    fprintf(stderr, "portable callsign field entry failed: %s\n", status);
+    db_shutdown();
     return 1;
   }
 

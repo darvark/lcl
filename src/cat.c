@@ -7,6 +7,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <termios.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifdef HAVE_HAMLIB
@@ -17,6 +18,8 @@ static pthread_mutex_t cat_mutex = PTHREAD_MUTEX_INITIALIZER;
 static char cat_status[128] = "CAT idle";
 static char cat_slot_status[CAT_SLOT_COUNT][128] = {"CAT[1] idle",
                                                     "CAT[2] idle"};
+static time_t cat_disconnect_deadlines[CAT_SLOT_COUNT] = {0, 0};
+static char cat_disconnect_reasons[CAT_SLOT_COUNT][64] = {{0}, {0}};
 
 #ifdef HAVE_HAMLIB
 static RIG *active_rigs[CAT_SLOT_COUNT] = {NULL, NULL};
@@ -47,6 +50,8 @@ static void cat_disconnect_slot_locked_with_reason(int slot, const char *reason)
   }
 
   active_rig_devices[slot][0] = '\0';
+  cat_disconnect_deadlines[slot] = 0;
+  cat_disconnect_reasons[slot][0] = '\0';
 
   if (reason && reason[0]) {
     snprintf(cat_slot_status[slot], sizeof(cat_slot_status[slot]),
@@ -58,6 +63,48 @@ static void cat_disconnect_slot_locked_with_reason(int slot, const char *reason)
              "CAT[%d] disconnected", slot + 1);
     snprintf(cat_status, sizeof(cat_status), "CAT[%d] disconnected", slot + 1);
   }
+}
+
+static void cat_schedule_disconnect_slot(int slot, const char *reason) {
+  if (!cat_slot_valid(slot))
+    return;
+
+  pthread_mutex_lock(&cat_mutex);
+  cat_disconnect_deadlines[slot] = time(NULL) + 5;
+  if (reason && reason[0]) {
+    snprintf(cat_disconnect_reasons[slot], sizeof(cat_disconnect_reasons[slot]),
+             "%s", reason);
+    snprintf(cat_slot_status[slot], sizeof(cat_slot_status[slot]),
+             "CAT[%d] lost connection, disconnecting in 5s (%s)",
+             slot + 1, reason);
+    snprintf(cat_status, sizeof(cat_status),
+             "CAT[%d] lost connection, disconnecting in 5s (%s)",
+             slot + 1, reason);
+  } else {
+    cat_disconnect_reasons[slot][0] = '\0';
+    snprintf(cat_slot_status[slot], sizeof(cat_slot_status[slot]),
+             "CAT[%d] lost connection, disconnecting in 5s", slot + 1);
+    snprintf(cat_status, sizeof(cat_status),
+             "CAT[%d] lost connection, disconnecting in 5s", slot + 1);
+  }
+  pthread_mutex_unlock(&cat_mutex);
+}
+
+void cat_tick_disconnect_watchdog(void) {
+  time_t now = time(NULL);
+
+  pthread_mutex_lock(&cat_mutex);
+  for (int slot = 0; slot < CAT_SLOT_COUNT; slot++) {
+    if (cat_disconnect_deadlines[slot] == 0)
+      continue;
+    if (now < cat_disconnect_deadlines[slot])
+      continue;
+
+    const char *reason = cat_disconnect_reasons[slot][0] ?
+        cat_disconnect_reasons[slot] : "timeout";
+    cat_disconnect_slot_locked_with_reason(slot, reason);
+  }
+  pthread_mutex_unlock(&cat_mutex);
 }
 
 static int cat_slot_device_present(int slot) {
@@ -362,7 +409,7 @@ int cat_get_frequency_khz_slot_vfo(int slot, CatVfo vfo, int *out_khz) {
   }
 
   if (!cat_slot_device_present(slot)) {
-    cat_disconnect_slot_locked_with_reason(slot, "device lost");
+    cat_schedule_disconnect_slot(slot, "device lost");
     pthread_mutex_unlock(&cat_mutex);
     return -1;
   }
@@ -370,7 +417,7 @@ int cat_get_frequency_khz_slot_vfo(int slot, CatVfo vfo, int *out_khz) {
   freq_t freq_hz = 0;
   const int rc = rig_get_freq(active_rigs[slot], cat_map_vfo(vfo), &freq_hz);
   if (rc != RIG_OK)
-    cat_disconnect_slot_locked_with_reason(slot, rigerror(rc));
+    cat_schedule_disconnect_slot(slot, rigerror(rc));
   pthread_mutex_unlock(&cat_mutex);
 
   if (rc != RIG_OK)
@@ -408,7 +455,7 @@ int cat_get_mode_label_slot_vfo(int slot, CatVfo vfo, char *out,
   }
 
   if (!cat_slot_device_present(slot)) {
-    cat_disconnect_slot_locked_with_reason(slot, "device lost");
+    cat_schedule_disconnect_slot(slot, "device lost");
     pthread_mutex_unlock(&cat_mutex);
     return -1;
   }
@@ -418,7 +465,7 @@ int cat_get_mode_label_slot_vfo(int slot, CatVfo vfo, char *out,
   const int rc = rig_get_mode(active_rigs[slot], cat_map_vfo(vfo), &mode,
                               &width);
   if (rc != RIG_OK)
-    cat_disconnect_slot_locked_with_reason(slot, rigerror(rc));
+    cat_schedule_disconnect_slot(slot, rigerror(rc));
   pthread_mutex_unlock(&cat_mutex);
 
   if (rc != RIG_OK)
@@ -459,7 +506,7 @@ int cat_set_frequency_khz_slot_vfo(int slot, CatVfo vfo, int freq_khz) {
   }
 
   if (!cat_slot_device_present(slot)) {
-    cat_disconnect_slot_locked_with_reason(slot, "device lost");
+    cat_schedule_disconnect_slot(slot, "device lost");
     pthread_mutex_unlock(&cat_mutex);
     return -1;
   }
@@ -467,7 +514,7 @@ int cat_set_frequency_khz_slot_vfo(int slot, CatVfo vfo, int freq_khz) {
   const freq_t freq_hz = (freq_t)freq_khz * 1000.0;
   const int rc = rig_set_freq(active_rigs[slot], cat_map_vfo(vfo), freq_hz);
   if (rc != RIG_OK)
-    cat_disconnect_slot_locked_with_reason(slot, rigerror(rc));
+    cat_schedule_disconnect_slot(slot, rigerror(rc));
   pthread_mutex_unlock(&cat_mutex);
 
   if (rc != RIG_OK)
@@ -528,7 +575,7 @@ int cat_set_mode_label_slot_vfo(int slot, CatVfo vfo, const char *mode_label) {
   }
 
   if (!cat_slot_device_present(slot)) {
-    cat_disconnect_slot_locked_with_reason(slot, "device lost");
+    cat_schedule_disconnect_slot(slot, "device lost");
     pthread_mutex_unlock(&cat_mutex);
     return -1;
   }
@@ -541,7 +588,7 @@ int cat_set_mode_label_slot_vfo(int slot, CatVfo vfo, const char *mode_label) {
   const int rc = rig_set_mode(active_rigs[slot], cat_map_vfo(vfo), mode,
                               RIG_PASSBAND_NORMAL);
   if (rc != RIG_OK)
-    cat_disconnect_slot_locked_with_reason(slot, rigerror(rc));
+    cat_schedule_disconnect_slot(slot, rigerror(rc));
   pthread_mutex_unlock(&cat_mutex);
 
   if (rc != RIG_OK)
@@ -569,14 +616,14 @@ int cat_set_active_vfo_slot(int slot, CatVfo vfo) {
   }
 
   if (!cat_slot_device_present(slot)) {
-    cat_disconnect_slot_locked_with_reason(slot, "device lost");
+    cat_schedule_disconnect_slot(slot, "device lost");
     pthread_mutex_unlock(&cat_mutex);
     return -1;
   }
 
   const int rc = rig_set_vfo(active_rigs[slot], cat_map_vfo(vfo));
   if (rc != RIG_OK)
-    cat_disconnect_slot_locked_with_reason(slot, rigerror(rc));
+    cat_schedule_disconnect_slot(slot, rigerror(rc));
   pthread_mutex_unlock(&cat_mutex);
 
   if (rc != RIG_OK)
@@ -602,7 +649,7 @@ int cat_get_active_vfo_slot(int slot, CatVfo *out_vfo) {
   }
 
   if (!cat_slot_device_present(slot)) {
-    cat_disconnect_slot_locked_with_reason(slot, "device lost");
+    cat_schedule_disconnect_slot(slot, "device lost");
     pthread_mutex_unlock(&cat_mutex);
     return -1;
   }
@@ -610,7 +657,7 @@ int cat_get_active_vfo_slot(int slot, CatVfo *out_vfo) {
   vfo_t vfo = RIG_VFO_CURR;
   const int rc = rig_get_vfo(active_rigs[slot], &vfo);
   if (rc != RIG_OK)
-    cat_disconnect_slot_locked_with_reason(slot, rigerror(rc));
+    cat_schedule_disconnect_slot(slot, rigerror(rc));
   pthread_mutex_unlock(&cat_mutex);
 
   if (rc != RIG_OK)
@@ -643,14 +690,14 @@ int cat_send_morse_slot(int slot, const char *text) {
   }
 
   if (!cat_slot_device_present(slot)) {
-    cat_disconnect_slot_locked_with_reason(slot, "device lost");
+    cat_schedule_disconnect_slot(slot, "device lost");
     pthread_mutex_unlock(&cat_mutex);
     return -1;
   }
 
   const int rc = rig_send_morse(active_rigs[slot], RIG_VFO_CURR, text);
   if (rc != RIG_OK)
-    cat_disconnect_slot_locked_with_reason(slot, rigerror(rc));
+    cat_schedule_disconnect_slot(slot, rigerror(rc));
   pthread_mutex_unlock(&cat_mutex);
 
   if (rc != RIG_OK)
@@ -680,14 +727,14 @@ int cat_stop_morse_slot(int slot) {
   }
 
   if (!cat_slot_device_present(slot)) {
-    cat_disconnect_slot_locked_with_reason(slot, "device lost");
+    cat_schedule_disconnect_slot(slot, "device lost");
     pthread_mutex_unlock(&cat_mutex);
     return -1;
   }
 
   const int rc = rig_stop_morse(active_rigs[slot], RIG_VFO_CURR);
   if (rc != RIG_OK)
-    cat_disconnect_slot_locked_with_reason(slot, rigerror(rc));
+    cat_schedule_disconnect_slot(slot, rigerror(rc));
   pthread_mutex_unlock(&cat_mutex);
 
   if (rc != RIG_OK)

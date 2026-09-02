@@ -353,10 +353,6 @@ int qso_add(const char *line, char *status, size_t status_size) {
   for (int i = 0; call[i]; i++)
     call[i] = toupper((unsigned char)call[i]);
 
-  char *p = strchr(call, '/');
-  if (p)
-    *p = 0;
-
   if (!validate_callsign(call)) {
     snprintf(status, status_size, "Invalid callsign");
     return -1;
@@ -437,10 +433,6 @@ int qso_add_fields(const char *call, int freq_khz, const char *rst,
 
   for (int i = 0; call_buf[i]; i++)
     call_buf[i] = toupper((unsigned char)call_buf[i]);
-
-  char *slash = strchr(call_buf, '/');
-  if (slash)
-    *slash = 0;
 
   if (!validate_callsign(call_buf)) {
     snprintf(status, status_size, "Invalid callsign");
