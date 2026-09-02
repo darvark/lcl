@@ -2744,6 +2744,7 @@ static void test_contest_definition_and_cabrillo(const char *tmp_dir) {
   int dupe_idx_1 = qso_add_contest_fields("DUPE01", 7020, "599", "CW", "",
                                           "001", "", "RUN",
                                           def.cabrillo_name, 1, 1,
+                                          def.duplicate_qso,
                                           status, sizeof(status));
   expect_int_eq(dupe_idx_1, base_qso_count,
                 "first duplicate-check QSO should be saved");
@@ -2753,12 +2754,14 @@ static void test_contest_definition_and_cabrillo(const char *tmp_dir) {
   int dupe_idx_2 = qso_add_contest_fields("DUPE01", 7020, "599", "CW", "",
                                           "002", "", "RUN",
                                           def.cabrillo_name, 1, 1,
+                                          def.duplicate_qso,
                                           status, sizeof(status));
   expect_int_eq(dupe_idx_2, base_qso_count + 1,
                 "second duplicate-check QSO should still be stored");
-  expect_true(logbook[dupe_idx_2].invalid,
-              "duplicate QSO should be marked invalid");
-  expect_str_eq(status, "QSO DUPE", "duplicate QSO should be flagged as DUPE");
+  expect_true(!logbook[dupe_idx_2].invalid,
+              "duplicate QSO should stay valid when DOUBLE_QSO is enabled");
+  expect_str_eq(status, "QSO OK TX:002 RX:-",
+                "duplicate QSO should be accepted when DOUBLE_QSO is enabled");
 
   qso_init();
   expect_int_eq(contest_definition_load(contest_path, &def, err, sizeof(err)),
@@ -2777,11 +2780,13 @@ static void test_contest_definition_and_cabrillo(const char *tmp_dir) {
 
   expect_int_eq(qso_add_contest_fields("SP9SER", 7020, "599", "CW", "", "",
                                        "101", "RUN", def.cabrillo_name, 1, 1,
+                                       def.duplicate_qso,
                                        status, sizeof(status)),
                 post_dupe_qso_count,
                 "first contest QSO for Cabrillo serial fallback should save");
   expect_int_eq(qso_add_contest_fields("SP9SEQ", 7020, "599", "CW", "", "",
                                        "102", "RUN", def.cabrillo_name, 1, 1,
+                                       def.duplicate_qso,
                                        status, sizeof(status)),
                 post_dupe_qso_count + 1,
                 "second contest QSO for Cabrillo serial fallback should save");
@@ -3320,7 +3325,12 @@ static void test_call_suggestions(void) {
   call_suggestion_list_clear(&list);
 
   call_suggestion_refresh(&list, "sp", history, 8);
-  expect_true(list.count >= 4, "SP prefix should return multiple suggestions");
+  expect_int_eq(list.count, 0,
+                "less than 3 chars should not return suggestions");
+
+  call_suggestion_refresh(&list, "sp9", history, 8);
+  expect_true(list.count >= 3,
+              "3-char prefix should return multiple suggestions");
   expect_str_eq(list.matches[0], "SP8QWE", "newest matching call appears first");
   expect_str_eq(list.matches[1], "SP9AAA", "second suggestion respects recency");
   expect_str_eq(list.matches[2], "SP9XYZ", "third suggestion respects recency");
@@ -3645,6 +3655,63 @@ static void test_named_log_commands(const char *tmp_dir) {
   if (state.status)
     expect_true(strstr(state.status, "Log opened: Summer Contest") != NULL,
                 "openlog should confirm selected log name");
+
+  app_controller_shutdown();
+  chdir("..");
+}
+
+static void test_newlog_creates_database_file(const char *tmp_dir) {
+  AppRenderState state;
+  char case_dir[512];
+  snprintf(case_dir, sizeof(case_dir), "%s/newlog_file_case", tmp_dir);
+  expect_int_eq(mkdir(case_dir, 0777), 0,
+                "create isolated directory for newlog file creation test");
+  expect_int_eq(chdir(case_dir), 0,
+                "chdir to newlog file creation test directory");
+  set_test_db_path(case_dir);
+  expect_int_eq(write_text_file("logger.conf", "CONTEST_DEF_FILE=\n"), 0,
+                "write empty logger.conf for newlog file creation test");
+
+  app_controller_init();
+  app_controller_handle_key(APP_KEY_F2);
+  expect_int_eq(qso_count, 0,
+                "newlog file creation test starts from clean logbook");
+
+  const char *runtime_dir = config_runtime_dir();
+  expect_true(runtime_dir != NULL && runtime_dir[0] == '/',
+              "runtime dir should be available before newlog file creation");
+  if (!runtime_dir || runtime_dir[0] != '/') {
+    app_controller_shutdown();
+    chdir("..");
+    return;
+  }
+
+  char log_name[64];
+  snprintf(log_name, sizeof(log_name), "UnitLogFile_%d", (int)getpid());
+
+  char expected_db_path[768];
+  snprintf(expected_db_path, sizeof(expected_db_path), "%s/logs/%s.db",
+           runtime_dir, log_name);
+
+  (void)unlink(expected_db_path);
+
+  char command[160];
+  snprintf(command, sizeof(command), "newlog %s", log_name);
+  send_controller_text(command);
+
+  app_controller_get_render_state(&state);
+  expect_true(state.status != NULL,
+              "newlog file creation status should exist");
+  if (state.status)
+    expect_true(strstr(state.status, "New log created:") != NULL,
+                "newlog should report successful creation");
+
+  struct stat st;
+  expect_int_eq(stat(expected_db_path, &st), 0,
+                "newlog should create a new .db file on disk");
+  if (stat(expected_db_path, &st) == 0)
+    expect_true(S_ISREG(st.st_mode),
+                "created log database path should be a regular file");
 
   app_controller_shutdown();
   chdir("..");
@@ -4072,7 +4139,7 @@ static void test_qtc_enabled_for_opened_wae_log_without_loaded_definition(
   char status[128] = {0};
   int idx = qso_add_contest_fields(
       "W1AW", 14025, "599", "CW", "", "001", "123", "RUN",
-      "DARC-WAEDC-CW", 1, 1, status, sizeof(status));
+      "DARC-WAEDC-CW", 1, 1, 0, status, sizeof(status));
   expect_true(idx >= 0, "WAE-tagged QSO should be added");
 
   AppRenderState state;
@@ -4115,7 +4182,7 @@ static void test_qtc_sendable_prefill_uses_call_and_received_exchange(
   char status[128] = {0};
   int idx = qso_add_contest_fields(
       "W1AW", 14025, "599", "CW", "", "001", "123", "RUN",
-      "DARC-WAEDC-CW", 1, 1, status, sizeof(status));
+      "DARC-WAEDC-CW", 1, 1, 0, status, sizeof(status));
   expect_true(idx >= 0, "QSO for QTC prefill should be added");
 
   /* Simulate one malformed legacy row that should never be offered as QTC. */
@@ -4638,6 +4705,7 @@ int main(void) {
   test_controller_contest_mode_overrides_detected_mode(tmp_dir);
   test_manual_frequency_entry_from_call_field();
   test_named_log_commands(tmp_dir);
+  test_newlog_creates_database_file(tmp_dir);
   test_syncstatus_command_reports_failed_queue(tmp_dir);
   test_net_command_on_off_role_status(tmp_dir);
   test_netsync_offline_queue_status(tmp_dir);

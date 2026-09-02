@@ -123,6 +123,11 @@ static int process_command(const char *cmd) {
     return 1;
   }
 
+  if (strcmp(normalized_command, "openlogfile") == 0) {
+    open_log_file_path(arg);
+    return 1;
+  }
+
   if (strcmp(normalized_command, "invalid") == 0) {
     if (qso_count > 0) {
       qso_mark_invalid(qso_count - 1);
@@ -577,6 +582,12 @@ void app_controller_get_render_state(AppRenderState *out) {
   out->contest_name = (contest_definition_loaded && active_contest_def.name[0])
                           ? active_contest_def.name
                           : "";
+  out->contest_mode = (contest_definition_loaded && active_contest_def.mode[0])
+                          ? active_contest_def.mode
+                          : "";
+  out->contest_multiplier_type = contest_definition_loaded
+                                     ? (int)active_contest_def.multiplier_type
+                                     : (int)CONTEST_MULT_DXCC;
 }
 
 int app_controller_plan_cw_esm_enter(const AppRenderState *state,
@@ -972,6 +983,7 @@ AppControllerEvent app_controller_handle_key(int key) {
               exchange_recv_storage[0] ? exchange_recv_storage : entered_exchange,
               active_operator_mode_text(),
             active_contest_def.cabrillo_name, active_radio_nr, qso_points,
+              contest_definition_loaded ? active_contest_def.duplicate_qso : 0,
               status_text, sizeof(status_text));
           if (apply_saved_qso_state(idx)) {
             call_history_record_from_input(entry_call);

@@ -81,17 +81,17 @@ static int initialize_runtime_paths(void) {
     return 0;
 
   const char *home = getenv("HOME");
-  if (!home || !home[0]) {
+  if (!home || !home[0] || home[0] != '/') {
     struct passwd *pw = getpwuid(getuid());
     if (pw && pw->pw_dir && pw->pw_dir[0])
       home = pw->pw_dir;
   }
 
-  if (!home || !home[0])
+  if (!home || !home[0] || home[0] != '/')
     return -1;
 
   snprintf(runtime_config_root, sizeof(runtime_config_root), "%s/.config", home);
-  snprintf(runtime_config_dir, sizeof(runtime_config_dir), "%s/contest-loger",
+  snprintf(runtime_config_dir, sizeof(runtime_config_dir), "%s/contest-logger",
            runtime_config_root);
   snprintf(runtime_contest_defs_dir, sizeof(runtime_contest_defs_dir),
            "%s/contest_defs", runtime_config_dir);
@@ -265,6 +265,7 @@ static void set_defaults(void) {
   config.live_upload_port = 9871;
   strcpy(config.live_upload_token, "");
 
+  config.ui_theme_palette = 0;
   config.ui_monokai_theme = 0;
 }
 
@@ -492,9 +493,20 @@ int config_load(const char *filename) {
     } else if (strcmp(key, "LIVE_UPLOAD_TOKEN") == 0) {
       strncpy(config.live_upload_token, value, sizeof(config.live_upload_token));
       config.live_upload_token[sizeof(config.live_upload_token) - 1] = 0;
+    } else if (strcmp(key, "UI_THEME_PALETTE") == 0) {
+      config.ui_theme_palette = atoi(value);
+      if (config.ui_theme_palette < 0)
+        config.ui_theme_palette = 0;
+      if (config.ui_theme_palette > 2)
+        config.ui_theme_palette = 2;
+      config.ui_monokai_theme = (config.ui_theme_palette == 1) ? 1 : 0;
     } else if (strcmp(key, "UI_THEME_MONOKAI") == 0 ||
                strcmp(key, "UI_MONOKAI_THEME") == 0) {
       config.ui_monokai_theme = atoi(value) ? 1 : 0;
+      if (config.ui_monokai_theme)
+        config.ui_theme_palette = 1;
+      else if (config.ui_theme_palette == 1)
+        config.ui_theme_palette = 0;
     }
   }
 
@@ -570,6 +582,7 @@ int config_save(const char *filename) {
   fprintf(f, "LIVE_UPLOAD_PORT=%d\n", config.live_upload_port);
   fprintf(f, "LIVE_UPLOAD_TOKEN=%s\n", config.live_upload_token);
   fprintf(f, "\n");
+  fprintf(f, "UI_THEME_PALETTE=%d\n", config.ui_theme_palette);
   fprintf(f, "UI_THEME_MONOKAI=%d\n", config.ui_monokai_theme ? 1 : 0);
   fprintf(f, "\n");
 

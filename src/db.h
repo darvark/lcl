@@ -151,9 +151,9 @@ int db_archive_current_logbook_named(const char *name);
 int db_list_named_logbooks(DBNamedLogbook *out, int max_items, int *out_count);
 
 /*
- * Open a named logbook by database id.
+ * Open a named logbook by list id returned by db_list_named_logbooks().
  *
- * @param id Named logbook id to open.
+ * @param id Logbook list id to open.
  * @return 0 on success, or -1 on failure.
  */
 int db_open_named_logbook_by_id(long long id);
@@ -165,6 +165,14 @@ int db_open_named_logbook_by_id(long long id);
  * @return 0 on success, or -1 on failure.
  */
 int db_open_named_logbook_by_name(const char *name);
+
+/*
+ * Open a logbook by explicit SQLite file path.
+ *
+ * @param path Absolute or relative path to a .db file.
+ * @return 0 on success, or -1 on failure.
+ */
+int db_open_logbook_file(const char *path);
 
 /*
  * Export the active logbook to CSV.

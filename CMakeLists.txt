@@ -45,8 +45,7 @@ endif()
 
 include_directories(${CMAKE_SOURCE_DIR}/src)
 
-add_executable(logger
-    src/qt_frontend.cpp
+set(LOGGER_CORE_SOURCES
     src/app_controller.c
     src/db.c
     src/suggestion.c
@@ -65,7 +64,22 @@ add_executable(logger
     src/maidenhead.c
 )
 
+add_executable(logger
+    src/qt_frontend.cpp
+    ${LOGGER_CORE_SOURCES}
+)
+
+add_executable(newlog_file_test
+    tests/unit/newlog_file_test.c
+    ${LOGGER_CORE_SOURCES}
+)
+
 target_include_directories(logger
+    PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+target_include_directories(newlog_file_test
     PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
@@ -73,11 +87,15 @@ target_include_directories(logger
 if (HAMLIB_FOUND)
     target_compile_definitions(logger PRIVATE HAVE_HAMLIB=1)
     target_include_directories(logger PRIVATE ${HAMLIB_INCLUDE_DIRS})
+    target_compile_definitions(newlog_file_test PRIVATE HAVE_HAMLIB=1)
+    target_include_directories(newlog_file_test PRIVATE ${HAMLIB_INCLUDE_DIRS})
 endif()
 
 if (OpenSSL_FOUND)
     target_compile_definitions(logger PRIVATE HAVE_OPENSSL=1)
     target_include_directories(logger PRIVATE ${OPENSSL_INCLUDE_DIR})
+    target_compile_definitions(newlog_file_test PRIVATE HAVE_OPENSSL=1)
+    target_include_directories(newlog_file_test PRIVATE ${OPENSSL_INCLUDE_DIR})
 endif()
 
 set(_qt_package "")
@@ -103,12 +121,22 @@ target_link_libraries(logger
     ${SQLITE3_LIBRARY}
 )
 
+target_link_libraries(newlog_file_test
+    pthread
+    m
+    ${SQLITE3_LIBRARY}
+)
+
 if (HAMLIB_FOUND)
     target_link_libraries(logger ${HAMLIB_LIBRARIES})
+    target_link_libraries(newlog_file_test ${HAMLIB_LIBRARIES})
 endif()
 
 if (OpenSSL_FOUND)
     target_link_libraries(logger OpenSSL::SSL OpenSSL::Crypto)
+    target_link_libraries(newlog_file_test OpenSSL::SSL OpenSSL::Crypto)
 endif()
+
+add_test(NAME newlog_file_test COMMAND newlog_file_test)
 
 configure_file(${CMAKE_SOURCE_DIR}/src/cw_keys.ini cw_keys.ini COPYONLY)

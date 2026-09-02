@@ -9,6 +9,15 @@ Ten dokument opisuje pola obsługiwane w `logger.conf` oraz klucze dozwolone w p
 - Linie zaczynające się od `#` są ignorowane.
 - Parser nie rozróżnia sekcji: liczy się tylko para `klucz=wartość`.
 
+## Gdzie są bazy logów
+
+- Każdy nowy log jest zapisywany jako osobny plik SQLite.
+- Domyślny katalog baz logów: `$HOME/.config/contest-logger/logs/`.
+- `newlog Nazwa` tworzy plik `Nazwa.db`.
+- `newlog` bez nazwy tworzy plik `log_YYYYMMDD_HHMMSS.db`.
+- `LOGGER_DB_PATH` może wymusić własną ścieżkę pojedynczej bazy (tryb ręczny).
+- jeśli istnieje stary `logger.db`, a brak jeszcze `logs/Default Log.db`, aplikacja automatycznie skopiuje starą bazę do nowej lokalizacji (bez usuwania źródła).
+
 ## Pola konfiguracyjne `logger.conf`
 
 ### Lokalizacja i identyfikacja stacji

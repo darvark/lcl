@@ -62,7 +62,7 @@ flowchart LR
 	end
 
 	subgraph Persistence[Persystencja SQLite]
-		DB[db.c\naktywny i nazwane logbooki\nhistoria znaków]
+		DB[db.c\naktywny log + przełączanie plików DB\nhistoria znaków]
 	end
 
 	subgraph External[Dane zewnętrzne]
@@ -71,7 +71,7 @@ flowchart LR
 		DXLogRaw[surowa definicja DXLog]
 		ImportedDef[znormalizowany plik .conf zawodów]
 		CTYFile[wl_cty.dat]
-		SQLite[(logger.db)]
+		SQLite[(logs/*.db)]
 		Cluster[(serwer DXCluster)]
 		Rig[(Radio przez Hamlib)]
 	end
@@ -107,7 +107,7 @@ flowchart LR
 
 Qt pozostaje cienką warstwą: tłumaczy wejście klawiatury na akcje kontrolera i rysuje aktualny `AppRenderState`.
 
-`app_controller.c` to warstwa orkiestracji. Zarządza trybem contestowym, stanem dual-radio, integracją CAT, cyklem życia DXCluster, komendami eksportu, odświeżaniem CTY i operacjami na nazwanych logbookach, delegując przechowywanie danych i reguły domenowe do modułów głównych.
+`app_controller.c` to warstwa orkiestracji. Zarządza trybem contestowym, stanem dual-radio, integracją CAT, cyklem życia DXCluster, komendami eksportu, odświeżaniem CTY i operacjami na logach (każdy jako osobny plik SQLite), delegując przechowywanie danych i reguły domenowe do modułów głównych.
 
 Obsługa zawodów jest podzielona czysto: `contest.c` wczytuje definicje w stylu DXLog, `app_controller.c` przekształca je w aktywne zachowanie wpisywania i generowanie nadawanej wymiany, `qso.c` zapisuje wynikowe pola, a `export.c` produkuje Cabrillo oraz ADIF z tych samych danych definicji.
 
@@ -129,7 +129,7 @@ Obsługa zawodów jest podzielona czysto: `contest.c` wczytuje definicje w stylu
 - Bandmapa automatycznie pomija bliskie duplikaty tego samego znaku na bardzo zbliżonych częstotliwościach (tolerancja 2kHz)
 - Śledzi proste statystyki
 - Przechowuje log QSO i historię znaków w SQLite
-- Obsługuje archiwalne i nazwane logbooki w tej samej bazie SQLite
+- Każdy nowy log tworzy jako osobny, niezależny plik SQLite
 - Eksportuje dane logu do plików CSV i ADIF
 - Eksportuje log contestowy do Cabrillo z użyciem definicji zawodów w stylu DXLog
 - Importuje surowe definicje DXLog i normalizuje je do lokalnego formatu zawodów
@@ -167,7 +167,7 @@ Obsługa zawodów jest podzielona czysto: `contest.c` wczytuje definicje w stylu
 - Aktualizacja bazy SCP z supercheckpartial.com (`Menu → Update SCP (Check Partial)`)
 - Logbook i historia znaków w SQLite z nadpisaniem ścieżki przez `LOGGER_DB_PATH`
 - Akcja tworzenia nowego pustego logu
-- Niezależne nazwane logbooki w SQLite, wybierane po ID lub nazwie
+- Niezależne nazwane logi jako osobne pliki `logs/<nazwa>.db`, wybierane po ID z listy lub nazwie
 - Tworzenie nowego logu z opcjonalnym wyborem presetu zawodów w UI Qt
 - Dialog konfiguracji zawodów z zapisem do pliku i dedykowanym skrótem (`Ctrl+F8`)
 
@@ -369,7 +369,18 @@ Najważniejsze zasady operacyjne:
 
 Program oczekuje pliku bazy DXCC o nazwie `wl_cty.dat` w bieżącym katalogu roboczym lub w katalogu build. Po naciśnięciu `Ctrl+F7` plik `wl_cty.dat` jest pobierany i zastępowany w bieżącym katalogu roboczym.
 
-Log QSO i historia znaków są przechowywane domyślnie w `logger.db`. Ustaw `LOGGER_DB_PATH` na inny plik SQLite, jeśli chcesz trzymać bazę w innym miejscu. Przy pierwszym uruchomieniu istniejące wpisy z `call_history.txt` są importowane do SQLite, jeśli baza jest pusta.
+Log QSO i historia znaków są przechowywane domyślnie jako osobne pliki SQLite w katalogu runtime: `$HOME/.config/contest-logger/logs/`.
+
+- `newlog Nazwa` tworzy nową bazę `Nazwa.db` i przełącza aplikację na ten plik.
+- `newlog` (bez nazwy) tworzy nowy plik z automatyczną nazwą w formacie `log_YYYYMMDD_HHMMSS.db`.
+- `logs` pokazuje listę plików logów (ID z listy są numeracją widoku, używaną przez `openlog <id>`).
+
+Migracja z wcześniejszych wersji:
+
+- przy pierwszym uruchomieniu nowego mechanizmu, jeśli nie istnieje jeszcze `logs/Default Log.db`, a istnieje stare `logger.db`, program automatycznie kopiuje starą bazę do `logs/Default Log.db`.
+- migracja jest bezpieczna: źródłowy `logger.db` nie jest usuwany.
+
+Ustaw `LOGGER_DB_PATH`, jeśli chcesz ręcznie wymusić pojedynczy plik SQLite poza tym mechanizmem. Przy pierwszym uruchomieniu domyślnej bazy istniejące wpisy z `call_history.txt` są importowane do SQLite, jeśli baza jest pusta.
 
 Baza Super Check Partial jest przechowywana w pliku `MASTER.SCP` w bieżącym katalogu roboczym. Pobierz lub zaktualizuj ją przez `Menu → Update SCP (Check Partial)` albo ręcznie z https://www.supercheckpartial.com/downloads/MASTER.SCP. Wyszukiwanie check partial aktywuje się po wpisaniu co najmniej 2 znaków w polu `call`.
 

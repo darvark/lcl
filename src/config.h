@@ -68,6 +68,7 @@ typedef struct {
   int live_upload_port;
   char live_upload_token[128];
 
+  int ui_theme_palette;  /* 0=Classic Light, 1=Monokai, 2=Legacy Contest */
   int ui_monokai_theme;
 
 } Config;
@@ -99,7 +100,7 @@ int config_save_active(void);
 /* Return active operator callsign for logging: explicit operator_call or station_call fallback. */
 const char *config_effective_operator_call(void);
 
-/* Ensure runtime layout under $HOME/.config/contest-loger exists. */
+/* Ensure runtime layout under $HOME/.config/contest-logger exists. */
 int config_ensure_runtime_layout(void);
 
 /* Return runtime base directory path, or NULL when unavailable. */

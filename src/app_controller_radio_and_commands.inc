@@ -336,7 +336,8 @@ static void list_named_logs(void) {
   int count = 0;
 
   if (db_list_named_logbooks(items, NAMED_LOG_LIST_MAX, &count) != 0) {
-    snprintf(status_text, sizeof(status_text), "Cannot read named logs");
+    snprintf(status_text, sizeof(status_text),
+             "Cannot read logs (runtime dir unavailable)");
     return;
   }
 
@@ -399,6 +400,28 @@ static void open_named_log_selector(const char *selector) {
 }
 
 /*
+ * Open a logbook from an explicit SQLite file path.
+ *
+ * @param path Path to the .db file.
+ * @return Nothing.
+ */
+static void open_log_file_path(const char *path) {
+  if (!path || !path[0]) {
+    snprintf(status_text, sizeof(status_text), "Usage: openlogfile <path>");
+    return;
+  }
+
+  if (db_open_logbook_file(path) != 0) {
+    snprintf(status_text, sizeof(status_text), "Cannot open log DB file");
+    return;
+  }
+
+  reset_loaded_log_state();
+  restore_current_log_contest_definition();
+  snprintf(status_text, sizeof(status_text), "Log opened from file");
+}
+
+/*
  * Refresh call suggestions for the current input buffer.
  *
  * @param input Input buffer to analyze.
@@ -445,6 +468,40 @@ static void sync_callsign_suggestion_state(void) {
 
 static int export_cabrillo_with_filename(const char *cab_file);
 
+static void ensure_filename_extension(const char *input,
+                                      const char *required_ext,
+                                      char *output,
+                                      size_t output_size) {
+  if (!output || output_size == 0)
+    return;
+
+  output[0] = 0;
+  if (!input || !input[0] || !required_ext || !required_ext[0])
+    return;
+
+  snprintf(output, output_size, "%s", input);
+
+  const char *dot = strrchr(output, '.');
+  if (dot && strcasecmp(dot, required_ext) == 0)
+    return;
+
+  if (!dot) {
+    const size_t len = strlen(output);
+    if (len + strlen(required_ext) < output_size)
+      snprintf(output + len, output_size - len, "%s", required_ext);
+    return;
+  }
+
+  char *mutable_dot = strrchr(output, '.');
+  if (!mutable_dot)
+    return;
+
+  *mutable_dot = 0;
+  const size_t base_len = strlen(output);
+  if (base_len + strlen(required_ext) < output_size)
+    snprintf(output + base_len, output_size - base_len, "%s", required_ext);
+}
+
 static void derive_cabrillo_filename_from_adif(const char *adif_file,
                                               char *cabrillo_file,
                                               size_t cabrillo_size) {
@@ -489,24 +546,31 @@ static void derive_cabrillo_filename_from_adif(const char *adif_file,
  */
 static int export_with_adif_filename(const char *adif_file) {
   const char *default_csv = "log.csv";
+  char normalized_adif[512] = {0};
   char cabrillo_file[512] = {0};
 
   if (!adif_file || !adif_file[0])
     return -1;
 
+  ensure_filename_extension(adif_file, ".adi", normalized_adif,
+                            sizeof(normalized_adif));
+  if (!normalized_adif[0])
+    return -1;
+
   if (export_csv(default_csv) != 0)
     return -1;
 
-  if (export_adif(adif_file) != 0)
+  if (export_adif(normalized_adif) != 0)
     return -1;
 
-  derive_cabrillo_filename_from_adif(adif_file, cabrillo_file, sizeof(cabrillo_file));
+  derive_cabrillo_filename_from_adif(normalized_adif, cabrillo_file,
+                                     sizeof(cabrillo_file));
   if (export_cabrillo_with_filename(cabrillo_file) != 0)
     return -1;
 
   snprintf(status_text, sizeof(status_text),
            "Exported ADIF: %.80s | Cabrillo: %.60s",
-           adif_file ? adif_file : "",
+           normalized_adif,
            cabrillo_file ? cabrillo_file : "");
 
   return 0;
@@ -516,17 +580,26 @@ static int export_with_adif_filename(const char *adif_file) {
  * Export the current logbook to Cabrillo using loaded contest definition.
  */
 static int export_cabrillo_with_filename(const char *cab_file) {
+  char normalized_cab[512] = {0};
+
   if (!cab_file || !cab_file[0])
+    return -1;
+
+  ensure_filename_extension(cab_file, ".cbr", normalized_cab,
+                            sizeof(normalized_cab));
+  if (!normalized_cab[0])
     return -1;
 
   if (!contest_definition_loaded)
     contest_definition_init_defaults(&active_contest_def);
 
   /* Use the QTC-aware exporter so QTC: lines are included when applicable. */
-  if (export_cabrillo_with_qtc(cab_file, &active_contest_def, config.station_call) != 0)
+  if (export_cabrillo_with_qtc(normalized_cab, &active_contest_def,
+                               config.station_call) != 0)
     return -1;
 
-  snprintf(status_text, sizeof(status_text), "Exported Cabrillo: %s", cab_file);
+  snprintf(status_text, sizeof(status_text), "Exported Cabrillo: %s",
+           normalized_cab);
   return 0;
 }
 

@@ -123,6 +123,9 @@ void call_suggestion_refresh(CallSuggestionList *list, const char *input,
   if (!extract_prefix_token(input, prefix, sizeof(prefix), &prefix_len))
     return;
 
+  if (prefix_len < 3)
+    return;
+
   for (int i = history_count - 1; i >= 0; i--) {
     if (!history[i][0])
       continue;

@@ -4,10 +4,15 @@
 #include "qtc.h"
 
 #include <ctype.h>
+#include <dirent.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 
 typedef struct sqlite3 sqlite3;
 typedef struct sqlite3_stmt sqlite3_stmt;
@@ -38,6 +43,8 @@ extern int sqlite3_clear_bindings(sqlite3_stmt *stmt);
 
 static sqlite3 *db = NULL;
 static char db_path[512] = {0};
+static char previous_db_path[512] = {0};
+static char pending_logbook_name[64] = "GeneralLog";
 static int db_initialized = 0;
 static int db_is_default_path = 1;
 static int db_bootstrap_import_done = 0;
@@ -52,6 +59,22 @@ static int meta_get_previous_log_available(int *value);
 static int copy_table(const char *src, const char *dst, const char *columns);
 static int exec_sql_checked(const char *sql);
 static int named_logbook_exists(long long id);
+static int has_suffix(const char *value, const char *suffix);
+static void sanitize_log_name(const char *name, char *out, size_t out_size);
+static void db_path_to_log_name(const char *path, char *out, size_t out_size);
+static int copy_file_binary(const char *src, const char *dst);
+static int migrate_legacy_default_db_if_needed(const char *new_default_path);
+static int ensure_db_file_exists(const char *path);
+static int resolve_logs_dir(char *out, size_t out_size);
+static int build_log_db_path(const char *log_name, char *out, size_t out_size);
+static void format_file_mtime(time_t t, char *out, size_t out_size);
+static int count_qsos_for_file(const char *path, int *out_count);
+static int list_log_db_files(char paths[][512], char names[][64],
+                             struct stat stats[], int max_items,
+                             int *out_count);
+static int switch_to_db_file(const char *path, const char *log_name,
+                             int remember_previous);
+static int switch_to_named_log(const char *name, int fail_if_exists);
 static int prepare_stmt(sqlite3_stmt **stmt, const char *sql);
 static int get_current_logbook_id(int *out_id);
 static int set_current_logbook_id(int id);
@@ -113,6 +136,370 @@ static void utc_now_iso(char *out, size_t out_size) {
   struct tm tm_utc;
   gmtime_r(&now, &tm_utc);
   strftime(out, out_size, "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
+}
+
+static int has_suffix(const char *value, const char *suffix) {
+  if (!value || !suffix)
+    return 0;
+
+  size_t value_len = strlen(value);
+  size_t suffix_len = strlen(suffix);
+  if (suffix_len == 0 || value_len < suffix_len)
+    return 0;
+
+  return strcmp(value + value_len - suffix_len, suffix) == 0;
+}
+
+static void sanitize_log_name(const char *name, char *out, size_t out_size) {
+  if (!out || out_size < 2)
+    return;
+
+  out[0] = 0;
+
+  const char *src = (name && name[0]) ? name : "log";
+  while (*src && isspace((unsigned char)*src))
+    src++;
+
+  size_t used = 0;
+  for (size_t i = 0; src[i] && used < out_size - 1; i++) {
+    unsigned char ch = (unsigned char)src[i];
+    if (ch < 32)
+      continue;
+    if (ch == '/' || ch == '\\' || ch == ':' || ch == '*' || ch == '?' ||
+        ch == '"' || ch == '<' || ch == '>' || ch == '|')
+      ch = '_';
+    out[used++] = (char)ch;
+  }
+
+  while (used > 0 && isspace((unsigned char)out[used - 1]))
+    used--;
+
+  out[used] = 0;
+  if (!out[0])
+    snprintf(out, out_size, "%s", "log");
+}
+
+static void db_path_to_log_name(const char *path, char *out, size_t out_size) {
+  if (!out || out_size < 2) {
+    return;
+  }
+
+  out[0] = 0;
+  if (!path || !path[0])
+    return;
+
+  const char *name = strrchr(path, '/');
+  name = name ? name + 1 : path;
+  if (!name[0])
+    return;
+
+  snprintf(out, out_size, "%s", name);
+  if (has_suffix(out, ".db")) {
+    size_t len = strlen(out);
+    if (len > 3)
+      out[len - 3] = 0;
+  }
+}
+
+static int copy_file_binary(const char *src, const char *dst) {
+  if (!src || !src[0] || !dst || !dst[0])
+    return -1;
+
+  FILE *in = fopen(src, "rb");
+  if (!in)
+    return -1;
+
+  FILE *out = fopen(dst, "wb");
+  if (!out) {
+    fclose(in);
+    return -1;
+  }
+
+  char buffer[8192];
+  size_t nread = 0;
+  int rc = 0;
+
+  while ((nread = fread(buffer, 1, sizeof(buffer), in)) > 0) {
+    if (fwrite(buffer, 1, nread, out) != nread) {
+      rc = -1;
+      break;
+    }
+  }
+
+  if (ferror(in))
+    rc = -1;
+
+  fclose(out);
+  fclose(in);
+  return rc;
+}
+
+static int migrate_legacy_default_db_if_needed(const char *new_default_path) {
+  if (!new_default_path || !new_default_path[0])
+    return 0;
+
+  if (access(new_default_path, F_OK) == 0)
+    return 0;
+
+  (void)config_ensure_runtime_layout();
+
+  char candidates[2][512];
+  memset(candidates, 0, sizeof(candidates));
+
+  const char *runtime_dir = config_runtime_dir();
+  if (runtime_dir && runtime_dir[0])
+    snprintf(candidates[0], sizeof(candidates[0]), "%s/logger.db", runtime_dir);
+
+  snprintf(candidates[1], sizeof(candidates[1]), "%s", "logger.db");
+
+  for (size_t i = 0; i < 2; i++) {
+    if (!candidates[i][0])
+      continue;
+    if (strcmp(candidates[i], new_default_path) == 0)
+      continue;
+    if (access(candidates[i], R_OK) != 0)
+      continue;
+
+    if (copy_file_binary(candidates[i], new_default_path) == 0)
+      return 1;
+
+    return -1;
+  }
+
+  return 0;
+}
+
+static int ensure_db_file_exists(const char *path) {
+  if (!path || !path[0])
+    return -1;
+
+  FILE *f = fopen(path, "ab");
+  if (!f)
+    return -1;
+
+  fclose(f);
+  return 0;
+}
+
+static int resolve_logs_dir(char *out, size_t out_size) {
+  if (!out || out_size < 2)
+    return -1;
+
+  out[0] = 0;
+  (void)config_ensure_runtime_layout();
+  const char *runtime_dir = config_runtime_dir();
+
+  if (!runtime_dir || !runtime_dir[0])
+    return -1;
+
+  snprintf(out, out_size, "%s/logs", runtime_dir);
+
+  struct stat st;
+  if (stat(out, &st) == 0)
+    return S_ISDIR(st.st_mode) ? 0 : -1;
+
+  if (mkdir(out, 0700) == 0)
+    return 0;
+
+  if (errno == EEXIST)
+    return 0;
+
+  return -1;
+}
+
+static int build_log_db_path(const char *log_name, char *out, size_t out_size) {
+  if (!out || out_size < 2)
+    return -1;
+
+  char logs_dir[512] = {0};
+  char safe_name[128] = {0};
+  if (resolve_logs_dir(logs_dir, sizeof(logs_dir)) != 0)
+    return -1;
+
+  sanitize_log_name(log_name, safe_name, sizeof(safe_name));
+  snprintf(out, out_size, "%s/%s.db", logs_dir, safe_name);
+  return 0;
+}
+
+static void format_file_mtime(time_t t, char *out, size_t out_size) {
+  if (!out || out_size < 2)
+    return;
+
+  struct tm tm_utc;
+  gmtime_r(&t, &tm_utc);
+  strftime(out, out_size, "%Y-%m-%d %H:%M:%S", &tm_utc);
+}
+
+static int count_qsos_for_file(const char *path, int *out_count) {
+  if (!path || !path[0] || !out_count)
+    return -1;
+
+  *out_count = 0;
+
+  sqlite3 *tmp = NULL;
+  if (sqlite3_open(path, &tmp) != SQLITE_OK) {
+    if (tmp)
+      sqlite3_close(tmp);
+    return -1;
+  }
+
+  sqlite3_stmt *stmt = NULL;
+  int rc = sqlite3_prepare_v2(tmp, "SELECT COUNT(*) FROM qso;", -1, &stmt, NULL);
+  if (rc == SQLITE_OK && sqlite3_step(stmt) == SQLITE_ROW)
+    *out_count = sqlite3_column_int(stmt, 0);
+
+  if (stmt)
+    sqlite3_finalize(stmt);
+  sqlite3_close(tmp);
+  return 0;
+}
+
+static int list_log_db_files(char paths[][512], char names[][64],
+                             struct stat stats[], int max_items,
+                             int *out_count) {
+  if (out_count)
+    *out_count = 0;
+
+  if (!paths || !names || !stats || max_items <= 0)
+    return -1;
+
+  char logs_dir[512] = {0};
+  if (resolve_logs_dir(logs_dir, sizeof(logs_dir)) != 0)
+    return -1;
+
+  DIR *dir = opendir(logs_dir);
+  if (!dir)
+    return -1;
+
+  struct dirent *entry = NULL;
+  int count = 0;
+
+  while ((entry = readdir(dir)) != NULL) {
+    if (entry->d_name[0] == '.')
+      continue;
+    if (!has_suffix(entry->d_name, ".db"))
+      continue;
+    if (count >= max_items)
+      break;
+
+    snprintf(paths[count], 512, "%s/%s", logs_dir, entry->d_name);
+    db_path_to_log_name(entry->d_name, names[count], 64);
+
+    if (stat(paths[count], &stats[count]) != 0)
+      memset(&stats[count], 0, sizeof(struct stat));
+
+    count++;
+  }
+
+  closedir(dir);
+
+  for (int i = 0; i < count; i++) {
+    for (int j = i + 1; j < count; j++) {
+      if (strcasecmp(names[i], names[j]) <= 0)
+        continue;
+
+      char tmp_path[512];
+      char tmp_name[64];
+      struct stat tmp_stat;
+
+      snprintf(tmp_path, sizeof(tmp_path), "%s", paths[i]);
+      snprintf(tmp_name, sizeof(tmp_name), "%s", names[i]);
+      tmp_stat = stats[i];
+
+      snprintf(paths[i], 512, "%s", paths[j]);
+      snprintf(names[i], 64, "%s", names[j]);
+      stats[i] = stats[j];
+
+      snprintf(paths[j], 512, "%s", tmp_path);
+      snprintf(names[j], 64, "%s", tmp_name);
+      stats[j] = tmp_stat;
+    }
+  }
+
+  if (out_count)
+    *out_count = count;
+
+  return 0;
+}
+
+static int switch_to_db_file(const char *path, const char *log_name,
+                             int remember_previous) {
+  if (!path || !path[0])
+    return -1;
+
+  char target_path[512] = {0};
+  snprintf(target_path, sizeof(target_path), "%s", path);
+
+  char target_name[64] = {0};
+  if (log_name && log_name[0])
+    sanitize_log_name(log_name, target_name, sizeof(target_name));
+  else
+    db_path_to_log_name(target_path, target_name, sizeof(target_name));
+
+  if (!target_name[0])
+    snprintf(target_name, sizeof(target_name), "%s", "GeneralLog");
+
+  if (ensure_db_file_exists(target_path) != 0)
+    return -1;
+
+  char old_path[512] = {0};
+  if (db_path[0])
+    snprintf(old_path, sizeof(old_path), "%s", db_path);
+
+  if (remember_previous && old_path[0] && strcmp(old_path, target_path) != 0)
+    snprintf(previous_db_path, sizeof(previous_db_path), "%s", old_path);
+
+  if (db)
+    db_shutdown();
+
+  snprintf(db_path, sizeof(db_path), "%s", target_path);
+  snprintf(pending_logbook_name, sizeof(pending_logbook_name), "%s",
+           target_name);
+  db_is_default_path = 0;
+  db_bootstrap_import_done = 0;
+  db_initialized = 0;
+
+  if (db_init() != 0) {
+    if (old_path[0]) {
+      snprintf(db_path, sizeof(db_path), "%s", old_path);
+      db_initialized = 0;
+      (void)db_init();
+    }
+    return -1;
+  }
+
+  struct stat st;
+  if (stat(target_path, &st) != 0 || !S_ISREG(st.st_mode)) {
+    db_shutdown();
+    if (old_path[0]) {
+      snprintf(db_path, sizeof(db_path), "%s", old_path);
+      db_initialized = 0;
+      (void)db_init();
+    }
+    return -1;
+  }
+
+  return 0;
+}
+
+static int switch_to_named_log(const char *name, int fail_if_exists) {
+  char db_file[512] = {0};
+  char safe_name[64] = {0};
+
+  sanitize_log_name(name, safe_name, sizeof(safe_name));
+  if (!safe_name[0])
+    return -1;
+
+  if (build_log_db_path(safe_name, db_file, sizeof(db_file)) != 0)
+    return -1;
+
+  if (fail_if_exists && access(db_file, F_OK) == 0)
+    return -1;
+
+  if (!fail_if_exists && access(db_file, F_OK) != 0)
+    return -1;
+
+  return switch_to_db_file(db_file, safe_name, 1);
 }
 
 /*
@@ -714,9 +1101,13 @@ static int ensure_logbook_context(void) {
   if (logs_count <= 0) {
     sqlite3_stmt *insert_stmt = NULL;
     if (prepare_stmt(&insert_stmt,
-                     "INSERT INTO named_logbooks (name, created_at) VALUES ('Default Log', CURRENT_TIMESTAMP);") !=
+                     "INSERT INTO named_logbooks (name, created_at) VALUES (?, CURRENT_TIMESTAMP);") !=
         SQLITE_OK)
       return -1;
+
+    bind_text_or_null(insert_stmt, 1,
+                      pending_logbook_name[0] ? pending_logbook_name
+                                              : "GeneralLog");
 
     if (sqlite3_step(insert_stmt) != SQLITE_DONE) {
       sqlite3_finalize(insert_stmt);
@@ -785,6 +1176,17 @@ static int exec_sql_checked(const char *sql) {
  */
 static int prepare_stmt(sqlite3_stmt **stmt, const char *sql) {
   return sqlite3_prepare_v2(db, sql, -1, stmt, NULL);
+}
+
+static void adif_format_freq_mhz(int freq_khz, char *out, size_t out_size) {
+  if (!out || out_size == 0)
+    return;
+
+  snprintf(out, out_size, "%.6f", freq_khz / 1000.0);
+  for (size_t i = 0; out[i]; i++) {
+    if (out[i] == ',')
+      out[i] = '.';
+  }
 }
 
 /*
@@ -859,22 +1261,40 @@ static int ensure_open(void) {
 
   const char *env_path = getenv("LOGGER_DB_PATH");
   const char *path = NULL;
+  int using_default_path = 0;
 
-  if (env_path && env_path[0]) {
+  if (db_path[0]) {
+    path = db_path;
+  } else if (env_path && env_path[0]) {
     path = env_path;
   } else {
-    (void)config_ensure_runtime_layout();
-    const char *runtime_dir = config_runtime_dir();
-    if (runtime_dir && runtime_dir[0]) {
-      snprintf(db_path, sizeof(db_path), "%s/logger.db", runtime_dir);
+    if (build_log_db_path("GeneralLog", db_path, sizeof(db_path)) == 0)
       path = db_path;
-    } else {
+    else
       path = "logger.db";
-    }
+    using_default_path = 1;
   }
 
-  snprintf(db_path, sizeof(db_path), "%s", path);
-  db_is_default_path = !(env_path && env_path[0]);
+  if (path != db_path)
+    snprintf(db_path, sizeof(db_path), "%s", path);
+  db_is_default_path = using_default_path;
+
+  if (using_default_path) {
+    int migrate_rc = migrate_legacy_default_db_if_needed(db_path);
+    if (migrate_rc < 0)
+      return -1;
+  }
+
+  if (ensure_db_file_exists(db_path) != 0)
+    return -1;
+
+  if (!pending_logbook_name[0]) {
+    db_path_to_log_name(db_path, pending_logbook_name,
+                        sizeof(pending_logbook_name));
+    if (!pending_logbook_name[0])
+      snprintf(pending_logbook_name, sizeof(pending_logbook_name), "%s",
+               "GeneralLog");
+  }
 
   if (sqlite3_open(db_path, &db) != SQLITE_OK) {
     if (db) {
@@ -1890,14 +2310,24 @@ static int copy_table(const char *src, const char *dst, const char *columns) {
  * @return 0 on success, or -1 on failure.
  */
 int db_archive_current_logbook(void) {
-  if (db_init() != 0)
-    return -1;
+  time_t now = time(NULL);
+  struct tm tm_utc;
+  gmtime_r(&now, &tm_utc);
 
-  int current_id = 0;
-  if (get_current_logbook_id(&current_id) != 0 || current_id <= 0)
-    return -1;
+  char base_name[64] = {0};
+  strftime(base_name, sizeof(base_name), "log_%Y%m%d_%H%M%S", &tm_utc);
 
-  return set_previous_logbook_id(current_id);
+  if (db_archive_current_logbook_named(base_name) == 0)
+    return 0;
+
+  for (int i = 2; i <= 99; i++) {
+    char candidate[64] = {0};
+    snprintf(candidate, sizeof(candidate), "%s_%d", base_name, i);
+    if (db_archive_current_logbook_named(candidate) == 0)
+      return 0;
+  }
+
+  return -1;
 }
 
 /*
@@ -1906,24 +2336,28 @@ int db_archive_current_logbook(void) {
  * @return 0 on success, or -1 on failure.
  */
 int db_open_previous_logbook(void) {
+  if (!previous_db_path[0])
+    return -1;
+
   if (db_init() != 0)
     return -1;
 
-  int current_id = 0;
-  int previous_id = 0;
-
-  if (get_current_logbook_id(&current_id) != 0 || current_id <= 0)
+  char current_path[512] = {0};
+  if (db_path[0])
+    snprintf(current_path, sizeof(current_path), "%s", db_path);
+  else
     return -1;
 
-  if (get_previous_logbook_id(&previous_id) != 0 || previous_id <= 0 ||
-      !named_logbook_exists(previous_id))
+  char target_path[512] = {0};
+  snprintf(target_path, sizeof(target_path), "%s", previous_db_path);
+
+  char target_name[64] = {0};
+  db_path_to_log_name(target_path, target_name, sizeof(target_name));
+
+  if (switch_to_db_file(target_path, target_name, 0) != 0)
     return -1;
 
-  if (set_current_logbook_id(previous_id) != 0)
-    return -1;
-
-  if (set_previous_logbook_id(current_id) != 0)
-    return -1;
+  snprintf(previous_db_path, sizeof(previous_db_path), "%s", current_path);
 
   return 0;
 }
@@ -1956,35 +2390,20 @@ int db_archive_current_logbook_named(const char *name) {
   if (!name || !name[0])
     return -1;
 
-  if (db_init() != 0)
+  char db_file[512] = {0};
+  char safe_name[64] = {0};
+
+  sanitize_log_name(name, safe_name, sizeof(safe_name));
+  if (!safe_name[0])
     return -1;
 
-  int current_id = 0;
-  if (get_current_logbook_id(&current_id) != 0 || current_id <= 0)
+  if (build_log_db_path(safe_name, db_file, sizeof(db_file)) != 0)
     return -1;
 
-  sqlite3_stmt *stmt = NULL;
-  if (prepare_stmt(&stmt,
-                   "INSERT INTO named_logbooks (name, created_at) VALUES (?, CURRENT_TIMESTAMP);") !=
-      SQLITE_OK)
+  if (access(db_file, F_OK) == 0)
     return -1;
 
-  bind_text_or_null(stmt, 1, name);
-  if (sqlite3_step(stmt) != SQLITE_DONE) {
-    sqlite3_finalize(stmt);
-    return -1;
-  }
-
-  int new_id = (int)sqlite3_last_insert_rowid(db);
-  sqlite3_finalize(stmt);
-
-  if (new_id <= 0)
-    return -1;
-
-  if (set_previous_logbook_id(current_id) != 0)
-    return -1;
-
-  if (set_current_logbook_id(new_id) != 0)
+  if (switch_to_db_file(db_file, safe_name, 1) != 0)
     return -1;
 
   return 0;
@@ -2005,32 +2424,36 @@ int db_list_named_logbooks(DBNamedLogbook *out, int max_items, int *out_count) {
   if (!out || max_items <= 0)
     return -1;
 
-  if (db_init() != 0)
-    return -1;
+  char paths[128][512];
+  char names[128][64];
+  struct stat stats[128];
+  int listed = 0;
 
-  sqlite3_stmt *stmt = NULL;
-  if (prepare_stmt(&stmt,
-                   "SELECT nl.id,nl.name,nl.created_at,"
-                   "(SELECT COUNT(*) FROM qso nq WHERE nq.logbook_id = nl.id) "
-                   "FROM named_logbooks nl ORDER BY nl.id DESC;") != SQLITE_OK)
+  if (max_items > 128)
+    max_items = 128;
+
+  if (list_log_db_files(paths, names, stats, max_items, &listed) != 0)
     return -1;
 
   int count = 0;
-  while (sqlite3_step(stmt) == SQLITE_ROW && count < max_items) {
+  for (int i = 0; i < listed && count < max_items; i++) {
     DBNamedLogbook *item = &out[count];
     memset(item, 0, sizeof(*item));
 
-    item->id = sqlite3_column_int64(stmt, 0);
-    snprintf(item->name, sizeof(item->name), "%s",
-             (const char *)sqlite3_column_text(stmt, 1));
-    snprintf(item->created_at, sizeof(item->created_at), "%s",
-             (const char *)sqlite3_column_text(stmt, 2));
-    item->qso_count = sqlite3_column_int(stmt, 3);
+    item->id = i + 1;
+    strncpy(item->name, names[i], sizeof(item->name) - 1);
+    item->name[sizeof(item->name) - 1] = 0;
+    format_file_mtime(stats[i].st_mtime, item->created_at,
+                      sizeof(item->created_at));
+
+    int qso_count = 0;
+    if (count_qsos_for_file(paths[i], &qso_count) == 0)
+      item->qso_count = qso_count;
+    else
+      item->qso_count = 0;
 
     count++;
   }
-
-  sqlite3_finalize(stmt);
 
   if (out_count)
     *out_count = count;
@@ -2048,20 +2471,18 @@ int db_open_named_logbook_by_id(long long id) {
   if (id <= 0)
     return -1;
 
-  if (db_init() != 0)
+  char paths[256][512];
+  char names[256][64];
+  struct stat stats[256];
+  int listed = 0;
+
+  if (list_log_db_files(paths, names, stats, 256, &listed) != 0)
     return -1;
 
-  if (!named_logbook_exists(id))
+  if (id > listed)
     return -1;
 
-  int current_id = 0;
-  if (get_current_logbook_id(&current_id) != 0 || current_id <= 0)
-    return -1;
-
-  if (set_previous_logbook_id(current_id) != 0)
-    return -1;
-
-  return set_current_logbook_id((int)id);
+  return switch_to_db_file(paths[id - 1], names[id - 1], 1);
 }
 
 /*
@@ -2074,27 +2495,22 @@ int db_open_named_logbook_by_name(const char *name) {
   if (!name || !name[0])
     return -1;
 
-  if (db_init() != 0)
+  return switch_to_named_log(name, 0);
+}
+
+int db_open_logbook_file(const char *path) {
+  if (!path || !path[0])
     return -1;
 
-  sqlite3_stmt *stmt = NULL;
-  if (prepare_stmt(&stmt,
-                   "SELECT id FROM named_logbooks WHERE name = ? ORDER BY id DESC LIMIT 1;") !=
-      SQLITE_OK)
+  if (access(path, R_OK) != 0)
     return -1;
 
-  bind_text_or_null(stmt, 1, name);
-  long long id = 0;
+  char log_name[64] = {0};
+  db_path_to_log_name(path, log_name, sizeof(log_name));
+  if (!log_name[0])
+    snprintf(log_name, sizeof(log_name), "%s", "log");
 
-  if (sqlite3_step(stmt) == SQLITE_ROW)
-    id = sqlite3_column_int64(stmt, 0);
-
-  sqlite3_finalize(stmt);
-
-  if (id <= 0)
-    return -1;
-
-  return db_open_named_logbook_by_id(id);
+  return switch_to_db_file(path, log_name, 1);
 }
 
 /*
@@ -2125,10 +2541,13 @@ static int export_qso_rows(const char *sql, FILE *f, int adif_mode) {
       fprintf(f, "%s,%s,%s,%d,%s,%s,%s,%s,%s\n", date, utc, call, freq, band,
               mode, rst, comments ? comments : "", country);
     } else {
+      char freq_text[32] = {0};
+      adif_format_freq_mhz(freq, freq_text, sizeof(freq_text));
+
       fprintf(f, "<CALL:%zu>%s", strlen(call), call);
       fprintf(f, "<QSO_DATE:8>%s", date);
       fprintf(f, "<TIME_ON:4>%s", utc);
-      fprintf(f, "<FREQ:9>%.6f", freq / 1000.0);
+      fprintf(f, "<FREQ:%zu>%s", strlen(freq_text), freq_text);
       fprintf(f, "<BAND:%zu>%s", strlen(band), band);
       fprintf(f, "<MODE:%zu>%s", strlen(mode), mode);
       fprintf(f, "<RST_SENT:%zu>%s", strlen(rst), rst);

@@ -238,11 +238,11 @@ Komendy można wpisywać w linii wejścia i zatwierdzać `Enter`.
 | `exportcab` | eksportuje Cabrillo do `log.cbr` |
 | `exportcab mojlog.cbr` | eksportuje Cabrillo do wskazanego pliku |
 | `invalid` | przełącza flagę INVALID dla ostatniego QSO |
-| `newlog` lub `clear` | tworzy nowy pusty log |
-| `newlog Nazwa zawodów` | tworzy i przełącza na nowy nazwany log |
+| `newlog` lub `clear` | tworzy nowy pusty log jako nowy plik `log_YYYYMMDD_HHMMSS.db` |
+| `newlog Nazwa zawodów` | tworzy i przełącza na nowy log w pliku `Nazwa zawodów.db` |
 | `prevlog`, `openprev`, `previous` | otwiera poprzedni log |
-| `logs` | pokazuje listę nazwanych logów |
-| `openlog 12` | otwiera nazwany log po ID |
+| `logs` | pokazuje listę logów (osobnych plików DB) |
+| `openlog 12` | otwiera log po ID z listy komendy `logs` |
 | `openlog Summer Contest` | otwiera log po nazwie |
 | `contest plik.conf` | ładuje definicję zawodów |
 | `contest none` | wyłącza tryb zawodów |
@@ -281,3 +281,4 @@ Dolny pasek ma dwie linie:
 - `Space` nie wpisuje spacji do komendy, tylko przechodzi do następnego pola. Dlatego w GUI komendy z argumentami z dialogów są wykonywane bezpośrednio, a nie przez symulację klawiszy.
 - W trybie aktualizacji CTY po `Ctrl+F7` klawiatura jest blokowana do zakończenia pobierania.
 - `PageUp` i `PageDown` są mapowane w warstwie Qt, ale obecnie nie mają odrębnej akcji użytkowej opisanej przez kontroler.
+- Każdy nowy log ma własną, niezależną bazę SQLite w `$HOME/.config/contest-logger/logs/`.

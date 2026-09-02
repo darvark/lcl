@@ -6,6 +6,7 @@
 #include <QDialogButtonBox>
 #include <QDateTime>
 #include <QDir>
+#include <QFileDialog>
 #include <QFile>
 #include <QFileInfo>
 #include <QFormLayout>

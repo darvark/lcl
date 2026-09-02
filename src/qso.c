@@ -514,6 +514,7 @@ int qso_add_contest_fields(const char *call, int freq_khz, const char *rst,
                            const char *exchange_recv,
                            const char *operator_mode,
                            const char *contest_id, int radio_nr, int points,
+                           int allow_duplicate_qso,
                            char *status, size_t status_size) {
   char serial_reservation_id[64] = {0};
   char final_exchange_sent[32] = {0};
@@ -552,7 +553,8 @@ int qso_add_contest_fields(const char *call, int freq_khz, const char *rst,
     points = 0;
   q->points = points;
 
-  if (qso_is_duplicate_call_band_mode(q->call, q->band, q->mode, idx)) {
+  if (!allow_duplicate_qso &&
+      qso_is_duplicate_call_band_mode(q->call, q->band, q->mode, idx)) {
     q->points = 0;
     q->invalid = true;
     db_update_qso_invalid(q->db_id, 1);

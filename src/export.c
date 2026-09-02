@@ -3,6 +3,17 @@
 #include "qso.h"
 #include "qtc.h"
 
+static void adif_format_freq_mhz(int freq_khz, char *out, size_t out_size) {
+  if (!out || out_size == 0)
+    return;
+
+  snprintf(out, out_size, "%.6f", freq_khz / 1000.0);
+  for (size_t i = 0; out[i]; i++) {
+    if (out[i] == ',')
+      out[i] = '.';
+  }
+}
+
 static int text_contains_token_ci(const char *text, const char *token) {
   if (!text || !text[0] || !token || !token[0])
     return 0;
@@ -122,11 +133,14 @@ int export_adif(const char *filename) {
 
   for (int i = 0; i < qso_count; i++) {
     QSO *q = &logbook[i];
+    char freq_text[32] = {0};
+
+    adif_format_freq_mhz(q->freq, freq_text, sizeof(freq_text));
 
     fprintf(f, "<CALL:%zu>%s", strlen(q->call), q->call);
     fprintf(f, "<QSO_DATE:8>%s", q->date);
     fprintf(f, "<TIME_ON:4>%s", q->utc);
-    fprintf(f, "<FREQ:9>%.6f", q->freq / 1000.0);
+    fprintf(f, "<FREQ:%zu>%s", strlen(freq_text), freq_text);
     fprintf(f, "<BAND:%zu>%s", strlen(q->band), q->band);
     fprintf(f, "<MODE:%zu>%s", strlen(q->mode), q->mode);
     fprintf(f, "<RST_SENT:%zu>%s", strlen(q->rst), q->rst);

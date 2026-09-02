@@ -80,6 +80,12 @@ typedef struct {
 
   /* Active contest name (empty string when no contest is loaded). */
   const char *contest_name;
+
+  /* Active contest mode (for example CW/SSB/MIXED), empty when unset. */
+  const char *contest_mode;
+
+  /* Active contest multiplier model (ContestMultiplierType as int). */
+  int contest_multiplier_type;
 } AppRenderState;
 
 /*

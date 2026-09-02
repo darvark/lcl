@@ -460,11 +460,13 @@ static void test_contest_definition_and_cabrillo(const char *tmp_dir) {
 
   expect_int_eq(qso_add_contest_fields("SP9SER", 7020, "599", "CW", "", "",
                                        "101", "RUN", def.cabrillo_name, 1, 1,
+                                       def.duplicate_qso,
                                        status, sizeof(status)),
                 base_qso_count,
                 "first contest QSO for Cabrillo serial fallback should save");
   expect_int_eq(qso_add_contest_fields("SP9SEQ", 7020, "599", "CW", "", "",
                                        "102", "RUN", def.cabrillo_name, 1, 1,
+                                       def.duplicate_qso,
                                        status, sizeof(status)),
                 base_qso_count + 1,
                 "second contest QSO for Cabrillo serial fallback should save");
@@ -517,7 +519,12 @@ static void test_call_suggestions(void) {
   call_suggestion_list_clear(&list);
 
   call_suggestion_refresh(&list, "sp", history, 8);
-  expect_true(list.count >= 4, "SP prefix should return multiple suggestions");
+  expect_int_eq(list.count, 0,
+                "less than 3 chars should not return suggestions");
+
+  call_suggestion_refresh(&list, "sp9", history, 8);
+  expect_true(list.count >= 3,
+              "3-char prefix should return multiple suggestions");
   expect_str_eq(list.matches[0], "SP8QWE", "newest matching call appears first");
   expect_str_eq(list.matches[1], "SP9AAA", "second suggestion respects recency");
   expect_str_eq(list.matches[2], "SP9XYZ", "third suggestion respects recency");
@@ -1209,6 +1216,27 @@ static void test_new_contest_defs_load(const char *tmp_dir) {
     "CQ-WPX-SSB", (int)CONTEST_MULT_PREFIX);
 }
 
+static void test_real_wpx_defs_use_prefix_multiplier(void) {
+  char cw_path[512];
+  char ssb_path[512];
+  char err[128] = {0};
+  ContestDefinition def;
+
+  snprintf(cw_path, sizeof(cw_path),
+           "%s/contest_defs/cq_wpx_cw.conf", LOGGER_SOURCE_DIR);
+  expect_int_eq(contest_definition_load(cw_path, &def, err, sizeof(err)), 0,
+                "load real contest_defs/cq_wpx_cw.conf");
+  expect_int_eq((int)def.multiplier_type, (int)CONTEST_MULT_PREFIX,
+                "real CQ WPX CW multiplier must be PREFIX");
+
+  snprintf(ssb_path, sizeof(ssb_path),
+           "%s/contest_defs/cq_wpx_ssb.conf", LOGGER_SOURCE_DIR);
+  expect_int_eq(contest_definition_load(ssb_path, &def, err, sizeof(err)), 0,
+                "load real contest_defs/cq_wpx_ssb.conf");
+  expect_int_eq((int)def.multiplier_type, (int)CONTEST_MULT_PREFIX,
+                "real CQ WPX SSB multiplier must be PREFIX");
+}
+
 int main(void) {
   signal(SIGPIPE, SIG_IGN);
 
@@ -1241,6 +1269,7 @@ int main(void) {
   test_qtc_no_lines_without_qtc_contest(tmp_dir);
   test_wae_cabrillo_name_from_config(tmp_dir);
   test_new_contest_defs_load(tmp_dir);
+  test_real_wpx_defs_use_prefix_multiplier();
 
   if (g_failures == 0) {
     printf("All regression tests passed.\n");

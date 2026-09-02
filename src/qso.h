@@ -87,6 +87,7 @@ int qso_add_fields(const char *call, int freq_khz, const char *rst,
  * @param contest_id Contest identifier used for Cabrillo headers.
  * @param radio_nr Radio number used in SO2R logs.
  * @param points Claimed points for this QSO.
+ * @param allow_duplicate_qso Non-zero to allow duplicate call+band+mode QSOs.
  */
 int qso_add_contest_fields(const char *call, int freq_khz, const char *rst,
                            const char *mode, const char *comments,
@@ -94,6 +95,7 @@ int qso_add_contest_fields(const char *call, int freq_khz, const char *rst,
                            const char *exchange_recv,
                            const char *operator_mode,
                            const char *contest_id, int radio_nr, int points,
+                           int allow_duplicate_qso,
                            char *status, size_t status_size);
 
 /*

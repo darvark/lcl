@@ -40,11 +40,11 @@ flowchart LR
         CAT[cat.c\nCAT rigs + CW keyer]
         DXC[dxcluster.c\nspot feed + cluster worker]
         Config[config.c\nlogger.conf load/save]
-        DB[db.c\nSQLite logbooks + contest history]
+        DB[db.c\nSQLite active log + DB file switching]
     end
 
     subgraph Data[Persistent storage]
-        SQLite[(logger.db)]
+        SQLite[(logs/*.db)]
         Conf[logger.conf]
         ContestDefs[contest_defs/*.conf]
         CTYDB[wl_cty.dat]
@@ -84,7 +84,7 @@ flowchart LR
 ## Struktura kodu
 
 Wszystkie pliki źródłowe (`.c`, `.h`, `.cpp`, `.inc`) znajdują się w katalogu `src/`.
-Pliki runtime (`logger.conf`, `wl_cty.dat`, `MASTER.SCP`, `logger.db`) pozostają w katalogu roboczym.
+Pliki runtime (`logger.conf`, `wl_cty.dat`, `MASTER.SCP`) pozostają w runtime, a logi są trzymane jako osobne bazy SQLite w `$HOME/.config/contest-logger/logs/`.
 Testy są w `tests/regression/` i `tests/unit/`.
 Definicje zawodów są w `contest_defs/`.
 
@@ -99,7 +99,7 @@ Definicje zawodów są w `contest_defs/`.
 
 ### 2. Otwarcie logu
 
-- `db_open_named_logbook_by_id()` i `db_open_named_logbook_by_name()` zmieniają aktywny logbook.
+- `db_open_named_logbook_by_id()` i `db_open_named_logbook_by_name()` przełączają aktywny plik SQLite logu.
 - `db_get_current_logbook_contest_path()` odczytuje zapisany plik definiujący zawody dla tego logu.
 - `restore_current_log_contest_definition()` przywraca aktywną definicję po otwarciu logu, bez ręcznego re-selekcji.
 
@@ -185,7 +185,7 @@ Definicje zawodów są w `contest_defs/`.
 ### Logbook / persistence
 
 - SQLite jako magazyn logów i historii wywołań,
-- wiele nazwanych logów w jednej bazie,
+- każdy log jako osobny plik `*.db` w katalogu `logs/`,
 - archiwizacja i przywracanie poprzedniego logu,
 - zapis ścieżki definicji zawodów przypisanej do aktywnego logbooka,
 - niezawodna restauracja definicji po wznowieniu pracy z danym logiem.
@@ -203,6 +203,7 @@ W aktualnej wersji dodatkowo wdrożono:
 
 - automatyczne przywracanie definicji kontestu dla aktywnego logbooka,
 - zapis `contest_definition_path` w `named_logbooks`,
+- przejście na model: nowy log = nowy niezależny plik bazy SQLite,
 - poprawienie ścieżki rozwiązywania definicji po otwarciu logu,
 - poprawę persystencji `exchange_recv` i numeracji serialowej,
 - poprawkę nazewnictwa pól `EXCH` / `EXCHANGE_SENT` w UI,

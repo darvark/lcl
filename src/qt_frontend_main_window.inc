@@ -435,6 +435,11 @@ public:
     });
 
         cluster_group_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        {
+          QSizePolicy cluster_policy = cluster_group_->sizePolicy();
+          cluster_policy.setRetainSizeWhenHidden(true);
+          cluster_group_->setSizePolicy(cluster_policy);
+        }
         left_layout->addWidget(cluster_group_, 1);
     left_layout->addWidget(dxcc_panel_);
     left_layout->addWidget(stats_panel_);
@@ -535,8 +540,25 @@ public:
 
             QAction *stats_action = new QAction("Stats", this);
       stats_action->setShortcut(QKeySequence("Ctrl+F6"));
+          stats_action->setCheckable(true);
       connect(stats_action, &QAction::triggered, this,
-              [trigger_ctrl_key]() { trigger_ctrl_key(APP_KEY_F6); });
+              [this, trigger_ctrl_key]() {
+                trigger_ctrl_key(APP_KEY_F6);
+                toggle_summary_panel();
+              });
+          toggle_summary_action_ = stats_action;
+
+            QAction *scale_hidden_panels_action =
+          new QAction("Scale Panels When DXCluster+Stats Hidden", this);
+          scale_hidden_panels_action->setCheckable(true);
+          scale_hidden_panels_action->setChecked(
+            scale_panels_when_cluster_and_summary_hidden_);
+          connect(scale_hidden_panels_action, &QAction::toggled, this,
+              [this](bool checked) {
+                scale_panels_when_cluster_and_summary_hidden_ = checked;
+                refresh_ui();
+              });
+          scale_hidden_panels_action_ = scale_hidden_panels_action;
 
             QAction *toggle_bandmap_r1_action = new QAction("Show Bandmap R1", this);
           toggle_bandmap_r1_action->setCheckable(true);
@@ -630,6 +652,7 @@ public:
       main_menu->addAction(cluster_action);
       main_menu->addAction(send_spot_action);
       main_menu->addAction(stats_action);
+      main_menu->addAction(scale_hidden_panels_action);
       main_menu->addSeparator();
       main_menu->addAction(toggle_bandmap_r1_action);
       main_menu->addAction(toggle_bandmap_r2_action);
@@ -791,6 +814,7 @@ protected:
     QMainWindow::resizeEvent(event);
     apply_character_cell_layout();
     place_suggestions_panel();
+    place_summary_panel(NULL);
   }
 
   /*
@@ -829,6 +853,16 @@ protected:
 
     if (ctrl && event->key() == Qt::Key_F3) {
       prompt_open_named_log();
+      refresh_ui();
+      event->accept();
+      return;
+    }
+
+    if (ctrl && event->key() == Qt::Key_F6) {
+      AppControllerEvent ctrl_event = app_controller_handle_key(APP_KEY_F6);
+      if (ctrl_event == APP_CTRL_EVENT_EXIT)
+        close();
+      toggle_summary_panel();
       refresh_ui();
       event->accept();
       return;
@@ -912,6 +946,21 @@ protected:
   }
 
 private:
+  int effective_theme_palette() const {
+    int palette = config.ui_theme_palette;
+    if (palette < 0 || palette > 2)
+      palette = config.ui_monokai_theme ? 1 : 0;
+    return palette;
+  }
+
+  bool is_monokai_theme() const {
+    return effective_theme_palette() == 1;
+  }
+
+  bool is_legacy_contest_theme() const {
+    return effective_theme_palette() == 2;
+  }
+
   void start_cty_update_worker() {
     if (cty_update_worker_running_)
       return;
@@ -1026,51 +1075,28 @@ private:
   }
 
   void prompt_open_named_log() {
-    DBNamedLogbook items[128];
-    int count = 0;
+    QString start_dir = QDir::currentPath();
 
-    if (db_list_named_logbooks(items, 128, &count) != 0) {
-      QMessageBox::warning(this, "Open Log",
-                           "Cannot read logs from database.");
-      return;
+    const char *runtime_dir = config_runtime_dir();
+    if (runtime_dir && runtime_dir[0]) {
+      const QString runtime_logs =
+          QDir::fromNativeSeparators(QString::fromLocal8Bit(runtime_dir)) +
+          "/logs";
+      QDir logs_dir(runtime_logs);
+      if (logs_dir.exists())
+        start_dir = logs_dir.absolutePath();
     }
 
-    if (count <= 0) {
-      QMessageBox::information(this, "Open Log",
-                               "No saved logs available in database.");
-      return;
-    }
-
-    QStringList options;
-    for (int i = 0; i < count; i++) {
-      options << QString("%1 | %2 | %3 QSO | %4")
-                     .arg(items[i].id)
-                     .arg(items[i].name)
-                     .arg(items[i].qso_count)
-                     .arg(items[i].created_at);
-    }
-
-    bool ok = false;
-    const QString chosen = QInputDialog::getItem(
+    const QString file_path = QFileDialog::getOpenFileName(
         this,
-        "Open Log",
-        "Select log to open:",
-        options,
-        0,
-        false,
-        &ok);
+        "Open Log Database",
+        start_dir,
+        "SQLite database (*.db);;All files (*)");
 
-    if (!ok || chosen.isEmpty())
+    if (file_path.isEmpty())
       return;
 
-    const QString id = chosen.section(" | ", 0, 0).trimmed();
-    if (id.isEmpty()) {
-      QMessageBox::warning(this, "Open Log",
-                           "Invalid log selection.");
-      return;
-    }
-
-    submit_command_text(QString("openlog %1").arg(id));
+    submit_command_text(QString("openlogfile %1").arg(file_path));
   }
 
     void prompt_operator_call() {
@@ -1124,9 +1150,15 @@ private:
       general_form->addRow("OPERATOR_NAME:", operator_name_edit);
       auto *locator_edit = new QLineEdit(QString::fromLatin1(config.locator), &dialog);
       general_form->addRow("LOCATOR:", locator_edit);
-      auto *ui_theme_monokai_check = new QCheckBox(&dialog);
-      ui_theme_monokai_check->setChecked(config.ui_monokai_theme != 0);
-      general_form->addRow("UI_THEME_MONOKAI:", ui_theme_monokai_check);
+      auto *ui_theme_combo = new QComboBox(&dialog);
+      ui_theme_combo->addItem("Classic Light", 0);
+      ui_theme_combo->addItem("Monokai", 1);
+      ui_theme_combo->addItem("Legacy Contest", 2);
+      int theme_idx = ui_theme_combo->findData(effective_theme_palette());
+      if (theme_idx < 0)
+        theme_idx = 0;
+      ui_theme_combo->setCurrentIndex(theme_idx);
+      general_form->addRow("UI_THEME_PALETTE:", ui_theme_combo);
       layout->addWidget(general_group);
 
       auto *dx_group = new QGroupBox("DX Cluster", &dialog);
@@ -1256,7 +1288,12 @@ private:
         snprintf(config.operator_call, sizeof(config.operator_call), "%s", config.station_call);
       copy_field(config.operator_name, sizeof(config.operator_name), operator_name_edit->text());
       copy_field(config.locator, sizeof(config.locator), locator_edit->text());
-      config.ui_monokai_theme = ui_theme_monokai_check->isChecked() ? 1 : 0;
+      config.ui_theme_palette = ui_theme_combo->currentData().toInt();
+      if (config.ui_theme_palette < 0)
+        config.ui_theme_palette = 0;
+      if (config.ui_theme_palette > 2)
+        config.ui_theme_palette = 2;
+      config.ui_monokai_theme = config.ui_theme_palette == 1 ? 1 : 0;
       copy_field(config.dxc_host, sizeof(config.dxc_host), dxc_host_edit->text());
       config.dxc_port = dxc_port_spin->value();
       copy_field(config.dxc_call, sizeof(config.dxc_call), dxc_call_edit->text());
@@ -1575,23 +1612,53 @@ private:
   }
 
   void apply_theme() {
-    const bool monokai = config.ui_monokai_theme != 0;
-    const QString bg = monokai ? QString("#272822") : QString("#89d4e8");
-    const QString panel = monokai ? QString("#3e3d32") : QString("#9be2ef");
-    const QString panel_alt = monokai ? QString("#383830") : QString("#95dceb");
-    const QString border = monokai ? QString("#75715e") : QString("#0e6a85");
-    const QString text = monokai ? QString("#f8f8f2") : QString("#0d2d3b");
-    const QString title_bg = monokai ? QString("#504945") : QString("#0f5ea4");
-    const QString title_text = monokai ? QString("#f8f8f2") : QString("#f4f8ff");
-    const QString accent = monokai ? QString("#a6e22e") : QString("#f3d24f");
+    const int palette = effective_theme_palette();
+    const bool monokai = palette == 1;
+    const bool legacy = palette == 2;
+    const QString bg = monokai ? QString("#272822")
+                               : (legacy ? QString("#2db2ad")
+                                         : QString("#89d4e8"));
+    const QString panel = monokai ? QString("#3e3d32")
+                                  : (legacy ? QString("#9ddddd")
+                                            : QString("#9be2ef"));
+    const QString panel_alt = monokai ? QString("#383830")
+                                      : (legacy ? QString("#9ad9d9")
+                                                : QString("#95dceb"));
+    const QString border = monokai ? QString("#75715e")
+                                   : (legacy ? QString("#5f7f8f")
+                                             : QString("#0e6a85"));
+    const QString text = monokai ? QString("#f8f8f2")
+                                 : (legacy ? QString("#061530")
+                                           : QString("#0d2d3b"));
+    const QString title_bg = monokai ? QString("#504945")
+                                     : (legacy ? QString("#d10000")
+                                               : QString("#0f5ea4"));
+    const QString title_text = monokai ? QString("#f8f8f2")
+                                       : (legacy ? QString("#ffffff")
+                                                 : QString("#f4f8ff"));
+    const QString accent = monokai ? QString("#a6e22e")
+                                   : (legacy ? QString("#f2ec9d")
+                                             : QString("#f3d24f"));
     const QString accent_text = monokai ? QString("#1b1d1e") : QString("#111111");
-    const QString status_bg = monokai ? QString("#504945") : QString("#0f5ea4");
+    const QString status_bg = monokai ? QString("#504945")
+                                      : (legacy ? QString("#4f81b3")
+                                                : QString("#0f5ea4"));
     const QString status_text = monokai ? QString("#f8f8f2") : QString("#f4f8ff");
-    const QString header_bg = monokai ? QString("#504945") : QString("#0f5ea4");
-    const QString header_text = monokai ? QString("#f8f8f2") : QString("#ffe66d");
-    const QString button_bg = monokai ? QString("#3e3d32") : QString("#0e4a7a");
-    const QString button_text = monokai ? QString("#f8f8f2") : QString("#ffe66d");
-    const QString button_hover = monokai ? QString("#6a695f") : QString("#1565a0");
+    const QString header_bg = monokai ? QString("#504945")
+                                      : (legacy ? QString("#d10000")
+                                                : QString("#0f5ea4"));
+    const QString header_text = monokai ? QString("#f8f8f2")
+                                        : (legacy ? QString("#ffffff")
+                                                  : QString("#ffe66d"));
+    const QString button_bg = monokai ? QString("#3e3d32")
+                                      : (legacy ? QString("#2c5f9a")
+                                                : QString("#0e4a7a"));
+    const QString button_text = monokai ? QString("#f8f8f2")
+                                        : (legacy ? QString("#dff6ff")
+                                                  : QString("#ffe66d"));
+    const QString button_hover = monokai ? QString("#6a695f")
+                                         : (legacy ? QString("#3b70ad")
+                                                   : QString("#1565a0"));
 
     QFont mono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     mono.setPointSize(10);
@@ -1758,6 +1825,739 @@ private:
     op_panel_->setFixedHeight(op_h);
     gap_panel_->setFixedHeight(line_panel_h / 2);
     function_panel_->setFixedHeight(line_panel_h);
+  }
+
+  int summary_band_row_index(const char *band) const {
+    const QString b = QString::fromLatin1(band ? band : "").trimmed().toUpper();
+    if (b.startsWith("160"))
+      return 0;
+    if (b.startsWith("80"))
+      return 1;
+    if (b.startsWith("40"))
+      return 2;
+    if (b.startsWith("20"))
+      return 3;
+    if (b.startsWith("15"))
+      return 4;
+    if (b.startsWith("10"))
+      return 5;
+    return -1;
+  }
+
+  bool summary_is_iaru_hf(const AppRenderState &state) const {
+    const QString contest_name =
+      QString::fromLatin1(state.contest_name ? state.contest_name : "").toUpper();
+    return contest_name.contains("IARU") && contest_name.contains("HF");
+  }
+
+  bool summary_is_mixed_contest(const AppRenderState &state) const {
+    const QString contest_mode =
+      QString::fromLatin1(state.contest_mode ? state.contest_mode : "").toUpper();
+    return contest_mode.contains("MIX") || contest_mode.contains("ALL");
+  }
+
+  QString summary_infer_digital_label(const AppRenderState &state) const {
+    const QString contest_name =
+      QString::fromLatin1(state.contest_name ? state.contest_name : "").toUpper();
+    if (contest_name.contains("RTTY"))
+      return "RTTY";
+    if (contest_name.contains("FT8"))
+      return "FT8";
+    if (contest_name.contains("FT4"))
+      return "FT4";
+    if (contest_name.contains("PSK"))
+      return "PSK31";
+
+    int rtty = 0;
+    int ft8 = 0;
+    int ft4 = 0;
+    int psk31 = 0;
+    const int safe_qso_count = std::clamp(qso_count, 0, MAX_QSO);
+    for (int i = 0; i < safe_qso_count; i++) {
+      const QSO &q = logbook[i];
+      if (q.invalid)
+        continue;
+      const QString m = QString::fromLatin1(q.mode).trimmed().toUpper();
+      if (m == "RTTY")
+        rtty++;
+      else if (m == "FT8")
+        ft8++;
+      else if (m == "FT4")
+        ft4++;
+      else if (m == "PSK31")
+        psk31++;
+    }
+
+    const int best = std::max(std::max(rtty, ft8), std::max(ft4, psk31));
+    if (best <= 0)
+      return "DIGI";
+    if (best == rtty)
+      return "RTTY";
+    if (best == ft8)
+      return "FT8";
+    if (best == ft4)
+      return "FT4";
+    return "PSK31";
+  }
+
+  QString summary_mode_from_token(const QString &token,
+                                  const AppRenderState *state = nullptr) const {
+    const QString t = token.trimmed().toUpper();
+    if (t.isEmpty())
+      return QString();
+    if (t == "CW")
+      return "CW";
+    if (t == "SSB" || t == "PH" || t == "PHONE")
+      return "SSB";
+    if (t == "RTTY")
+      return "RTTY";
+    if (t == "FT8")
+      return "FT8";
+    if (t == "FT4")
+      return "FT4";
+    if (t == "PSK31")
+      return "PSK31";
+    if (t == "DIGI" || t == "DIGITAL") {
+      if (state)
+        return summary_infer_digital_label(*state);
+      return "DIGI";
+    }
+    return QString();
+  }
+
+  QString summary_qso_mode_name(const char *mode_text,
+                                const AppRenderState *state = nullptr) const {
+    return summary_mode_from_token(QString::fromLatin1(mode_text ? mode_text : ""), state);
+  }
+
+  QStringList summary_modes_from_contest_mode(const AppRenderState &state,
+                                              bool *out_has_generic_mixed) const {
+    QStringList modes;
+    bool has_generic_mixed = false;
+
+    const QString src = QString::fromLatin1(state.contest_mode ? state.contest_mode : "").toUpper();
+    QString token;
+    auto flush_token = [&]() {
+      if (token.isEmpty())
+        return;
+      if (token == "MIXED" || token == "ALL") {
+        has_generic_mixed = true;
+      } else {
+        const QString normalized = summary_mode_from_token(token, &state);
+        if (!normalized.isEmpty() && !modes.contains(normalized))
+          modes.append(normalized);
+      }
+      token.clear();
+    };
+
+    for (int i = 0; i < src.size(); i++) {
+      const QChar ch = src[i];
+      if (ch.isLetterOrNumber()) {
+        token.append(ch);
+      } else {
+        flush_token();
+      }
+    }
+    flush_token();
+
+    if (out_has_generic_mixed)
+      *out_has_generic_mixed = has_generic_mixed;
+    return modes;
+  }
+
+  QStringList summary_modes_for_mixed(const AppRenderState &state) const {
+    bool generic_mixed = false;
+    QStringList modes = summary_modes_from_contest_mode(state, &generic_mixed);
+    if (!modes.isEmpty())
+      return modes;
+
+    if (!generic_mixed)
+      return modes;
+
+    for (int i = 0; i < std::clamp(qso_count, 0, MAX_QSO); i++) {
+      const QString m = summary_qso_mode_name(logbook[i].mode, &state);
+      if (!m.isEmpty() && !modes.contains(m))
+        modes.append(m);
+    }
+
+    if (modes.isEmpty()) {
+      modes.append("CW");
+      modes.append("SSB");
+    }
+
+    return modes;
+  }
+
+  QString summary_mode_bucket(const char *mode_text) const {
+    const QString mode = QString::fromLatin1(mode_text ? mode_text : "").trimmed().toUpper();
+    if (mode == "CW")
+      return "CW";
+    if (mode == "SSB" || mode == "PH" || mode == "PHONE")
+      return "SSB";
+    return "DIGI";
+  }
+
+  QString summary_prefix_key(const char *call_text) const {
+    const QString call = QString::fromLatin1(call_text ? call_text : "").toUpper();
+    QString clean;
+    for (int i = 0; i < call.size(); i++) {
+      const QChar ch = call[i];
+      if (ch.isLetterOrNumber())
+        clean.append(ch);
+    }
+    if (clean.isEmpty())
+      return QString();
+
+    int end = clean.size();
+    for (int i = 0; i < clean.size(); i++) {
+      if (clean[i].isDigit()) {
+        end = i + 1;
+        break;
+      }
+    }
+    return clean.left(end);
+  }
+
+  QString summary_locator_key(const char *exchange_text) const {
+    const QString exch = QString::fromLatin1(exchange_text ? exchange_text : "").toUpper();
+    QString compact;
+    for (int i = 0; i < exch.size(); i++) {
+      const QChar ch = exch[i];
+      if (ch.isLetterOrNumber())
+        compact.append(ch);
+    }
+
+    for (int i = 0; i + 3 < compact.size(); i++) {
+      const QChar a = compact[i];
+      const QChar b = compact[i + 1];
+      const QChar c = compact[i + 2];
+      const QChar d = compact[i + 3];
+      if (a < QChar('A') || a > QChar('R'))
+        continue;
+      if (b < QChar('A') || b > QChar('R'))
+        continue;
+      if (!c.isDigit() || !d.isDigit())
+        continue;
+
+      QString locator = compact.mid(i, 4);
+      if (i + 5 < compact.size()) {
+        const QChar e = compact[i + 4];
+        const QChar f = compact[i + 5];
+        if (e >= QChar('A') && e <= QChar('X') &&
+            f >= QChar('A') && f <= QChar('X'))
+          locator = compact.mid(i, 6);
+      }
+      return locator;
+    }
+
+    return QString();
+  }
+
+  void summary_add_multiplier_keys(const QSO &q,
+                                   int multiplier_type,
+                                   QSet<QString> &out_keys) const {
+    const QString country = QString::fromLatin1(q.country).trimmed().toUpper();
+    const QString call = QString::fromLatin1(q.call).trimmed().toUpper();
+    const QString exch = QString::fromLatin1(q.exchange_recv).trimmed().toUpper();
+
+    auto add_country = [&]() {
+      if (!country.isEmpty() && country != "UNKNOWN")
+        out_keys.insert(country);
+    };
+
+    switch ((ContestMultiplierType)multiplier_type) {
+    case CONTEST_MULT_NONE:
+      return;
+    case CONTEST_MULT_DXCC:
+    case CONTEST_MULT_DXCC_PER_BAND:
+      add_country();
+      return;
+    case CONTEST_MULT_ZONE:
+    case CONTEST_MULT_ZONE_PER_BAND:
+      if (q.cq_zone > 0)
+        out_keys.insert(QString::number(q.cq_zone));
+      return;
+    case CONTEST_MULT_PREFIX: {
+      const QString key = summary_prefix_key(call.toLatin1().constData());
+      if (!key.isEmpty())
+        out_keys.insert(key);
+      return;
+    }
+    case CONTEST_MULT_PREFIX_PER_BAND: {
+      const QString key = summary_prefix_key(call.toLatin1().constData());
+      if (!key.isEmpty())
+        out_keys.insert(key);
+      return;
+    }
+    case CONTEST_MULT_MODE_DXCC:
+      add_country();
+      return;
+    case CONTEST_MULT_DXCC_PLUS_ZONE_PER_BAND:
+      add_country();
+      if (q.cq_zone > 0)
+        out_keys.insert(QString("Z%1").arg(q.cq_zone));
+      return;
+    case CONTEST_MULT_SPDX:
+      if (country == "POLAND") {
+        if (!exch.isEmpty())
+          out_keys.insert(QString("V%1").arg(exch));
+      } else {
+        add_country();
+      }
+      return;
+    case CONTEST_MULT_GRID_PER_BAND: {
+      const QString locator = summary_locator_key(exch.toLatin1().constData());
+      if (!locator.isEmpty())
+        out_keys.insert(locator);
+      return;
+    }
+    default:
+      add_country();
+      return;
+    }
+  }
+
+  void update_cluster_slot_retention_policy(const AppRenderState *state) {
+    if (!cluster_group_)
+      return;
+
+    const bool cluster_visible = state ? state->cluster_view
+                                       : cluster_group_->isVisible();
+    const bool summary_visible = summary_panel_ && summary_panel_->isVisible();
+
+    bool retain_slot = true;
+    if (!cluster_visible && !summary_visible &&
+        scale_panels_when_cluster_and_summary_hidden_)
+      retain_slot = false;
+
+    QSizePolicy policy = cluster_group_->sizePolicy();
+    if (policy.retainSizeWhenHidden() != retain_slot) {
+      policy.setRetainSizeWhenHidden(retain_slot);
+      cluster_group_->setSizePolicy(policy);
+    }
+  }
+
+  void ensure_summary_panel() {
+    if (summary_panel_)
+      return;
+
+    QWidget *host = centralWidget() ? centralWidget() : this;
+    summary_panel_ = new QFrame(host);
+    summary_panel_->setObjectName("summaryOverlay");
+    summary_panel_->setFrameShape(QFrame::StyledPanel);
+    summary_panel_->setAttribute(Qt::WA_DeleteOnClose, false);
+    summary_panel_->setFocusPolicy(Qt::NoFocus);
+    summary_panel_->resize(520, 290);
+
+    auto *layout = new QVBoxLayout(summary_panel_);
+    layout->setContentsMargins(6, 6, 6, 6);
+    layout->setSpacing(4);
+
+    summary_title_label_ = new QLabel("Summary", summary_panel_);
+    summary_title_label_->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    summary_title_label_->setFocusPolicy(Qt::NoFocus);
+
+    summary_table_ = new QTableWidget(7, 6, summary_panel_);
+    summary_table_->setHorizontalHeaderLabels(
+      {"BAND", "QSO", "DUP", "MULT", "POINTS", "AVG"});
+    summary_table_->verticalHeader()->setVisible(false);
+    summary_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    summary_table_->setSelectionMode(QAbstractItemView::NoSelection);
+    summary_table_->setFocusPolicy(Qt::NoFocus);
+    summary_table_->setShowGrid(false);
+    summary_table_->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+
+    const QStringList rows = {"160", "80", "40", "20", "15", "10", "TOTAL"};
+    for (int i = 0; i < rows.size(); i++) {
+      auto *band_item = new QTableWidgetItem(rows[i]);
+      band_item->setTextAlignment(Qt::AlignCenter | Qt::AlignVCenter);
+      summary_table_->setItem(i, 0, band_item);
+    }
+
+    summary_score_label_ = new QLabel(summary_panel_);
+    summary_score_label_->setAlignment(Qt::AlignCenter);
+    summary_score_label_->setFocusPolicy(Qt::NoFocus);
+
+    layout->addWidget(summary_title_label_);
+    layout->addWidget(summary_table_);
+    layout->addWidget(summary_score_label_);
+
+    const bool monokai = is_monokai_theme();
+    const bool legacy = is_legacy_contest_theme();
+    const QString panel_bg = monokai ? QString("#272822")
+                     : (legacy ? QString("#2db2ad")
+                           : QString("#57d8d5"));
+    const QString header_bg = monokai ? QString("#b71c1c")
+                      : (legacy ? QString("#d10000")
+                          : QString("#c51010"));
+    const QString header_text = QString("#ffffff");
+    const QString table_bg = monokai ? QString("#3e3d32")
+                     : (legacy ? QString("#49d2cd")
+                           : QString("#65e3df"));
+    const QString total_bg = monokai ? QString("#504945")
+                     : (legacy ? QString("#c9c9c9")
+                           : QString("#d7d7d7"));
+    const QString text = monokai ? QString("#f8f8f2") : QString("#111111");
+
+    summary_score_label_->setObjectName("summaryScore");
+
+    summary_panel_->setStyleSheet(
+      QString("QFrame#summaryOverlay { background: %1; color: %2; border: 1px solid #6f6f6f; }").arg(panel_bg, text) +
+        QString("QHeaderView::section { background: %1; color: %2; font-weight: bold; border: 0; }")
+            .arg(header_bg, header_text) +
+        QString("QTableWidget { background: %1; color: %2; border: 1px solid #0f5ea4; }")
+            .arg(table_bg, text) +
+      QString("QLabel { color: #ffffff; font-weight: bold; background: #c51010; padding: 1px 4px; }") +
+      QString("QLabel#summaryScore { color: #1220d0; background: transparent; }") +
+        QString("QTableWidget::item { padding: 1px 4px; }")
+    );
+
+    for (int col = 0; col < summary_table_->columnCount(); col++) {
+      if (!summary_table_->item(6, col)) {
+        auto *item = new QTableWidgetItem(col == 0 ? "TOTAL" : "0");
+        item->setTextAlignment(Qt::AlignCenter | Qt::AlignVCenter);
+        summary_table_->setItem(6, col, item);
+      }
+      summary_table_->item(6, col)->setBackground(QColor(total_bg));
+    }
+
+    place_summary_panel(NULL);
+    summary_panel_->hide();
+  }
+
+  void refresh_summary_panel(const AppRenderState &state) {
+    if (!summary_panel_ || !summary_table_ || !summary_score_label_)
+      return;
+
+    struct BandAcc {
+      int qso = 0;
+      int cw = 0;
+      int ssb = 0;
+      int dup = 0;
+      int hq = 0;
+      int z = 0;
+      int mult = 0;
+      int points = 0;
+      bool zone_seen[41] = {false};
+      QSet<QString> mult_keys;
+      std::array<int, 8> qso_mode{};
+      std::array<int, 8> dup_mode{};
+      std::array<int, 8> mult_mode{};
+      std::array<QSet<QString>, 8> mult_mode_keys;
+    };
+
+    const bool iaru_hf = summary_is_iaru_hf(state);
+    const bool mixed_contest = summary_is_mixed_contest(state);
+    QStringList mixed_modes = mixed_contest ? summary_modes_for_mixed(state)
+                                            : QStringList();
+    if (mixed_modes.size() > 8)
+      mixed_modes = mixed_modes.mid(0, 8);
+
+    QStringList headers;
+    if (iaru_hf) {
+      headers = {"BAND", "CW", "SSB", "DUP", "HQ", "Z", "POINTS", "AVG"};
+    } else if (mixed_contest) {
+      headers = {"BAND"};
+      for (const QString &mode_name : mixed_modes)
+        headers.append(QString("QSO %1").arg(mode_name));
+      for (const QString &mode_name : mixed_modes)
+        headers.append(QString("DUP %1").arg(mode_name));
+      for (const QString &mode_name : mixed_modes)
+        headers.append(QString("MULT %1").arg(mode_name));
+      headers.append("POINTS");
+      headers.append("AVG");
+    } else {
+      headers = {"BAND", "QSO", "DUP", "MULT", "POINTS", "AVG"};
+    }
+
+    if (summary_table_->columnCount() != headers.size()) {
+      summary_table_->setColumnCount(headers.size());
+    }
+    summary_table_->setHorizontalHeaderLabels(headers);
+    summary_table_->setRowCount(7);
+
+    const QStringList band_labels = {"160", "80", "40", "20", "15", "10", "TOTAL"};
+
+    auto set_cell = [this](int row, int col, const QString &text) {
+      QTableWidgetItem *item = summary_table_->item(row, col);
+      if (!item) {
+        item = new QTableWidgetItem();
+        summary_table_->setItem(row, col, item);
+      }
+      if (item->text() != text)
+        item->setText(text);
+      item->setTextAlignment(Qt::AlignCenter | Qt::AlignVCenter);
+    };
+
+    for (int row = 0; row < band_labels.size(); row++)
+      set_cell(row, 0, band_labels[row]);
+
+    std::array<BandAcc, 6> acc{};
+
+    const int safe_qso_count = std::clamp(qso_count, 0, MAX_QSO);
+    for (int i = 0; i < safe_qso_count; i++) {
+      const QSO &q = logbook[i];
+      const int row = summary_band_row_index(q.band);
+      if (row < 0)
+        continue;
+
+      const QString mode_bucket = summary_mode_bucket(q.mode);
+      const QString qso_mode = summary_qso_mode_name(q.mode);
+      int mixed_mode_index = -1;
+      if (mixed_contest)
+        mixed_mode_index = mixed_modes.indexOf(qso_mode);
+
+      if (q.invalid) {
+        acc[(size_t)row].dup++;
+        if (mixed_mode_index >= 0 && mixed_mode_index < 8)
+          acc[(size_t)row].dup_mode[(size_t)mixed_mode_index]++;
+        continue;
+      }
+
+      if (mode_bucket == "CW")
+        acc[(size_t)row].cw++;
+      else if (mode_bucket == "SSB")
+        acc[(size_t)row].ssb++;
+
+      acc[(size_t)row].qso++;
+
+      const QString exch = QString::fromLatin1(q.exchange_recv).trimmed().toUpper();
+      if (exch.contains("HQ"))
+        acc[(size_t)row].hq++;
+
+      if (q.cq_zone > 0 && q.cq_zone <= 40 && !acc[(size_t)row].zone_seen[q.cq_zone]) {
+        acc[(size_t)row].zone_seen[q.cq_zone] = true;
+        acc[(size_t)row].z++;
+      }
+
+      if (q.points > 0)
+        acc[(size_t)row].points += q.points;
+
+      QSet<QString> qso_mult_keys;
+      summary_add_multiplier_keys(q, state.contest_multiplier_type, qso_mult_keys);
+      for (const QString &key : qso_mult_keys) {
+        acc[(size_t)row].mult_keys.insert(key);
+        if (mixed_mode_index >= 0 && mixed_mode_index < 8)
+          acc[(size_t)row].mult_mode_keys[(size_t)mixed_mode_index].insert(key);
+      }
+
+      if (mixed_mode_index >= 0 && mixed_mode_index < 8)
+        acc[(size_t)row].qso_mode[(size_t)mixed_mode_index]++;
+    }
+
+    for (int row = 0; row < 6; row++) {
+      acc[(size_t)row].mult = acc[(size_t)row].mult_keys.size();
+      for (int i = 0; i < 8; i++)
+        acc[(size_t)row].mult_mode[(size_t)i] =
+            acc[(size_t)row].mult_mode_keys[(size_t)i].size();
+    }
+
+    int total_qso = 0;
+    int total_cw = 0;
+    int total_ssb = 0;
+    int total_dup = 0;
+    int total_mult = 0;
+    int total_hq = 0;
+    int total_z = 0;
+    int total_points = 0;
+    std::array<int, 8> total_qso_mode{};
+    std::array<int, 8> total_dup_mode{};
+    std::array<int, 8> total_mult_mode{};
+
+    for (int row = 0; row < 6; row++) {
+      const BandAcc &b = acc[(size_t)row];
+      const double avg = b.qso > 0 ? (double)b.points / (double)b.qso : 0.0;
+
+      if (iaru_hf) {
+        set_cell(row, 1, QString::number(b.cw));
+        set_cell(row, 2, QString::number(b.ssb));
+        set_cell(row, 3, QString::number(b.dup));
+        set_cell(row, 4, QString::number(b.hq));
+        set_cell(row, 5, QString::number(b.z));
+        set_cell(row, 6, QString::number(b.points));
+        set_cell(row, 7, QString::number(avg, 'f', 1));
+      } else if (mixed_contest) {
+        int col = 1;
+        for (int mode_idx = 0; mode_idx < mixed_modes.size() && mode_idx < 8; mode_idx++)
+          set_cell(row, col++, QString::number(b.qso_mode[(size_t)mode_idx]));
+        for (int mode_idx = 0; mode_idx < mixed_modes.size() && mode_idx < 8; mode_idx++)
+          set_cell(row, col++, QString::number(b.dup_mode[(size_t)mode_idx]));
+        for (int mode_idx = 0; mode_idx < mixed_modes.size() && mode_idx < 8; mode_idx++)
+          set_cell(row, col++, QString::number(b.mult_mode[(size_t)mode_idx]));
+        set_cell(row, col++, QString::number(b.points));
+        set_cell(row, col++, QString::number(avg, 'f', 1));
+      } else {
+        set_cell(row, 1, QString::number(b.qso));
+        set_cell(row, 2, QString::number(b.dup));
+        set_cell(row, 3, QString::number(b.mult));
+        set_cell(row, 4, QString::number(b.points));
+        set_cell(row, 5, QString::number(avg, 'f', 1));
+      }
+
+      total_qso += b.qso;
+      total_cw += b.cw;
+      total_ssb += b.ssb;
+      total_dup += b.dup;
+      total_mult += b.mult;
+      total_hq += b.hq;
+      total_z += b.z;
+      total_points += b.points;
+      for (int mode_idx = 0; mode_idx < mixed_modes.size() && mode_idx < 8; mode_idx++) {
+        total_qso_mode[(size_t)mode_idx] += b.qso_mode[(size_t)mode_idx];
+        total_dup_mode[(size_t)mode_idx] += b.dup_mode[(size_t)mode_idx];
+        total_mult_mode[(size_t)mode_idx] += b.mult_mode[(size_t)mode_idx];
+      }
+    }
+
+    const double total_avg = total_qso > 0 ? (double)total_points / (double)total_qso : 0.0;
+
+    set_cell(6, 0, "TOTAL");
+    if (iaru_hf) {
+      set_cell(6, 1, QString::number(total_cw));
+      set_cell(6, 2, QString::number(total_ssb));
+      set_cell(6, 3, QString::number(total_dup));
+      set_cell(6, 4, QString::number(total_hq));
+      set_cell(6, 5, QString::number(total_z));
+      set_cell(6, 6, QString::number(total_points));
+      set_cell(6, 7, QString::number(total_avg, 'f', 1));
+    } else if (mixed_contest) {
+      int col = 1;
+      for (int mode_idx = 0; mode_idx < mixed_modes.size() && mode_idx < 8; mode_idx++)
+        set_cell(6, col++, QString::number(total_qso_mode[(size_t)mode_idx]));
+      for (int mode_idx = 0; mode_idx < mixed_modes.size() && mode_idx < 8; mode_idx++)
+        set_cell(6, col++, QString::number(total_dup_mode[(size_t)mode_idx]));
+      for (int mode_idx = 0; mode_idx < mixed_modes.size() && mode_idx < 8; mode_idx++)
+        set_cell(6, col++, QString::number(total_mult_mode[(size_t)mode_idx]));
+      set_cell(6, col++, QString::number(total_points));
+      set_cell(6, col++, QString::number(total_avg, 'f', 1));
+    } else {
+      set_cell(6, 1, QString::number(total_qso));
+      set_cell(6, 2, QString::number(total_dup));
+      set_cell(6, 3, QString::number(total_mult));
+      set_cell(6, 4, QString::number(total_points));
+      set_cell(6, 5, QString::number(total_avg, 'f', 1));
+    }
+
+    const bool monokai = is_monokai_theme();
+    const bool legacy = is_legacy_contest_theme();
+    const QString total_bg = monokai ? QString("#504945")
+                     : (legacy ? QString("#c9c9c9")
+                           : QString("#d7d7d7"));
+    for (int col = 0; col < summary_table_->columnCount(); col++) {
+      QTableWidgetItem *item = summary_table_->item(6, col);
+      if (item)
+        item->setBackground(QColor(total_bg));
+    }
+
+    const QString title_call = QString::fromLatin1(
+      config.station_call[0] ? config.station_call : config_effective_operator_call());
+    if (summary_title_label_)
+      set_text_if_changed(summary_title_label_, QString("Summary - %1").arg(title_call));
+
+    set_text_if_changed(summary_score_label_,
+                        QString("FINAL SCORE: %1").arg(stats.contest_score));
+
+    if (toggle_summary_action_) {
+      toggle_summary_action_->blockSignals(true);
+      toggle_summary_action_->setChecked(summary_panel_->isVisible());
+      toggle_summary_action_->blockSignals(false);
+    }
+  }
+
+  void toggle_summary_panel() {
+    ensure_summary_panel();
+    if (!summary_panel_)
+      return;
+
+    if (summary_panel_->isVisible()) {
+      summary_panel_->hide();
+      AppRenderState state;
+      app_controller_get_render_state(&state);
+      update_cluster_slot_retention_policy(&state);
+    } else {
+      AppRenderState state;
+      app_controller_get_render_state(&state);
+      if (!state.cluster_view && cluster_group_) {
+        QSizePolicy policy = cluster_group_->sizePolicy();
+        if (!policy.retainSizeWhenHidden()) {
+          policy.setRetainSizeWhenHidden(true);
+          cluster_group_->setSizePolicy(policy);
+        }
+      }
+      refresh_summary_panel(state);
+      place_summary_panel(&state);
+      summary_panel_->show();
+      if (state.cluster_view)
+        summary_panel_->raise();
+    }
+
+    if (toggle_summary_action_) {
+      toggle_summary_action_->blockSignals(true);
+      toggle_summary_action_->setChecked(summary_panel_->isVisible());
+      toggle_summary_action_->blockSignals(false);
+    }
+  }
+
+  void place_summary_panel(const AppRenderState *state) {
+    if (!summary_panel_)
+      return;
+
+    QWidget *host = summary_panel_->parentWidget();
+    if (!host)
+      return;
+
+    const bool cluster_visible = state ? state->cluster_view
+                                       : (cluster_group_ && cluster_group_->isVisible());
+
+    if (cluster_visible && cluster_group_ && cluster_group_->isVisible()) {
+      const QPoint cluster_top_left = cluster_group_->mapTo(host, QPoint(0, 0));
+      const QRect live_rect(cluster_top_left.x(),
+                            cluster_top_left.y(),
+                            cluster_group_->width(),
+                            cluster_group_->height());
+      if (live_rect.width() > 16 && live_rect.height() > 16)
+        summary_cluster_slot_rect_ = live_rect;
+    }
+
+    if (!cluster_visible) {
+      if (cluster_group_) {
+        const QPoint cluster_top_left = cluster_group_->mapTo(host, QPoint(0, 0));
+        const QRect cluster_slot(cluster_top_left.x(),
+                                 cluster_top_left.y(),
+                                 std::max(1, cluster_group_->width()),
+                                 std::max(1, cluster_group_->height()));
+        if (cluster_slot.width() > 16 && cluster_slot.height() > 16) {
+          summary_panel_->setGeometry(cluster_slot);
+          return;
+        }
+      }
+
+      if (summary_cluster_slot_rect_.isValid() &&
+          summary_cluster_slot_rect_.width() > 16 &&
+          summary_cluster_slot_rect_.height() > 16) {
+        summary_panel_->setGeometry(summary_cluster_slot_rect_);
+        return;
+      }
+
+      return;
+    }
+
+    summary_panel_->resize(520, 290);
+
+    const int margin = 12;
+    int target_x = host->width() - summary_panel_->width() - margin;
+    const int target_y = host->height() - summary_panel_->height() - margin;
+
+    if (bandmap2_group_ && bandmap2_group_->isVisible()) {
+      const QPoint bandmap2_top_left = bandmap2_group_->mapTo(host, QPoint(0, 0));
+      const int max_x_before_r2 = bandmap2_top_left.x() - summary_panel_->width() - margin;
+      target_x = std::min(target_x, max_x_before_r2);
+    }
+
+    if (target_x < margin)
+      target_x = margin;
+
+    summary_panel_->move(target_x, std::max(margin, target_y));
   }
 
   void place_suggestions_panel() {
@@ -2141,7 +2941,7 @@ private:
 
     if (signature != last_cluster_table_signature_) {
       cluster_table_->setRowCount((int)items.size());
-      const bool monokai = config.ui_monokai_theme != 0;
+      const bool monokai = is_monokai_theme();
       const QColor spot_fg = monokai ? QColor(248, 248, 242) : QColor(14, 90, 20);
       for (int row = 0; row < (int)items.size(); row++) {
         auto *time_item = new QTableWidgetItem(items[row].time);
@@ -2437,7 +3237,7 @@ private:
       scp_found = scp_search(partial, scp_results, SCP_SEARCH_MAX);
     scp_found = std::clamp(scp_found, 0, SCP_SEARCH_MAX);
 
-    const bool monokai = config.ui_monokai_theme != 0;
+    const bool monokai = is_monokai_theme();
     const QString panel_bg = monokai ? QString("#3e3d32") : QString("#9be2ef");
     const QString border = monokai ? QString("#75715e") : QString("#0e6a85");
     const QString accent = monokai ? QString("#a6e22e") : QString("#f3d24f");
@@ -2567,7 +3367,7 @@ private:
     set_text_if_changed(cat_slot2_status_label_,
               QString("R2: %1").arg(QString::fromLatin1(slot2)));
     set_visible_if_changed(cat_slot2_status_label_, dual_mode);
-    const bool monokai = config.ui_monokai_theme != 0;
+    const bool monokai = is_monokai_theme();
     const QString ok_bg = monokai ? QString("#a6e22e") : QString("#87d37c");
     const QString warn_bg = monokai ? QString("#fd971f") : QString("#f3d24f");
     const QString border = monokai ? QString("#75715e") : QString("#0e6a85");
@@ -3086,7 +3886,7 @@ private:
     }
 
     auto set_input_style = [this](QLineEdit *edit, bool active_field) {
-      const bool monokai = config.ui_monokai_theme != 0;
+      const bool monokai = is_monokai_theme();
       const QString active_bg = monokai ? QString("#a6e22e") : QString("#f3d24f");
       const QString active_text = monokai ? QString("#1b1d1e") : QString("#111111");
       const QString idle_bg = monokai ? QString("#3e3d32") : QString("#9be2ef");
@@ -3205,7 +4005,7 @@ private:
       set_visible_if_changed(input_rst_r2_label_, dual_mode);
       set_visible_if_changed(input_rst_r2_edit_, dual_mode);
 
-      const bool monokai = config.ui_monokai_theme != 0;
+      const bool monokai = is_monokai_theme();
       const QString active_style = monokai ? QString("QPushButton { background: %1; color: %2; font-weight: bold; }")
                                               .arg("#a6e22e", "#1b1d1e")
                                        : QString("QPushButton { background: %1; color: %2; font-weight: bold; }")
@@ -3251,7 +4051,7 @@ private:
           fn_buttons_[i]->setToolTip(QString::fromLatin1(expanded).simplified());
         fn_buttons_[i]->setEnabled(!cty_update_in_progress);
       }
-      const bool monokai = config.ui_monokai_theme != 0;
+      const bool monokai = is_monokai_theme();
       const QString status_bg = monokai ? QString("#504945") : QString("#0f5ea4");
       const QString button_bg = monokai ? QString("#3e3d32") : QString("#0e4a7a");
       const QString button_text = monokai ? QString("#f8f8f2") : QString("#ffe66d");
@@ -3280,6 +4080,8 @@ private:
     refresh_suggestions();
     refresh_cat_status();
     refresh_cw_keyer_status();
+    if (summary_panel_ && summary_panel_->isVisible())
+      refresh_summary_panel(state);
 
     set_visible_if_changed(log_group_, true);
     set_visible_if_changed(input_panel_, true);
@@ -3287,7 +4089,10 @@ private:
     set_visible_if_changed(dxcc_panel_, true);
     set_visible_if_changed(stats_panel_, true);
     set_visible_if_changed(gap_panel_, true);
+    update_cluster_slot_retention_policy(&state);
     set_visible_if_changed(cluster_group_, state.cluster_view);
+    if (summary_panel_ && summary_panel_->isVisible())
+      place_summary_panel(&state);
     bandmap_group_->setMinimumWidth(bandmap_r1_visible_ ? 170 : 0);
     set_visible_if_changed(bandmap_group_, bandmap_r1_visible_);
     if (bandmap2_group_) {
@@ -3346,6 +4151,13 @@ private:
 
   QFrame *stats_panel_ = nullptr;
   QLabel *stats_label_ = nullptr;
+
+  QFrame *summary_panel_ = nullptr;
+  QLabel *summary_title_label_ = nullptr;
+  QTableWidget *summary_table_ = nullptr;
+  QLabel *summary_score_label_ = nullptr;
+  QAction *toggle_summary_action_ = nullptr;
+  QRect summary_cluster_slot_rect_;
 
   QFrame *op_panel_ = nullptr;
   QComboBox *technique_combo_ = nullptr;
@@ -3424,6 +4236,7 @@ private:
   DocumentationDialog *documentation_dialog_ = nullptr;
   QAction *toggle_bandmap_r1_action_ = nullptr;
   QAction *toggle_bandmap_r2_action_ = nullptr;
+  QAction *scale_hidden_panels_action_ = nullptr;
   QAction *esm_toggle_action_ = nullptr;
   CwKeyMap    cw_key_map_ = {};
   CwQtcMap    cw_qtc_map_ = {};
@@ -3439,6 +4252,7 @@ private:
   bool cty_update_worker_running_ = false;
   bool bandmap_r1_visible_ = true;
   bool bandmap_r2_visible_ = true;
+  bool scale_panels_when_cluster_and_summary_hidden_ = true;
   bool cat_connect_busy_[CAT_SLOT_COUNT] = {false, false};
   bool cw_connect_busy_ = false;
 
