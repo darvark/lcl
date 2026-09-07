@@ -3112,6 +3112,163 @@ static void test_controller_vhf_serial_locator_exchange_and_distance_points(cons
                 "restore cwd after VHF serial+locator test");
 }
 
+static void test_controller_vhf_spaced_serial_locator_exchange(const char *tmp_dir) {
+  char case_dir[512];
+  snprintf(case_dir, sizeof(case_dir), "%s/vhf_spaced_serial_locator_case", tmp_dir);
+  expect_int_eq(mkdir(case_dir, 0777), 0,
+                "create isolated directory for VHF spaced serial+locator test");
+
+  char contest_path[512];
+  join_path(contest_path, sizeof(contest_path), case_dir, "contest.conf");
+  const char *contest_text =
+      "NAME=IARU-VHF\n"
+      "CABRILLO_NAME=IARU-VHF\n"
+      "MODE=MIXED\n"
+      "EXCHANGE_SENT=# LOCATOR\n"
+      "MULTIPLIER=GRID_PER_BAND\n"
+      "FIELD=SERIAL_GRID,Serial + Locator,required\n";
+  expect_int_eq(write_text_file(contest_path, contest_text), 0,
+                "write VHF spaced serial+locator contest definition");
+
+  char conf_path[512];
+  join_path(conf_path, sizeof(conf_path), case_dir, "logger.conf");
+  const char *conf_text =
+      "CONTEST_DEF_FILE=contest.conf\n"
+      "LOCATOR=JO90AA\n";
+  expect_int_eq(write_text_file(conf_path, conf_text), 0,
+                "write logger.conf for VHF spaced serial+locator test");
+
+  set_test_db_path(case_dir);
+
+  char old_cwd[512];
+  expect_true(getcwd(old_cwd, sizeof(old_cwd)) != NULL,
+              "getcwd before VHF spaced serial+locator test");
+  expect_int_eq(chdir(case_dir), 0,
+                "chdir to VHF spaced serial+locator test directory");
+
+  app_controller_init();
+  const int base_qso_count = qso_count;
+
+  AppRenderState state;
+  app_controller_get_render_state(&state);
+  expect_true(state.contest_exchange_sent != NULL,
+              "VHF spaced serial+locator exchange should be visible");
+  char expected_sent[32] = {0};
+  snprintf(expected_sent, sizeof(expected_sent), "%d JO90AA",
+           base_qso_count + 1);
+  if (state.contest_exchange_sent)
+    expect_str_eq(state.contest_exchange_sent, expected_sent,
+                  "VHF spaced serial+locator contest should send serial, space and locator");
+
+  send_controller_text("144300");
+  send_controller_chars("SP9IVH");
+  app_controller_handle_key(APP_KEY_SPACE);
+  send_controller_chars("001JO91AA");
+  app_controller_handle_key(APP_KEY_ENTER);
+
+  expect_int_eq(qso_count, base_qso_count + 1,
+                "one VHF spaced serial+locator QSO should be saved");
+  expect_str_eq(logbook[base_qso_count].exchange_sent, expected_sent,
+                "saved VHF QSO should use spaced serial plus local locator");
+  expect_str_eq(logbook[base_qso_count].exchange_recv, "001JO91AA",
+                "saved VHF QSO should preserve composite received exchange");
+  expect_true(logbook[base_qso_count].points > 0,
+              "VHF spaced serial+locator QSO should receive positive distance-based points");
+
+  app_controller_get_render_state(&state);
+  char expected_next_sent[32] = {0};
+  snprintf(expected_next_sent, sizeof(expected_next_sent), "%d JO90AA",
+           base_qso_count + 2);
+  expect_true(state.contest_exchange_sent != NULL,
+              "VHF spaced serial+locator exchange should remain visible");
+  if (state.contest_exchange_sent)
+    expect_str_eq(state.contest_exchange_sent, expected_next_sent,
+                  "next spaced serial+locator exchange should advance the serial");
+
+  app_controller_shutdown();
+  expect_int_eq(chdir(old_cwd), 0,
+                "restore cwd after VHF spaced serial+locator test");
+}
+
+static void test_controller_spaced_serial_locator_exchange_and_suggestions(const char *tmp_dir) {
+  char case_dir[512];
+  snprintf(case_dir, sizeof(case_dir), "%s/spaced_serial_loc_suggest_case", tmp_dir);
+  expect_int_eq(make_temp_dir(case_dir, sizeof(case_dir)), 0,
+                "create isolated directory for spaced serial locator suggest test");
+
+  char contest_path[512];
+  join_path(contest_path, sizeof(contest_path), case_dir, "contest.conf");
+  const char *contest_text =
+      "NAME=IARU-VHF\n"
+      "CABRILLO_NAME=IARU-VHF\n"
+      "MODE=MIXED\n"
+      "EXCHANGE_SENT=# LOCATOR\n"
+      "FIELD=# LOCATOR,Serial + Locator,required\n";
+  expect_int_eq(write_text_file(contest_path, contest_text), 0,
+                "write # LOCATOR contest definition");
+
+  char conf_path[512];
+  join_path(conf_path, sizeof(conf_path), case_dir, "logger.conf");
+  const char *conf_text =
+      "CONTEST_DEF_FILE=contest.conf\n"
+      "LOCATOR=JO90AA\n";
+  expect_int_eq(write_text_file(conf_path, conf_text), 0,
+                "write logger.conf for # LOCATOR suggest test");
+
+  set_test_db_path(case_dir);
+
+  char old_cwd[512];
+  expect_true(getcwd(old_cwd, sizeof(old_cwd)) != NULL,
+              "getcwd before # LOCATOR suggest test");
+  expect_int_eq(chdir(case_dir), 0,
+                "chdir to # LOCATOR suggest test directory");
+
+  app_controller_init();
+  const int base_qso_count = qso_count;
+
+  /* First QSO: log SP9IVH with exchange 001 JO91AA */
+  send_controller_text("144300");
+  send_controller_chars("SP9IVH");
+  app_controller_handle_key(APP_KEY_SPACE);
+  send_controller_chars("001 JO91AA");
+  app_controller_handle_key(APP_KEY_ENTER);
+
+  expect_int_eq(qso_count, base_qso_count + 1,
+                "first QSO with # LOCATOR exchange should be saved");
+  expect_str_eq(logbook[base_qso_count].exchange_recv, "001 JO91AA",
+                "saved exchange should be 001 JO91AA");
+
+  /* Second QSO: log SP9IVH again. When moving to exchange field and typing serial 002,
+     suggestion should offer '002 JO91AA', and Tab should autocomplete it. */
+  send_controller_chars("SP9IVH");
+  app_controller_handle_key(APP_KEY_SPACE);
+
+  AppRenderState state;
+  app_controller_get_render_state(&state);
+  expect_true(state.display_info != NULL && strstr(state.display_info, "JO91AA") != NULL,
+              "exchange field suggestion should show known locator JO91AA");
+
+  send_controller_chars("002");
+  app_controller_get_render_state(&state);
+  expect_true(state.display_info != NULL && strstr(state.display_info, "002 JO91AA") != NULL,
+              "exchange field suggestion should show 002 JO91AA when 002 typed");
+
+  app_controller_handle_key(APP_KEY_TAB);
+  app_controller_get_render_state(&state);
+  expect_str_eq(state.input_rst_r1, "002 JO91AA",
+                "Tab should autocomplete exchange to 002 JO91AA");
+
+  app_controller_handle_key(APP_KEY_ENTER);
+  expect_int_eq(qso_count, base_qso_count + 2,
+                "second QSO with autocompleted # LOCATOR exchange should be saved");
+  expect_str_eq(logbook[base_qso_count + 1].exchange_recv, "002 JO91AA",
+                "second QSO saved exchange should be 002 JO91AA");
+
+  app_controller_shutdown();
+  expect_int_eq(chdir(old_cwd), 0,
+                "restore cwd after # LOCATOR suggest test");
+}
+
 static void test_dxcluster_set_status(void) {
   expect_int_eq(config_load("/definitely/missing/logger.conf"), -1,
                 "missing config returns -1 but applies defaults");
@@ -4689,6 +4846,8 @@ int main(void) {
   test_maidenhead();
   test_controller_vhf_locator_exchange_and_distance_points(tmp_dir);
   test_controller_vhf_serial_locator_exchange_and_distance_points(tmp_dir);
+  test_controller_vhf_spaced_serial_locator_exchange(tmp_dir);
+  test_controller_spaced_serial_locator_exchange_and_suggestions(tmp_dir);
   test_dxcluster_set_status();
   test_dxcluster_start_stop();
   test_dxcluster_send_spot_requires_connection();

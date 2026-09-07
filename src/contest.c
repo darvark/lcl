@@ -132,9 +132,11 @@ static void apply_dxlog_received_field_type(const char *value,
 
   if ((text_contains_token_ci(value, "NR") ||
        text_contains_token_ci(value, "SERIAL") ||
-       text_contains_token_ci(value, "QSONR")) &&
+       text_contains_token_ci(value, "QSONR") ||
+       text_contains_token_ci(value, "#")) &&
       (text_contains_token_ci(value, "GRID") ||
-       text_contains_token_ci(value, "LOC"))) {
+       text_contains_token_ci(value, "LOC") ||
+       text_contains_token_ci(value, "LOCATOR"))) {
     snprintf(out->fields[0].name, sizeof(out->fields[0].name), "%s",
              "SERIAL_GRID");
     snprintf(out->fields[0].label, sizeof(out->fields[0].label), "%s",

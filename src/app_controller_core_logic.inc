@@ -79,10 +79,117 @@ static int contest_exchange_is_serial_locator(const ContestFieldDef *field) {
   for (size_t i = 0; upper_name[i]; i++)
     upper_name[i] = (char)toupper((unsigned char)upper_name[i]);
 
-  return strstr(upper_name, "SERIAL_GRID") != NULL ||
-         strstr(upper_name, "NRGRID") != NULL ||
-         (strstr(upper_name, "SERIAL") != NULL &&
-          strstr(upper_name, "GRID") != NULL);
+  const int has_serial_token = (strstr(upper_name, "SERIAL") != NULL ||
+                                strstr(upper_name, "NR") != NULL ||
+                                strstr(upper_name, "QSONR") != NULL ||
+                                strstr(upper_name, "#") != NULL);
+  const int has_locator_token = (strstr(upper_name, "GRID") != NULL ||
+                                 strstr(upper_name, "LOC") != NULL ||
+                                 strstr(upper_name, "LOCATOR") != NULL ||
+                                 strstr(upper_name, "WWL") != NULL);
+
+  return (has_serial_token && has_locator_token) ||
+         strstr(upper_name, "SERIAL_GRID") != NULL ||
+         strstr(upper_name, "NRGRID") != NULL;
+}
+
+static int lookup_previous_locator_for_call(const char *call, char *out_locator,
+                                            size_t out_size) {
+  if (!call || !call[0] || !out_locator || out_size < 5)
+    return 0;
+
+  out_locator[0] = 0;
+
+  for (int i = qso_count - 1; i >= 0; i--) {
+    const QSO *q = &logbook[i];
+    if (q->invalid)
+      continue;
+    if (strcasecmp(q->call, call) == 0 && q->exchange_recv[0]) {
+      if (extract_locator_from_exchange(q->exchange_recv, out_locator,
+                                        out_size)) {
+        return 1;
+      }
+    }
+  }
+
+  return 0;
+}
+
+static int get_exchange_suggestion(const char *call, const char *current_rst_input,
+                                   char *out_suggestion, size_t out_size) {
+  if (!out_suggestion || out_size < 2)
+    return 0;
+
+  out_suggestion[0] = 0;
+
+  if (!call || !call[0])
+    return 0;
+
+  char known_locator[16] = {0};
+  if (!lookup_previous_locator_for_call(call, known_locator,
+                                        sizeof(known_locator))) {
+    return 0;
+  }
+
+  const ContestFieldDef *field = active_exchange_field_def();
+  const char *tpl = active_contest_def.exchange_sent_template;
+
+  int is_spaced_serial_loc = 0;
+  int is_serial_loc = 0;
+  int is_pure_loc = 0;
+
+  if (field && contest_exchange_is_serial_locator(field)) {
+    is_serial_loc = 1;
+    if ((tpl && (strcmp(tpl, "# LOCATOR") == 0 || strcmp(tpl, "# GRID") == 0 ||
+                 strcmp(tpl, "SERIAL LOCATOR") == 0 ||
+                 strcmp(tpl, "SERIAL GRID") == 0 ||
+                 strcmp(tpl, "NR LOCATOR") == 0 ||
+                 strcmp(tpl, "NR GRID") == 0)) ||
+        (field->name[0] && strchr(field->name, ' ') != NULL)) {
+      is_spaced_serial_loc = 1;
+    }
+  } else if (field && contest_exchange_is_locator(field)) {
+    is_pure_loc = 1;
+  } else if (tpl && (strcmp(tpl, "LOCATOR") == 0 || strcmp(tpl, "GRID") == 0 ||
+                     strcmp(tpl, "WWL") == 0)) {
+    is_pure_loc = 1;
+  }
+
+  if (is_pure_loc) {
+    snprintf(out_suggestion, out_size, "%s", known_locator);
+    return 1;
+  }
+
+  if (is_serial_loc) {
+    const char *input = current_rst_input ? current_rst_input : "";
+    char current_loc[16] = {0};
+    if (extract_locator_from_exchange(input, current_loc, sizeof(current_loc))) {
+      return 0;
+    }
+
+    char digits[16] = {0};
+    size_t d_idx = 0;
+    for (size_t i = 0; input[i] && d_idx < sizeof(digits) - 1; i++) {
+      if (isdigit((unsigned char)input[i]))
+        digits[d_idx++] = input[i];
+    }
+    digits[d_idx] = 0;
+
+    if (is_spaced_serial_loc) {
+      if (digits[0])
+        snprintf(out_suggestion, out_size, "%s %s", digits, known_locator);
+      else
+        snprintf(out_suggestion, out_size, "%s", known_locator);
+    } else {
+      if (digits[0])
+        snprintf(out_suggestion, out_size, "%s%s", digits, known_locator);
+      else
+        snprintf(out_suggestion, out_size, "%s", known_locator);
+    }
+    return 1;
+  }
+
+  return 0;
 }
 
 static const char *contest_exchange_label(void) {
@@ -121,14 +228,27 @@ static int validate_contest_exchange(const char *exchange, char *status,
       return 0;
     }
 
-    int has_digit = 0;
-    for (size_t i = 0; exchange[i]; i++) {
-      if (isdigit((unsigned char)exchange[i])) {
-        has_digit = 1;
+    char non_locator_part[64] = {0};
+    snprintf(non_locator_part, sizeof(non_locator_part), "%s", exchange);
+
+    const size_t exch_len = strlen(non_locator_part);
+    const size_t loc_len = strlen(locator);
+    for (size_t i = 0; i + loc_len <= exch_len; i++) {
+      if (strncasecmp(non_locator_part + i, locator, loc_len) == 0) {
+        memmove(non_locator_part + i, non_locator_part + i + loc_len,
+                exch_len - (i + loc_len) + 1);
         break;
       }
     }
-    if (!has_digit) {
+
+    int has_serial_digit = 0;
+    for (size_t i = 0; non_locator_part[i]; i++) {
+      if (isdigit((unsigned char)non_locator_part[i])) {
+        has_serial_digit = 1;
+        break;
+      }
+    }
+    if (!has_serial_digit) {
       snprintf(status, status_size, "%s must contain valid serial + locator",
                label);
       return 0;
@@ -642,10 +762,28 @@ static int highest_numeric_exchange_sent(void) {
     if (!q || !q->exchange_sent[0])
       continue;
 
+    char text[sizeof(q->exchange_sent)];
+    snprintf(text, sizeof(text), "%s", q->exchange_sent);
+
+    /* Strip a trailing own locator (with optional separating space) so
+     * serial+locator exchanges like "12JO90AA" or "12 JO90AA" still
+     * count as numeric serials. */
+    if (config.locator[0]) {
+      const size_t text_len = strlen(text);
+      const size_t locator_len = strlen(config.locator);
+      if (text_len > locator_len &&
+          strcasecmp(text + text_len - locator_len, config.locator) == 0) {
+        text[text_len - locator_len] = 0;
+        const size_t trimmed_len = strlen(text);
+        if (trimmed_len > 0 && text[trimmed_len - 1] == ' ')
+          text[trimmed_len - 1] = 0;
+      }
+    }
+
     char *end = NULL;
     errno = 0;
-    const long value = strtol(q->exchange_sent, &end, 10);
-    if (errno != 0 || end == q->exchange_sent || *end != '\0' || value < 0)
+    const long value = strtol(text, &end, 10);
+    if (errno != 0 || end == text || *end != '\0' || value < 0)
       continue;
 
     if (value > max_serial)
@@ -674,10 +812,22 @@ static void build_exchange_sent(char *out, size_t out_size) {
       strcmp(tpl, "#GRID") == 0 || strcmp(tpl, "#LOCATOR") == 0 ||
       strcmp(tpl, "NR") == 0;
 
-  if (is_numeric_serial_template) {
+  /* DXLog-style "# LOCATOR" templates: serial and locator separated by
+   * a single space, e.g. "12 JO90AA". */
+  const int is_spaced_serial_locator_template =
+      strcmp(tpl, "# LOCATOR") == 0 || strcmp(tpl, "# GRID") == 0 ||
+      strcmp(tpl, "SERIAL LOCATOR") == 0 || strcmp(tpl, "SERIAL GRID") == 0 ||
+      strcmp(tpl, "NR LOCATOR") == 0 || strcmp(tpl, "NR GRID") == 0;
+
+  if (is_numeric_serial_template || is_spaced_serial_locator_template) {
     const int largest_serial = highest_numeric_exchange_sent();
     const int next_serial = (qso_count > largest_serial ? qso_count : largest_serial) + 1;
-    if (strcmp(tpl, "SERIAL+LOCATOR") == 0 || strcmp(tpl, "SERIAL_GRID") == 0 ||
+    if (is_spaced_serial_locator_template) {
+      if (config.locator[0])
+        snprintf(out, out_size, "%d %s", next_serial, config.locator);
+      else
+        snprintf(out, out_size, "%d", next_serial);
+    } else if (strcmp(tpl, "SERIAL+LOCATOR") == 0 || strcmp(tpl, "SERIAL_GRID") == 0 ||
         strcmp(tpl, "#GRID") == 0 || strcmp(tpl, "#LOCATOR") == 0) {
       if (config.locator[0])
         snprintf(out, out_size, "%d%s", next_serial, config.locator);

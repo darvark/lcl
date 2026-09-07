@@ -83,6 +83,8 @@ Pola `CAT2_*` działają tak samo jak `CAT_*`, ale dotyczą drugiego radia.
 Ważna reguła dla wymiany nadawanej:
 
 - `EXCHANGE_SENT=#` zawsze oznacza numer inkrementowany od `1` w górę.
+- `EXCHANGE_SENT=SERIAL_GRID` (lub `#LOCATOR`) generuje numer i własny lokator sklejone, np. `12JO92DF`.
+- `EXCHANGE_SENT=# LOCATOR` (ze spacją; także `# GRID`, `SERIAL LOCATOR`) generuje numer i lokator rozdzielone spacją, np. `12 JO92DF`.
 - nadawana wymiana jest wyznaczana wyłącznie przez definicję zawodów, bez osobnego nadpisania w `logger.conf`.
 
 ### CW keyer

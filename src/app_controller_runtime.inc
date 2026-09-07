@@ -373,7 +373,23 @@ static int apply_saved_qso_state(int idx) {
  * @return Nothing.
  */
 static void update_display_info(void) {
-  if (call_suggestion_available && !export_prompt_mode) {
+  const int radio_idx = active_radio_index();
+  const int active_field = *active_entry_field_for_idx(radio_idx);
+  const char *entry_call = entry_call_for_idx(radio_idx);
+  const char *entry_rst = entry_rst_for_idx(radio_idx);
+
+  if (active_field == ENTRY_FIELD_RST && entry_call[0] && !export_prompt_mode) {
+    char exch_suggest[32] = {0};
+    if (get_exchange_suggestion(entry_call, entry_rst, exch_suggest,
+                                sizeof(exch_suggest))) {
+      snprintf(display_info, sizeof(display_info), "Suggest: %s [Tab]",
+               exch_suggest);
+      return;
+    }
+  }
+
+  if (call_suggestion_available && !export_prompt_mode &&
+      active_field == ENTRY_FIELD_CALL) {
     const char *selected = call_suggestion_selected(&call_suggestions);
     if (selected && call_suggestion_count > 1) {
       snprintf(display_info, sizeof(display_info), "Suggest: %s (+%d more) [Tab]",
@@ -835,13 +851,23 @@ AppControllerEvent app_controller_handle_key(int key) {
   }
 
   if (!export_prompt_mode && key == APP_KEY_TAB) {
-    if (*active_entry_field_for_idx(active_radio_index()) == ENTRY_FIELD_CALL) {
+    const int radio_idx = active_radio_index();
+    const int active_field = *active_entry_field_for_idx(radio_idx);
+    if (active_field == ENTRY_FIELD_CALL) {
       const char *selected = call_suggestion_selected(&call_suggestions);
       if (selected) {
-        char *entry_call = entry_call_for_idx(active_radio_index());
+        char *entry_call = entry_call_for_idx(radio_idx);
         snprintf(entry_call, sizeof(entry_call_by_radio[0]), "%s", selected);
         update_dxcc_from_input(entry_call);
         refresh_callsign_suggestion(entry_call);
+      }
+    } else if (active_field == ENTRY_FIELD_RST) {
+      const char *entry_call = entry_call_for_idx(radio_idx);
+      char *entry_rst = entry_rst_for_idx(radio_idx);
+      char exch_suggest[32] = {0};
+      if (get_exchange_suggestion(entry_call, entry_rst, exch_suggest,
+                                  sizeof(exch_suggest))) {
+        snprintf(entry_rst, sizeof(entry_rst_by_radio[0]), "%s", exch_suggest);
       }
     }
     update_composed_input_line();

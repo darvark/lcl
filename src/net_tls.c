@@ -388,6 +388,9 @@ ssize_t net_transport_write_cb(void *ctx, const void *buf, size_t len) {
     if (written < 0 && (errno == EPIPE || errno == ECONNRESET))
       return -1;
     return written;
+}
+
+void net_transport_close(NetTransport *transport) {
   if (!transport)
     return;
 
