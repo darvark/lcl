@@ -1256,27 +1256,36 @@ static int import_call_history_file_impl(const char *path) {
  * @return 0 on success, or -1 on failure.
  */
 static int ensure_open(void) {
-  if (db)
-    return 0;
-
   const char *env_path = getenv("LOGGER_DB_PATH");
-  const char *path = NULL;
+  const char *target_path = NULL;
   int using_default_path = 0;
 
-  if (db_path[0]) {
-    path = db_path;
-  } else if (env_path && env_path[0]) {
-    path = env_path;
+  if (env_path && env_path[0]) {
+    target_path = env_path;
+  } else if (db_path[0]) {
+    target_path = db_path;
   } else {
     if (build_log_db_path("GeneralLog", db_path, sizeof(db_path)) == 0)
-      path = db_path;
+      target_path = db_path;
     else
-      path = "logger.db";
+      target_path = "logger.db";
     using_default_path = 1;
   }
 
-  if (path != db_path)
-    snprintf(db_path, sizeof(db_path), "%s", path);
+  if (db && (!target_path || strcmp(db_path, target_path) != 0)) {
+    sqlite3_close(db);
+    db = NULL;
+    db_initialized = 0;
+    db_path[0] = 0;
+    previous_db_path[0] = 0;
+    pending_logbook_name[0] = 0;
+  }
+
+  if (db)
+    return 0;
+
+  if (target_path != db_path)
+    snprintf(db_path, sizeof(db_path), "%s", target_path);
   db_is_default_path = using_default_path;
 
   if (using_default_path) {
@@ -1724,6 +1733,11 @@ void db_shutdown(void) {
   }
 
   db_initialized = 0;
+  db_path[0] = 0;
+  previous_db_path[0] = 0;
+  pending_logbook_name[0] = 0;
+  db_is_default_path = 1;
+  db_bootstrap_import_done = 0;
 }
 
 /*
@@ -1732,8 +1746,29 @@ void db_shutdown(void) {
  * @return 0 on success, or -1 on failure.
  */
 int db_init(void) {
-  if (db_initialized && db)
+  const char *env_path = getenv("LOGGER_DB_PATH");
+  const char *target_path = env_path && env_path[0] ? env_path : db_path[0] ? db_path : NULL;
+
+  if (db_initialized && db && db_path[0] && target_path &&
+      strcmp(db_path, target_path) == 0)
     return 0;
+
+  if (db) {
+    if (!target_path || !db_path[0] || strcmp(db_path, target_path) != 0) {
+      sqlite3_close(db);
+      db = NULL;
+      db_initialized = 0;
+      db_path[0] = 0;
+      previous_db_path[0] = 0;
+      pending_logbook_name[0] = 0;
+    }
+  }
+
+  if (env_path && env_path[0] && db_path[0] && strcmp(db_path, env_path) != 0) {
+    db_path[0] = 0;
+    previous_db_path[0] = 0;
+    pending_logbook_name[0] = 0;
+  }
 
   if (ensure_open() != 0)
     return -1;
@@ -3053,7 +3088,7 @@ int db_sync_outbox_mark_retry(const char *op_id, int delay_seconds) {
                    "  ELSE 'pending' "
                    "END, "
                    "next_retry_utc = CASE "
-                   "  WHEN retry_count + 1 >= ? THEN next_retry_utc "
+                   "  WHEN retry_count + 1 >= ? THEN CURRENT_TIMESTAMP "
                    "  ELSE datetime('now', ?) "
                    "END "
                    "WHERE op_id = ? AND status != 'acked';") != SQLITE_OK)
@@ -3079,7 +3114,9 @@ int db_sync_outbox_mark_acked(const char *op_id) {
 
   sqlite3_stmt *stmt = NULL;
   if (prepare_stmt(&stmt,
-                   "UPDATE log_outbox SET status = 'acked' WHERE op_id = ?;") !=
+                   "UPDATE log_outbox "
+                   "SET status = 'acked', next_retry_utc = CURRENT_TIMESTAMP "
+                   "WHERE op_id = ? AND status != 'acked';") !=
       SQLITE_OK)
     return -1;
 
@@ -3100,7 +3137,9 @@ int db_sync_get_pending_outbox_count(int *out_count) {
 
   sqlite3_stmt *stmt = NULL;
   if (prepare_stmt(&stmt,
-                   "SELECT COUNT(*) FROM log_outbox WHERE status = 'pending' OR status = 'sent';") !=
+                   "SELECT COUNT(*) FROM log_outbox "
+                   "WHERE (status = 'pending' OR status = 'sent') "
+                   "AND (next_retry_utc IS NULL OR next_retry_utc <= CURRENT_TIMESTAMP);") !=
       SQLITE_OK)
     return -1;
 

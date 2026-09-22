@@ -297,12 +297,16 @@ void qso_init(void) {
   memset(logbook, 0, sizeof(logbook));
   qso_count = 0;
 
+  db_shutdown();
   if (db_init() != 0)
     return;
 
   int loaded = 0;
   if (db_load_qsos(logbook, MAX_QSO, NULL, &loaded) == 0)
     qso_count = loaded;
+
+  if (qso_count < 0)
+    qso_count = 0;
 }
 
 /* ------------------------------------------------ */

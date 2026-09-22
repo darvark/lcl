@@ -2,6 +2,14 @@
 
 Ten dokument opisuje pola obsługiwane w `logger.conf` oraz klucze dozwolone w plikach definicji zawodów w katalogu `contest_defs/`.
 
+## Uwaga o bieżącym stanie implementacji
+
+W obecnym etapie pracy projekt jest w fazie stabilizacji po dodaniu obsługi VHF/UHF/SHF, exchange `SERIAL_GRID`, `GRID_PER_BAND` i testów dla VHF. W praktyce oznacza to, że:
+
+- niektóre ścieżki logiki VHF są już zaimplementowane, ale wymagają dodatkowego dopracowania i testów regresyjnych,
+- główny nacisk przeniesiono na wykrycie i usunięcie krytycznych problemów w stanie logbooku, pracy sieciowej i bezpieczeństwie buforów,
+- z perspektywy użytkownika definicje zawodów VHF powinny być traktowane jako częściowo aktywne, a nie jako w pełni zakończoną i stabilną funkcjonalność.
+
 ## Format pliku `logger.conf`
 
 - Format: `KLUCZ=WARTOŚĆ`

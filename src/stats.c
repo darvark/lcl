@@ -9,6 +9,24 @@
 #include <stdio.h>
 #include <string.h>
 
+static void trim_in_place(char *text) {
+  if (!text)
+    return;
+
+  size_t start = 0;
+  while (text[start] && isspace((unsigned char)text[start]))
+    start++;
+
+  if (start > 0)
+    memmove(text, text + start, strlen(text + start) + 1);
+
+  size_t len = strlen(text);
+  while (len > 0 && isspace((unsigned char)text[len - 1])) {
+    text[len - 1] = 0;
+    len--;
+  }
+}
+
 static int extract_locator_fragment(const char *text, char *out,
                                     size_t out_size) {
   if (!text || !text[0] || !out || out_size < 5)
@@ -259,6 +277,53 @@ static void maybe_add_multiplier(const QSO *q, int own_is_sp) {
       return;
     snprintf(key, sizeof(key), "%s|%s", q->band, locator);
     break;
+  }
+  case CONTEST_MULT_CUSTOM_LIST: {
+    char source[64] = {0};
+    char list_copy[256] = {0};
+    char *token = NULL;
+
+    if (q->exchange_recv[0]) {
+      snprintf(source, sizeof(source), "%s", q->exchange_recv);
+    } else if (q->country[0] && strcmp(q->country, "UNKNOWN") != 0) {
+      snprintf(source, sizeof(source), "%s", q->country);
+    } else {
+      return;
+    }
+
+    for (size_t i = 0; source[i]; i++)
+      source[i] = (char)toupper((unsigned char)source[i]);
+
+    if (scoring_def.custom_mult_list[0]) {
+      snprintf(list_copy, sizeof(list_copy), "%s", scoring_def.custom_mult_list);
+      token = strtok(list_copy, ",");
+      while (token) {
+        char entry[32] = {0};
+        snprintf(entry, sizeof(entry), "%s", token);
+        for (size_t i = 0; entry[i]; i++)
+          entry[i] = (char)toupper((unsigned char)entry[i]);
+        trim_in_place(entry);
+        if (strcmp(entry, source) == 0) {
+          snprintf(key, sizeof(key), "%s", entry);
+          break;
+        }
+        token = strtok(NULL, ",");
+      }
+      if (!key[0])
+        return;
+      break;
+    }
+
+    if (scoring_def.mult3_field[0]) {
+      snprintf(key, sizeof(key), "%s", source);
+      break;
+    }
+
+    if (q->country[0] && strcmp(q->country, "UNKNOWN") != 0) {
+      snprintf(key, sizeof(key), "%s", q->country);
+      break;
+    }
+    return;
   }
   case CONTEST_MULT_DXCC:
   default:

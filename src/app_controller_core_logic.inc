@@ -126,8 +126,12 @@ static int get_exchange_suggestion(const char *call, const char *current_rst_inp
     return 0;
 
   char known_locator[16] = {0};
-  if (!lookup_previous_locator_for_call(call, known_locator,
-                                        sizeof(known_locator))) {
+  const int have_known_locator = lookup_previous_locator_for_call(
+      call, known_locator, sizeof(known_locator));
+  if (!have_known_locator && config.locator[0]) {
+    snprintf(known_locator, sizeof(known_locator), "%s", config.locator);
+  }
+  if (!have_known_locator && !config.locator[0]) {
     return 0;
   }
 

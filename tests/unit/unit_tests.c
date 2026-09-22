@@ -138,7 +138,9 @@ static void send_controller_text(const char *text);
 static void set_test_db_path(const char *dir_path) {
   char db_path[512];
   join_path(db_path, sizeof(db_path), dir_path, "unit.sqlite3");
+  unlink(db_path);
   db_shutdown();
+  unsetenv("LOGGER_DB_PATH");
   setenv("LOGGER_DB_PATH", db_path, 1);
 }
 
@@ -2907,6 +2909,43 @@ static void test_dxlog_definition_compatibility(const char *tmp_dir) {
                 "DXLog WWL per band should map to grid-per-band multiplier");
 }
 
+static void test_dxlog_custom_multiplier_metadata_and_section_area_parsing(
+    const char *tmp_dir) {
+  char path[512];
+  char err[128] = {0};
+  ContestDefinition def;
+
+  snprintf(path, sizeof(path), "%s/dxlog_custom_section.txt", tmp_dir);
+  expect_int_eq(write_text_file(path,
+      "CONTESTNAME=Custom Section Test\n"
+      "MULT1_TYPE=CUSTOM\n"
+      "MULT1_COUNT=PER_BAND\n"
+      "MULT3_TYPE=SECTION\n"
+      "MULT3_COUNT=PER_BAND\n"
+      "MULT3_FIELD=SECTION\n"
+      "CUSTOM_MULT_LIST=EA,EI,IL,IO,IZ\n"
+      "SECTION=QTH\n"
+      "AREA=IT\n"
+      "PFX_AREA=ARRL\n"),
+      0, "write DXLog custom multiplier sample");
+  expect_int_eq(contest_definition_load(path, &def, err, sizeof(err)), 0,
+                "load DXLog custom multiplier metadata");
+  expect_int_eq((int)def.multiplier_type, (int)CONTEST_MULT_CUSTOM_LIST,
+                "DXLog CUSTOM multiplier should map to custom list mode");
+  expect_str_eq(def.custom_mult_list, "EA,EI,IL,IO,IZ",
+                "DXLog CUSTOM_MULT_LIST should be preserved");
+  expect_str_eq(def.mult3_type, "SECTION",
+                "DXLog MULT3_TYPE should be preserved");
+  expect_str_eq(def.mult3_field, "SECTION",
+                "DXLog MULT3_FIELD should be preserved");
+  expect_str_eq(def.section_name, "QTH",
+                "DXLog SECTION should be preserved");
+  expect_str_eq(def.area_name, "IT",
+                "DXLog AREA should be preserved");
+  expect_str_eq(def.pfx_area, "ARRL",
+                "DXLog PFX_AREA should be preserved");
+}
+
 static void test_dxlog_importer_generates_local_conf(const char *tmp_dir) {
   char src_path[512];
   char dst_path[512];
@@ -3245,12 +3284,12 @@ static void test_controller_spaced_serial_locator_exchange_and_suggestions(const
 
   AppRenderState state;
   app_controller_get_render_state(&state);
-  expect_true(state.display_info != NULL && strstr(state.display_info, "JO91AA") != NULL,
+  expect_true(state.info != NULL && strstr(state.info, "JO91AA") != NULL,
               "exchange field suggestion should show known locator JO91AA");
 
   send_controller_chars("002");
   app_controller_get_render_state(&state);
-  expect_true(state.display_info != NULL && strstr(state.display_info, "002 JO91AA") != NULL,
+  expect_true(state.info != NULL && strstr(state.info, "002 JO91AA") != NULL,
               "exchange field suggestion should show 002 JO91AA when 002 typed");
 
   app_controller_handle_key(APP_KEY_TAB);
@@ -3267,6 +3306,64 @@ static void test_controller_spaced_serial_locator_exchange_and_suggestions(const
   app_controller_shutdown();
   expect_int_eq(chdir(old_cwd), 0,
                 "restore cwd after # LOCATOR suggest test");
+}
+
+static void test_controller_fixed_locator_serial_suggestion(const char *tmp_dir) {
+  char case_dir[512];
+  snprintf(case_dir, sizeof(case_dir), "%s/fixed_serial_loc_suggest_case", tmp_dir);
+  expect_int_eq(make_temp_dir(case_dir, sizeof(case_dir)), 0,
+                "create isolated directory for fixed serial locator suggest test");
+
+  char contest_path[512];
+  join_path(contest_path, sizeof(contest_path), case_dir, "contest.conf");
+  const char *contest_text =
+      "NAME=IARU-UHF\n"
+      "CABRILLO_NAME=IARU-UHF\n"
+      "MODE=MIXED\n"
+      "EXCHANGE_SENT=# LOCATOR\n"
+      "FIELD=# LOCATOR,Serial + Locator,required\n";
+  expect_int_eq(write_text_file(contest_path, contest_text), 0,
+                "write # LOCATOR contest definition for fixed locator suggestion test");
+
+  char conf_path[512];
+  join_path(conf_path, sizeof(conf_path), case_dir, "logger.conf");
+  const char *conf_text =
+      "CONTEST_DEF_FILE=contest.conf\n"
+      "LOCATOR=JO81PC\n";
+  expect_int_eq(write_text_file(conf_path, conf_text), 0,
+                "write logger.conf for fixed locator suggestion test");
+
+  set_test_db_path(case_dir);
+
+  char old_cwd[512];
+  expect_true(getcwd(old_cwd, sizeof(old_cwd)) != NULL,
+              "getcwd before fixed locator suggestion test");
+  expect_int_eq(chdir(case_dir), 0,
+                "chdir to fixed locator suggestion test directory");
+
+  app_controller_init();
+
+  send_controller_chars("SP9IVH");
+  app_controller_handle_key(APP_KEY_SPACE);
+
+  AppRenderState state;
+  app_controller_get_render_state(&state);
+  expect_true(state.info != NULL && strstr(state.info, "JO81PC") != NULL,
+              "exchange field suggestion should show fixed locator JO81PC");
+
+  send_controller_chars("002");
+  app_controller_get_render_state(&state);
+  expect_true(state.info != NULL && strstr(state.info, "002 JO81PC") != NULL,
+              "exchange field suggestion should show 002 JO81PC when serial typed");
+
+  app_controller_handle_key(APP_KEY_TAB);
+  app_controller_get_render_state(&state);
+  expect_str_eq(state.input_rst_r1, "002 JO81PC",
+                "Tab should autocomplete exchange to 002 JO81PC using fixed locator");
+
+  app_controller_shutdown();
+  expect_int_eq(chdir(old_cwd), 0,
+                "restore cwd after fixed locator suggestion test");
 }
 
 static void test_dxcluster_set_status(void) {
@@ -4842,12 +4939,14 @@ int main(void) {
   test_export_command_exports_cabrillo_too(tmp_dir);
   test_contest_definition_and_cabrillo(tmp_dir);
   test_dxlog_definition_compatibility(tmp_dir);
+  test_dxlog_custom_multiplier_metadata_and_section_area_parsing(tmp_dir);
   test_dxlog_importer_generates_local_conf(tmp_dir);
   test_maidenhead();
   test_controller_vhf_locator_exchange_and_distance_points(tmp_dir);
   test_controller_vhf_serial_locator_exchange_and_distance_points(tmp_dir);
   test_controller_vhf_spaced_serial_locator_exchange(tmp_dir);
   test_controller_spaced_serial_locator_exchange_and_suggestions(tmp_dir);
+  test_controller_fixed_locator_serial_suggestion(tmp_dir);
   test_dxcluster_set_status();
   test_dxcluster_start_stop();
   test_dxcluster_send_spot_requires_connection();

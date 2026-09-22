@@ -105,6 +105,10 @@ static ContestMultiplierType map_dxlog_multiplier(const char *type,
   if (strcmp(up_type, "WWL") == 0 || strcmp(up_type, "GRID") == 0 ||
       strcmp(up_type, "LOCATOR") == 0)
     return CONTEST_MULT_GRID_PER_BAND;
+  if (strcmp(up_type, "CUSTOM") == 0 || strcmp(up_type, "CUSTOM_LIST") == 0 ||
+      strcmp(up_type, "SECTION") == 0 || strcmp(up_type, "AREA") == 0 ||
+      strcmp(up_type, "PFX_AREA") == 0 || strcmp(up_type, "MULT3") == 0)
+    return CONTEST_MULT_CUSTOM_LIST;
 
   return CONTEST_MULT_DXCC;
 }
@@ -199,9 +203,6 @@ static int is_dxlog_key_potentially_ignored(const char *key_upper) {
          strcmp(key_upper, "SCORE") == 0 ||
          strcmp(key_upper, "SCORE_DISPLAY") == 0 ||
          strcmp(key_upper, "SCORE_TOTAL_FX") == 0 ||
-         strcmp(key_upper, "MULT3_TYPE") == 0 ||
-         strcmp(key_upper, "MULT3_COUNT") == 0 ||
-         strcmp(key_upper, "MULT3_FIELD") == 0 ||
          strncmp(key_upper, "MULT", 4) == 0 ||
          strncmp(key_upper, "CFG_", 4) == 0 ||
          strncmp(key_upper, "WINDOWS_", 8) == 0 ||
@@ -243,6 +244,13 @@ static int is_dxlog_key_supported_for_import(const char *key_upper) {
          strcmp(key_upper, "MULT1_COUNT") == 0 ||
          strcmp(key_upper, "MULT2_TYPE") == 0 ||
          strcmp(key_upper, "MULT2_COUNT") == 0 ||
+         strcmp(key_upper, "MULT3_TYPE") == 0 ||
+         strcmp(key_upper, "MULT3_COUNT") == 0 ||
+         strcmp(key_upper, "MULT3_FIELD") == 0 ||
+         strcmp(key_upper, "CUSTOM_MULT_LIST") == 0 ||
+         strcmp(key_upper, "SECTION") == 0 ||
+         strcmp(key_upper, "AREA") == 0 ||
+         strcmp(key_upper, "PFX_AREA") == 0 ||
          strcmp(key_upper, "FIELD") == 0 ||
          strcmp(key_upper, "FIELD_RCVD_TYPE") == 0 ||
          strcmp(key_upper, "BONUS_POINTS") == 0 ||
@@ -363,6 +371,12 @@ void contest_definition_init_defaults(ContestDefinition *out) {
   out->points_same_band_dxcc = 0;
   out->points_configured = 0;
   out->multiplier_type = CONTEST_MULT_DXCC;
+  out->custom_mult_list[0] = 0;
+  out->mult3_type[0] = 0;
+  out->mult3_field[0] = 0;
+  out->section_name[0] = 0;
+  out->area_name[0] = 0;
+  out->pfx_area[0] = 0;
   out->bonus_points = 0;
   snprintf(out->qtc_sender_side, sizeof(out->qtc_sender_side), "%s", "NONE");
   out->points_per_qtc = 0;
@@ -434,6 +448,9 @@ ContestMultiplierType contest_multiplier_from_text(const char *text) {
       strcmp(upper, "WWL_PER_BAND") == 0 ||
       strcmp(upper, "LOCATOR_PER_BAND") == 0)
     return CONTEST_MULT_GRID_PER_BAND;
+  if (strcmp(upper, "CUSTOM") == 0 || strcmp(upper, "CUSTOM_LIST") == 0 ||
+      strcmp(upper, "CUSTOM-LIST") == 0)
+    return CONTEST_MULT_CUSTOM_LIST;
 
   /* Backward-compatible aliases. */
   if (strcmp(upper, "BAND_DXCC") == 0 || strcmp(upper, "BAND-DXCC") == 0)
@@ -468,6 +485,8 @@ static const char *contest_multiplier_to_text(ContestMultiplierType type) {
     return "GRID_PER_BAND";
   case CONTEST_MULT_MODE_DXCC:
     return "MODE_DXCC";
+  case CONTEST_MULT_CUSTOM_LIST:
+    return "CUSTOM_LIST";
   default:
     return "DXCC";
   }
@@ -521,6 +540,18 @@ int contest_definition_import_dxlog(const char *source_path,
   fprintf(f, "POINTS_NEW_BAND_DXCC=%d\n", def.points_new_band_dxcc);
   fprintf(f, "POINTS_SAME_BAND_DXCC=%d\n", def.points_same_band_dxcc);
   fprintf(f, "MULTIPLIER=%s\n", contest_multiplier_to_text(def.multiplier_type));
+  if (def.custom_mult_list[0])
+    fprintf(f, "CUSTOM_MULT_LIST=%s\n", def.custom_mult_list);
+  if (def.mult3_type[0])
+    fprintf(f, "MULT3_TYPE=%s\n", def.mult3_type);
+  if (def.mult3_field[0])
+    fprintf(f, "MULT3_FIELD=%s\n", def.mult3_field);
+  if (def.section_name[0])
+    fprintf(f, "SECTION=%s\n", def.section_name);
+  if (def.area_name[0])
+    fprintf(f, "AREA=%s\n", def.area_name);
+  if (def.pfx_area[0])
+    fprintf(f, "PFX_AREA=%s\n", def.pfx_area);
   fprintf(f, "BONUS_POINTS=%d\n", def.bonus_points);
   if (def.duplicate_qso)
     fprintf(f, "DOUBLE_QSO=1\n");
@@ -721,6 +752,20 @@ int contest_definition_load(const char *path, ContestDefinition *out,
       out->points_configured = 1;
     } else if (strcmp(key, "MULTIPLIER") == 0) {
       out->multiplier_type = contest_multiplier_from_text(value);
+    } else if (strcmp(key, "CUSTOM_MULT_LIST") == 0) {
+      snprintf(out->custom_mult_list, sizeof(out->custom_mult_list), "%s", value);
+    } else if (strcmp(key, "MULT3_TYPE") == 0) {
+      snprintf(out->mult3_type, sizeof(out->mult3_type), "%s", value);
+      uppercase_in_place(out->mult3_type);
+    } else if (strcmp(key, "MULT3_FIELD") == 0) {
+      snprintf(out->mult3_field, sizeof(out->mult3_field), "%s", value);
+      uppercase_in_place(out->mult3_field);
+    } else if (strcmp(key, "SECTION") == 0) {
+      snprintf(out->section_name, sizeof(out->section_name), "%s", value);
+    } else if (strcmp(key, "AREA") == 0) {
+      snprintf(out->area_name, sizeof(out->area_name), "%s", value);
+    } else if (strcmp(key, "PFX_AREA") == 0) {
+      snprintf(out->pfx_area, sizeof(out->pfx_area), "%s", value);
     } else if (strcmp(key, "MULT1_TYPE") == 0) {
       snprintf(dxlog_mult1_type, sizeof(dxlog_mult1_type), "%s", value);
     } else if (strcmp(key, "MULT1_COUNT") == 0) {

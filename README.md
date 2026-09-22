@@ -12,6 +12,17 @@ Dodatkowa dokumentacja:
 - [docs/siec-centralny-log.md](docs/siec-centralny-log.md) (archiwalna dokumentacja historyczna)
 - [docs/siec-centralny-log-projekt.md](docs/siec-centralny-log-projekt.md) (archiwalna dokumentacja historyczna)
 
+## Status prac i stabilizacji
+
+Aktualny stan repozytorium jest etapem stabilizacji po wprowadzeniu nowych funkcji VHF i aktualizacji synchronizacji. Nie jest to jeszcze stan produkcyjnie stabilny:
+
+- wprowadzono obsługę VHF/UHF/SHF z lokalizacją i punktacją odległościową,
+- dodano nowe typy exchange i multiplierów dla `SERIAL_GRID` / `GRID_PER_BAND`,
+- wprowadzono testy regresyjne dla VHF,
+- nadal trwają prace nad porządkowaniem logbooku, stanu synchronizacji i bezpieczeństwa buforów.
+
+Na poziomie projektu przyjęto zasadę, że najpierw trzeba zamknąć problematyczne obszary krytyczne (buffer overflow, qso state, sync/outbox, remote apply), a dopiero potem finalizować VHF i doprecyzować dokumentację użytkową.
+
 ## Status pracy sieciowej
 
 Funkcjonalność pracy w sieci z wspólnym logiem została usunięta z aktywnej wersji aplikacji. Aktualnie program działa jako lokalny logger konkursowy bez synchronizacji klient-serwer, centralnego logu i funkcji sieciowych.
