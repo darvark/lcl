@@ -6,7 +6,7 @@
 
 #include "db.h"
 
-#define NET_PROTOCOL_VERSION 1
+#define NET_PROTOCOL_VERSION 2
 
 typedef enum {
   NET_MSG_UNKNOWN = 0,
@@ -41,6 +41,7 @@ typedef struct {
 typedef struct {
   char station_id[32];
   char auth_token[128];
+  char shared_log_id[36];
 } NetSessionMeta;
 
 typedef ssize_t (*NetProtocolReadFn)(void *ctx, void *buf, size_t len);
@@ -91,7 +92,8 @@ int net_protocol_parse_append_ops(const char *frame, NetAppendOp *out,
                                   int max_items, int *out_count);
 int net_protocol_parse_pull_ops_resp(const char *frame, SyncLogOpEntry *out,
                                      int max_items, int *out_count,
-                                     long long *out_last_global_seq);
+                                     long long *out_last_global_seq,
+                                     int *out_has_more);
 int net_protocol_parse_op_broadcast(const char *frame, SyncLogOpEntry *out);
 int net_protocol_parse_reserve_serial(const char *frame, char *request_id,
                                       size_t request_id_size,
@@ -109,8 +111,13 @@ int net_protocol_parse_commit_serial(const char *frame, char *reservation_id,
                                      char *qso_uid, size_t qso_uid_size);
 int net_protocol_parse_hello_meta(const char *frame, NetSessionMeta *out);
 int net_protocol_parse_hello_ack(const char *frame, int *out_accepted,
-                                 long long *out_server_global_seq);
+                                 long long *out_next_expected_station_seq,
+                                 long long *out_server_global_seq,
+                                 char *out_shared_log_id,
+                                 size_t out_shared_log_id_size);
 int net_protocol_parse_station_meta(const char *frame, NetSessionMeta *out);
+int net_protocol_validate_shared_log_id(const char *frame,
+            const char *expected_shared_log_id);
 int net_protocol_parse_protocol_version(const char *frame, int *out_version);
 int net_protocol_validate_protocol_version(const char *frame);
 int net_protocol_parse_error_code(const char *frame, char *out,

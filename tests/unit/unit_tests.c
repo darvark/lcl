@@ -22,6 +22,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <pthread.h>
+#include <sqlite3.h>
 #include <sys/socket.h>
 #include <stdarg.h>
 #include <sys/stat.h>
@@ -135,6 +136,9 @@ static void join_path(char *out, size_t out_size,
 static void send_controller_chars(const char *text);
 static void send_controller_text(const char *text);
 
+#define TEST_NET_AUTH_TOKEN "UnitTest-Contest-Logger-Secret-2026!"
+#define TEST_SHARED_LOG_ID "sl-0123456789abcdef0123456789abcdef"
+
 static void set_test_db_path(const char *dir_path) {
   char db_path[512];
   join_path(db_path, sizeof(db_path), dir_path, "unit.sqlite3");
@@ -142,6 +146,12 @@ static void set_test_db_path(const char *dir_path) {
   db_shutdown();
   unsetenv("LOGGER_DB_PATH");
   setenv("LOGGER_DB_PATH", db_path, 1);
+  snprintf(config.net_auth_token, sizeof(config.net_auth_token), "%s",
+           TEST_NET_AUTH_TOKEN);
+  snprintf(config.net_shared_key, sizeof(config.net_shared_key), "%s",
+           TEST_NET_AUTH_TOKEN);
+  snprintf(config.net_shared_log_id, sizeof(config.net_shared_log_id), "%s",
+           TEST_SHARED_LOG_ID);
 }
 
 static int make_temp_dir(char *out, size_t out_size) {
@@ -249,6 +259,8 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
   snprintf(config.cat_handshake, sizeof(config.cat_handshake), "%s", "RTSCTS");
   config.cat_mode_from_rig = 1;
   config.cw_esm_enabled = 1;
+  snprintf(config.net_shared_log_id, sizeof(config.net_shared_log_id), "%s",
+           TEST_SHARED_LOG_ID);
   config.live_upload_enabled = 1;
   snprintf(config.live_upload_host, sizeof(config.live_upload_host), "%s",
            "persist-upload.local");
@@ -267,6 +279,7 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
   config.cat_handshake[0] = 0;
   config.cat_mode_from_rig = 0;
   config.cw_esm_enabled = 0;
+  config.net_shared_log_id[0] = 0;
   config.live_upload_enabled = 0;
   config.live_upload_host[0] = 0;
   config.live_upload_port = 0;
@@ -286,6 +299,8 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
                 "saved CAT mode-from-rig restored");
   expect_int_eq(config.cw_esm_enabled, 1,
                 "saved CW ESM restored");
+  expect_str_eq(config.net_shared_log_id, TEST_SHARED_LOG_ID,
+                "saved shared log pairing restored");
   expect_int_eq(config.live_upload_enabled, 1,
                 "saved live upload enabled restored");
   expect_str_eq(config.live_upload_host, "persist-upload.local",
@@ -428,11 +443,11 @@ static void test_controller_incremental_exchange_generation(const char *tmp_dir)
   join_path(contest_path, sizeof(contest_path), case_dir, "contest.conf");
 
   const char *contest_text =
-      "NAME=SERIAL-TEST\n"
-      "CABRILLO_NAME=SERIAL-TEST\n"
-      "MODE=CW\n"
+      "NAME=WAG\n"
+      "CABRILLO_NAME=WAG\n"
+      "MODE=MIXED\n"
       "EXCHANGE_SENT=#\n"
-      "FIELD=SERIAL,Serial Number,required\n";
+      "FIELD=EXCHANGE,Rcv Exch,required\n";
   expect_int_eq(write_text_file(contest_path, contest_text), 0,
                 "write incremental exchange contest definition");
 
@@ -463,8 +478,8 @@ static void test_controller_incremental_exchange_generation(const char *tmp_dir)
   expect_true(state.contest_exchange_label != NULL,
               "contest exchange label should be present");
   if (state.contest_exchange_label)
-    expect_str_eq(state.contest_exchange_label, "EXCH",
-                  "contest readback field should be labelled EXCH");
+    expect_str_eq(state.contest_exchange_label, "Rcv Exch",
+                  "WAG received exchange should use its configured label");
   expect_true(state.contest_exchange_sent != NULL,
               "contest tx exchange should be present in incremental exchange test");
   if (state.contest_exchange_sent) {
@@ -480,15 +495,15 @@ static void test_controller_incremental_exchange_generation(const char *tmp_dir)
 
   send_controller_chars("SP9SER");
   app_controller_handle_key(APP_KEY_SPACE);
-  send_controller_chars("101");
+  send_controller_chars("DOK12");
   app_controller_handle_key(APP_KEY_ENTER);
 
   expect_int_eq(qso_count, base_qso_count + 1,
-                "first QSO should be saved in incremental exchange test");
+                "WAG QSO with an alphanumeric received exchange should save");
   expect_str_eq(logbook[base_qso_count].exchange_sent, expected_sent,
-                "first incremental TX exchange should ignore static override");
-  expect_str_eq(logbook[base_qso_count].exchange_recv, "101",
-                "first incremental RX exchange should be saved");
+                "WAG should send the next serial number");
+  expect_str_eq(logbook[base_qso_count].exchange_recv, "DOK12",
+                "WAG should save the received DOK exchange");
 
   app_controller_get_render_state(&state);
   expect_true(state.contest_exchange_sent != NULL,
@@ -1015,7 +1030,8 @@ static void test_qso_sync_metadata_roundtrip(const char *tmp_dir) {
   int idx = qso_add_fields("SP9SYNC", 7020, "599", "CW", "", status,
                            sizeof(status));
   expect_true(idx >= 0, "qso_add_fields should create sync test QSO");
-  expect_str_eq(status, "QSO OK", "sync test QSO should report success");
+  expect_true(strncmp(status, "QSO OK", strlen("QSO OK")) == 0,
+              "sync test QSO should report success with optional queue status");
   expect_true(qso_count == 1, "sync test logbook should contain one QSO");
 
   expect_true(logbook[0].qso_uid[0] != 0, "QSO should have qso_uid");
@@ -1042,7 +1058,249 @@ static void test_qso_sync_metadata_roundtrip(const char *tmp_dir) {
   qso_init();
 }
 
+static void test_db_sync_atomic_writes_and_legacy_migration(
+    const char *tmp_dir) {
+  char case_dir[512];
+  snprintf(case_dir, sizeof(case_dir), "%s/db_sync_atomic", tmp_dir);
+  expect_int_eq(mkdir(case_dir, 0777), 0,
+                "create db_sync_atomic test directory");
+
+  set_test_db_path(case_dir);
+  expect_int_eq(db_init(), 0, "db_init should succeed for atomic-write test");
+  qso_init();
+
+  char db_path[512];
+  join_path(db_path, sizeof(db_path), case_dir, "unit.sqlite3");
+  sqlite3 *fault_db = NULL;
+  expect_int_eq(sqlite3_open(db_path, &fault_db), SQLITE_OK,
+                "open database to install failure triggers");
+  if (!fault_db) {
+    set_test_db_path(tmp_dir);
+    qso_init();
+    return;
+  }
+
+  expect_int_eq(sqlite3_exec(
+                    fault_db,
+                    "CREATE TRIGGER fail_outbox_insert BEFORE INSERT ON "
+                    "log_outbox BEGIN SELECT RAISE(ABORT, 'injected outbox "
+                    "failure'); END;",
+                    NULL, NULL, NULL),
+                SQLITE_OK, "install outbox failure trigger");
+
+  char status[128] = {0};
+  expect_int_eq(qso_add_fields("SP9ATOMIC", 7020, "599", "CW", "", status,
+                               sizeof(status)),
+                -1, "outbox failure should reject local QSO insert");
+  expect_str_eq(status, "Database save failed",
+                "failed local save should be reported to the caller");
+  expect_int_eq(qso_count, 0,
+                "failed outbox insert should roll back the QSO row");
+  int pending = -1;
+  expect_int_eq(db_sync_get_pending_outbox_count(&pending), 0,
+                "pending outbox count should remain readable after rollback");
+  expect_int_eq(pending, 0,
+                "failed local transaction should not leave an outbox row");
+  long long next_local_seq = 0;
+  expect_int_eq(db_sync_next_station_seq(&next_local_seq), 0,
+                "station sequence should remain allocatable after rollback");
+  expect_true(next_local_seq == 1,
+              "failed local transaction should roll back its sequence reservation");
+
+  expect_int_eq(sqlite3_exec(fault_db, "DROP TRIGGER fail_outbox_insert;",
+                             NULL, NULL, NULL),
+                SQLITE_OK, "remove outbox failure trigger");
+  expect_int_eq(sqlite3_exec(
+                    fault_db,
+                    "CREATE TRIGGER fail_log_ops_insert BEFORE INSERT ON "
+                    "log_ops BEGIN SELECT RAISE(ABORT, 'injected log_ops "
+                    "failure'); END;",
+                    NULL, NULL, NULL),
+                SQLITE_OK, "install log_ops failure trigger");
+
+  const char *remote_payload =
+      "{\"kind\":\"qso_full\",\"qso_uid\":\"q-atomic-remote\","
+      "\"origin_station_id\":\"st-atomic\",\"origin_station_seq\":4,"
+      "\"last_modified_utc\":\"2026-10-04T12:01:00Z\",\"version\":1,"
+      "\"date\":\"20261004\",\"utc\":\"1201\",\"call\":\"SP9REMOTE\","
+      "\"freq\":7021,\"band\":\"40M\",\"mode\":\"CW\",\"rst\":\"599\","
+      "\"comments\":\"\",\"exchange_sent\":\"\",\"exchange_recv\":\"\","
+      "\"operator_mode\":\"\",\"contest_id\":\"\",\"radio_nr\":1,"
+      "\"points\":1,\"country\":\"POLAND\",\"cq_zone\":15,"
+      "\"itu_zone\":28,\"invalid\":false}";
+  long long remote_global_seq = 0;
+  expect_int_eq(db_sync_apply_remote_op_with_cursor(
+                    "op-atomic-remote", "st-atomic", 4, 1, "QSO_INSERT",
+                    "q-atomic-remote", remote_payload,
+                    "2026-10-04T12:01:00Z", 25, &remote_global_seq),
+                DB_SYNC_APPLY_ERR,
+                "log_ops failure should reject remote apply");
+  qso_init();
+  expect_int_eq(qso_count, 0,
+                "log_ops failure should roll back remote QSO upsert");
+  long long cursor = -1;
+  expect_int_eq(db_sync_get_last_global_seq(&cursor), 0,
+                "global cursor should remain readable after rollback");
+  expect_true(cursor == 0,
+              "failed remote apply should not advance the global cursor");
+
+  expect_int_eq(sqlite3_exec(fault_db, "DROP TRIGGER fail_log_ops_insert;",
+                             NULL, NULL, NULL),
+                SQLITE_OK, "remove log_ops failure trigger");
+  sqlite3_close(fault_db);
+
+  expect_int_eq(db_sync_apply_remote_op_with_cursor(
+                    "op-atomic-remote", "st-atomic", 4, 1, "QSO_INSERT",
+                    "q-atomic-remote", remote_payload,
+                    "2026-10-04T12:01:00Z", 25, &remote_global_seq),
+                DB_SYNC_APPLY_CHANGED,
+                "remote apply should succeed when log_ops insert is available");
+  expect_int_eq(db_sync_get_last_global_seq(&cursor), 0,
+                "global cursor should be readable after remote commit");
+  expect_true(cursor == 25,
+              "remote apply should commit its global cursor with the operation");
+  expect_int_eq(db_sync_apply_remote_op_with_cursor(
+                    "op-atomic-remote", "st-atomic", 4, 1, "QSO_INSERT",
+                    "q-atomic-remote", remote_payload,
+                    "2026-10-04T12:01:00Z", 25, &remote_global_seq),
+                DB_SYNC_APPLY_ALREADY_PRESENT,
+                "replayed remote apply should remain idempotent");
+
+  expect_int_eq(sqlite3_open(db_path, &fault_db), SQLITE_OK,
+                "reopen database to inject local update failure");
+  if (fault_db) {
+    expect_int_eq(sqlite3_exec(
+                      fault_db,
+                      "CREATE TRIGGER fail_outbox_update BEFORE INSERT ON "
+                      "log_outbox BEGIN SELECT RAISE(ABORT, 'injected outbox "
+                      "failure'); END;",
+                      NULL, NULL, NULL),
+                  SQLITE_OK, "install update outbox failure trigger");
+    qso_init();
+    long long remote_qso_id = qso_count > 0 ? logbook[0].db_id : 0;
+    expect_true(remote_qso_id > 0,
+                "remote QSO should have a database id for update test");
+    expect_int_eq(db_update_qso_invalid(remote_qso_id, 1), -1,
+                  "outbox failure should reject local QSO update");
+    qso_init();
+    expect_true(qso_count == 1 && !logbook[0].invalid,
+                "failed outbox insert should roll back QSO field update");
+    qso_mark_invalid(0);
+    expect_true(qso_count == 1 && !logbook[0].invalid,
+          "failed invalid toggle should restore committed in-memory state");
+    expect_int_eq(sqlite3_exec(fault_db, "DROP TRIGGER fail_outbox_update;",
+                               NULL, NULL, NULL),
+                  SQLITE_OK, "remove update outbox failure trigger");
+    sqlite3_close(fault_db);
+    fault_db = NULL;
+  }
+
+  set_test_db_path(tmp_dir);
+  qso_init();
+
+  char migration_dir[512];
+  snprintf(migration_dir, sizeof(migration_dir), "%s/legacy_qso_migration",
+           tmp_dir);
+  expect_int_eq(mkdir(migration_dir, 0777), 0,
+                "create legacy QSO migration directory");
+  set_test_db_path(migration_dir);
+  join_path(db_path, sizeof(db_path), migration_dir, "unit.sqlite3");
+  sqlite3 *legacy_db = NULL;
+  expect_int_eq(sqlite3_open(db_path, &legacy_db), SQLITE_OK,
+                "create pre-sync legacy database");
+  if (legacy_db) {
+    expect_int_eq(sqlite3_exec(
+                      legacy_db,
+                      "CREATE TABLE qso (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                      "date TEXT NOT NULL,utc TEXT NOT NULL,call TEXT NOT NULL,"
+                      "freq INTEGER NOT NULL,band TEXT NOT NULL,mode TEXT NOT NULL,"
+                      "rst TEXT NOT NULL,comments TEXT NOT NULL DEFAULT '',"
+                      "country TEXT NOT NULL,cq_zone INTEGER NOT NULL,"
+                      "itu_zone INTEGER NOT NULL,invalid INTEGER NOT NULL DEFAULT 0);"
+                      "INSERT INTO qso (date,utc,call,freq,band,mode,rst,country,"
+                      "cq_zone,itu_zone) VALUES ('20200101','0100','SP9OLD',"
+                      "7020,'40M','CW','599','POLAND',15,28);"
+                      "CREATE TABLE log_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                      "op_id TEXT NOT NULL,station_seq INTEGER NOT NULL,"
+                      "logbook_id INTEGER NOT NULL,op_type TEXT NOT NULL,"
+                      "entity_id TEXT NOT NULL,payload_json TEXT NOT NULL,"
+                      "op_utc TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',"
+                      "retry_count INTEGER NOT NULL DEFAULT 0,"
+                      "next_retry_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);"
+                      "CREATE TABLE log_ops (global_seq INTEGER PRIMARY KEY AUTOINCREMENT,"
+                      "op_id TEXT NOT NULL,station_id TEXT NOT NULL,"
+                      "station_seq INTEGER NOT NULL,logbook_id INTEGER NOT NULL,"
+                      "op_type TEXT NOT NULL,entity_id TEXT NOT NULL,"
+                      "payload_json TEXT NOT NULL,op_utc TEXT NOT NULL,"
+                      "applied_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);",
+                      NULL, NULL, NULL),
+                  SQLITE_OK, "seed legacy QSO schema and row");
+    sqlite3_close(legacy_db);
+    legacy_db = NULL;
+  }
+  expect_int_eq(db_init(), 0, "legacy QSO database should migrate");
+  qso_init();
+  expect_int_eq(qso_count, 1, "legacy QSO should survive migration");
+  expect_str_eq(logbook[0].qso_uid, "legacy-1",
+                "legacy QSO should receive a stable unique sync identifier");
+
+  sqlite3 *migrated_db = NULL;
+  expect_int_eq(sqlite3_open(db_path, &migrated_db), SQLITE_OK,
+                "open migrated database to inspect uniqueness indexes");
+  if (migrated_db) {
+    expect_int_eq(sqlite3_exec(
+                      migrated_db,
+                      "INSERT INTO log_ops (op_id,station_id,station_seq,"
+                      "logbook_id,op_type,entity_id,payload_json,op_utc) "
+                      "VALUES ('migration-op-1','st-migration',1,1,'NOOP',"
+                      "'entity','{}','2026-10-04T12:02:00Z');",
+                      NULL, NULL, NULL),
+                  SQLITE_OK, "migrated log_ops should accept its first op");
+    expect_int_eq(sqlite3_exec(
+                      migrated_db,
+                      "INSERT INTO log_ops (op_id,station_id,station_seq,"
+                      "logbook_id,op_type,entity_id,payload_json,op_utc) "
+                      "VALUES ('migration-op-1','st-other',2,1,"
+                      "'NOOP','entity','{}','2026-10-04T12:02:01Z');",
+                      NULL, NULL, NULL),
+                  SQLITE_CONSTRAINT,
+                  "migrated log_ops should preserve op_id uniqueness");
+    expect_int_eq(sqlite3_exec(
+                      migrated_db,
+                      "INSERT INTO log_ops (op_id,station_id,station_seq,"
+                      "logbook_id,op_type,entity_id,payload_json,op_utc) "
+                      "VALUES ('migration-op-2','st-migration',1,1,'NOOP',"
+                      "'entity','{}','2026-10-04T12:02:02Z');",
+                      NULL, NULL, NULL),
+                  SQLITE_CONSTRAINT,
+                  "migrated log_ops should preserve station sequence uniqueness");
+    sqlite3_close(migrated_db);
+  }
+
+    expect_int_eq(db_sync_outbox_enqueue(
+            "op-migration-outbox-1", 1, 1, "QSO_INSERT", "q-mig-1",
+            "{}", "2026-10-04T12:02:00Z"),
+          0, "migrated outbox should accept its first operation");
+    expect_int_eq(db_sync_outbox_enqueue(
+            "op-migration-outbox-2", 1, 1, "QSO_INSERT", "q-mig-2",
+            "{}", "2026-10-04T12:02:01Z"),
+          -1, "migrated outbox should preserve station sequence uniqueness");
+    expect_int_eq(db_sync_outbox_enqueue(
+            "op-migration-outbox-1", 2, 1, "QSO_INSERT", "q-mig-3",
+            "{}", "2026-10-04T12:02:02Z"),
+          -1, "migrated outbox should preserve op_id uniqueness");
+
+  set_test_db_path(tmp_dir);
+  qso_init();
+}
+
 static void test_net_protocol_frames(void) {
+  char saved_shared_log_id[sizeof(config.net_shared_log_id)] = {0};
+  snprintf(saved_shared_log_id, sizeof(saved_shared_log_id), "%s",
+           config.net_shared_log_id);
+  snprintf(config.net_shared_log_id, sizeof(config.net_shared_log_id), "%s",
+           TEST_SHARED_LOG_ID);
+
   char frame[2048] = {0};
   NetMessageType type = NET_MSG_UNKNOWN;
 
@@ -1053,6 +1311,19 @@ static void test_net_protocol_frames(void) {
               "HELLO frame should contain message type");
   expect_true(strstr(frame, "\"auth_token\":\"token-1\"") != NULL,
               "HELLO frame should contain auth token");
+  expect_true(strstr(frame, TEST_SHARED_LOG_ID) != NULL,
+              "HELLO envelope should carry shared_log_id");
+  NetSessionMeta hello_meta;
+  memset(&hello_meta, 0, sizeof(hello_meta));
+  expect_int_eq(net_protocol_parse_hello_meta(frame, &hello_meta), 0,
+                "HELLO metadata should parse shared log identity");
+  expect_str_eq(hello_meta.shared_log_id, TEST_SHARED_LOG_ID,
+                "HELLO metadata should retain shared_log_id");
+  expect_int_eq(net_protocol_validate_shared_log_id(frame, TEST_SHARED_LOG_ID),
+                0, "matching shared_log_id should validate");
+  expect_int_eq(net_protocol_validate_shared_log_id(
+                    frame, "sl-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+                -1, "mismatched shared_log_id should be rejected");
   expect_int_eq(net_protocol_detect_type(frame, &type), 0,
                 "HELLO frame type detection should succeed");
   expect_int_eq((int)type, (int)NET_MSG_HELLO,
@@ -1066,6 +1337,16 @@ static void test_net_protocol_frames(void) {
                 "HELLO_ACK frame type detection should succeed");
   expect_int_eq((int)type, (int)NET_MSG_HELLO_ACK,
                 "HELLO_ACK frame should map to HELLO_ACK enum");
+  int accepted = 0;
+  long long next_expected = 0;
+  long long server_global_seq = 0;
+  char parsed_shared_log_id[36] = {0};
+  expect_int_eq(net_protocol_parse_hello_ack(
+                    frame, &accepted, &next_expected, &server_global_seq,
+                    parsed_shared_log_id, sizeof(parsed_shared_log_id)),
+                0, "HELLO_ACK should return server shared_log_id");
+  expect_str_eq(parsed_shared_log_id, TEST_SHARED_LOG_ID,
+                "HELLO_ACK should negotiate the canonical shared log");
 
   memset(frame, 0, sizeof(frame));
   expect_int_eq(net_protocol_encode_pull_ops(77, 25, frame, sizeof(frame)),
@@ -1090,12 +1371,12 @@ static void test_net_protocol_frames(void) {
 
   char wrong_ver[2048] = {0};
   snprintf(wrong_ver, sizeof(wrong_ver), "%s", frame);
-  char *pver = strstr(wrong_ver, "\"protocol_version\":1");
+  char *pver = strstr(wrong_ver, "\"protocol_version\":2");
   if (pver)
-    memcpy(pver + strlen("\"protocol_version\":"), "2", 1);
-  char *pver_legacy = strstr(wrong_ver, "\"protocol_ver\":1");
+    memcpy(pver + strlen("\"protocol_version\":"), "1", 1);
+  char *pver_legacy = strstr(wrong_ver, "\"protocol_ver\":2");
   if (pver_legacy)
-    memcpy(pver_legacy + strlen("\"protocol_ver\":"), "2", 1);
+    memcpy(pver_legacy + strlen("\"protocol_ver\":"), "1", 1);
   expect_int_eq(net_protocol_validate_protocol_version(wrong_ver), -1,
                 "protocol version mismatch should be rejected");
 
@@ -1159,12 +1440,109 @@ static void test_net_protocol_frames(void) {
           "RESERVE_SERIAL_ACK should parse reservation_id");
     expect_int_eq(parsed_serial, 42,
           "RESERVE_SERIAL_ACK should parse serial");
+
+    snprintf(config.net_shared_log_id, sizeof(config.net_shared_log_id), "%s",
+             saved_shared_log_id);
 }
+
+  static void test_net_sync_config_validation(void) {
+    int saved_port = config.net_server_port;
+    int saved_enabled = config.net_enabled;
+    int saved_tls = config.net_tls;
+    char saved_role[sizeof(config.net_role)];
+    char saved_host[sizeof(config.net_server_host)];
+    char saved_token[sizeof(config.net_auth_token)];
+    char saved_shared_key[sizeof(config.net_shared_key)];
+    char saved_shared_log_id[sizeof(config.net_shared_log_id)];
+    char saved_fingerprint[sizeof(config.net_tls_peer_fingerprint)];
+    snprintf(saved_role, sizeof(saved_role), "%s", config.net_role);
+    snprintf(saved_host, sizeof(saved_host), "%s", config.net_server_host);
+    snprintf(saved_token, sizeof(saved_token), "%s", config.net_auth_token);
+    snprintf(saved_shared_key, sizeof(saved_shared_key), "%s",
+             config.net_shared_key);
+    snprintf(saved_shared_log_id, sizeof(saved_shared_log_id), "%s",
+         config.net_shared_log_id);
+    snprintf(saved_fingerprint, sizeof(saved_fingerprint), "%s",
+             config.net_tls_peer_fingerprint);
+
+    char error[128] = {0};
+    snprintf(config.net_role, sizeof(config.net_role), "%s", "peer");
+    expect_int_eq(net_sync_validate_config(error, sizeof(error)), -1,
+                  "unsupported network roles should be rejected");
+    expect_true(error[0] != 0, "invalid role should include validation detail");
+
+    snprintf(config.net_role, sizeof(config.net_role), "%s", "server");
+    config.net_server_port = 0;
+    expect_int_eq(net_sync_validate_config(error, sizeof(error)), -1,
+                  "invalid server ports should be rejected");
+
+    snprintf(config.net_role, sizeof(config.net_role), "%s", "client");
+    config.net_server_port = 9230;
+    config.net_server_host[0] = 0;
+    expect_int_eq(net_sync_validate_config(error, sizeof(error)), -1,
+                  "client configuration without a host should be rejected");
+
+    snprintf(config.net_server_host, sizeof(config.net_server_host), "%s",
+             "127.0.0.1");
+    config.net_shared_log_id[0] = 0;
+    expect_int_eq(net_sync_validate_config(error, sizeof(error)), -1,
+            "client without explicit shared log pairing should be rejected");
+    snprintf(config.net_shared_log_id, sizeof(config.net_shared_log_id), "%s",
+         TEST_SHARED_LOG_ID);
+    expect_int_eq(net_sync_validate_config(error, sizeof(error)), 0,
+                  "valid client configuration should pass validation");
+
+    snprintf(config.net_shared_key, sizeof(config.net_shared_key), "%s",
+             "Different-Strong-Secret-2026-Value!");
+    expect_int_eq(net_sync_validate_config(error, sizeof(error)), -1,
+                  "different auth token aliases should be rejected");
+    snprintf(config.net_shared_key, sizeof(config.net_shared_key), "%s",
+             config.net_auth_token);
+
+    config.net_tls = 1;
+    expect_int_eq(net_sync_validate_config(error, sizeof(error)), -1,
+                  "TLS clients without a configured pin should be rejected");
+    snprintf(config.net_tls_peer_fingerprint,
+             sizeof(config.net_tls_peer_fingerprint), "%s",
+             "00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF");
+    expect_int_eq(net_sync_validate_config(error, sizeof(error)), 0,
+                  "TLS clients with a configured certificate pin should pass");
+
+    snprintf(config.net_role, sizeof(config.net_role), "%s", "server");
+    config.net_tls = 0;
+    config.net_server_port = 9230;
+    config.net_auth_token[0] = 0;
+    config.net_shared_key[0] = 0;
+    expect_int_eq(net_sync_validate_config(error, sizeof(error)), -1,
+                  "server startup should reject a missing auth token");
+    expect_int_eq(net_sync_token_is_strong(TEST_NET_AUTH_TOKEN), 1,
+                  "test secret should satisfy the strong token policy");
+    expect_int_eq(net_sync_token_is_strong("short"), 0,
+                  "short auth tokens should be rejected");
+    expect_int_eq(net_server_start(), -1,
+                  "direct server startup should reject a missing secret");
+
+    config.net_server_port = saved_port;
+    config.net_enabled = saved_enabled;
+    config.net_tls = saved_tls;
+    snprintf(config.net_role, sizeof(config.net_role), "%s", saved_role);
+    snprintf(config.net_server_host, sizeof(config.net_server_host), "%s",
+             saved_host);
+    snprintf(config.net_auth_token, sizeof(config.net_auth_token), "%s",
+             saved_token);
+    snprintf(config.net_shared_key, sizeof(config.net_shared_key), "%s",
+             saved_shared_key);
+    snprintf(config.net_shared_log_id, sizeof(config.net_shared_log_id), "%s",
+         saved_shared_log_id);
+    snprintf(config.net_tls_peer_fingerprint,
+             sizeof(config.net_tls_peer_fingerprint), "%s", saved_fingerprint);
+  }
 
 typedef struct {
   int port;
   long long ack_last_global_seq;
   char acked_json[256];
+  char rejected_json[256];
   char received[8192];
   int mode;
   int delay_sec;
@@ -1226,7 +1604,8 @@ static void *mock_sync_server_thread(void *arg) {
            sizeof(ctx->received) - strlen(ctx->received), "%s", frame);
 
   char response[1024] = {0};
-  if (net_protocol_encode_hello_ack(1, 1, 0, response, sizeof(response)) != 0) {
+  if (net_protocol_encode_hello_ack(1, 1, 9999, response,
+                                   sizeof(response)) != 0) {
     close(cli);
     close(srv);
     return NULL;
@@ -1273,7 +1652,8 @@ static void *mock_sync_server_thread(void *arg) {
     char accepted_json[256] = {0};
     snprintf(accepted_json, sizeof(accepted_json), "[%s]",
              ctx->acked_json[0] ? ctx->acked_json : "");
-    if (net_protocol_encode_append_ack(accepted_json, "[]", 1,
+        if (net_protocol_encode_append_ack(
+          accepted_json, ctx->rejected_json[0] ? ctx->rejected_json : "[]", 1,
                                        ctx->ack_last_global_seq, response,
                                        sizeof(response)) != 0) {
       close(cli);
@@ -1294,6 +1674,244 @@ static void *mock_sync_server_thread(void *arg) {
   close(cli);
   close(srv);
   return NULL;
+}
+
+typedef struct {
+  int port;
+  int page_count;
+  SyncLogOpEntry pages[2][2];
+  int page_sizes[2];
+  int page_has_more[2];
+  int broadcast_before_pages;
+  SyncLogOpEntry broadcast_op;
+  char received[8192];
+  int ok;
+} MockPagedSyncServerArgs;
+
+static void *mock_paged_sync_server_thread(void *arg) {
+  MockPagedSyncServerArgs *ctx = (MockPagedSyncServerArgs *)arg;
+  if (!ctx || ctx->page_count < 1 || ctx->page_count > 2)
+    return NULL;
+
+  int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (server_fd < 0)
+    return NULL;
+
+  int reuse = 1;
+  setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+
+  struct sockaddr_in address;
+  memset(&address, 0, sizeof(address));
+  address.sin_family = AF_INET;
+  address.sin_port = htons((uint16_t)ctx->port);
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) != 0 ||
+      listen(server_fd, 1) != 0) {
+    close(server_fd);
+    return NULL;
+  }
+
+  int client_fd = accept(server_fd, NULL, NULL);
+  if (client_fd < 0) {
+    close(server_fd);
+    return NULL;
+  }
+
+  struct timeval timeout = {.tv_sec = 2, .tv_usec = 0};
+  setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
+  char frame[16384] = {0};
+  if (net_protocol_recv_framed(client_fd, frame, sizeof(frame)) != 0)
+    goto paged_server_done;
+  strncat(ctx->received, frame, sizeof(ctx->received) -
+                                    strlen(ctx->received) - 1);
+
+  char response[16384] = {0};
+  if (net_protocol_encode_hello_ack(1, 1, 9999, response,
+                                    sizeof(response)) != 0 ||
+      net_protocol_send_framed(client_fd, response) != 0)
+    goto paged_server_done;
+
+  if (ctx->broadcast_before_pages) {
+    memset(response, 0, sizeof(response));
+    if (net_protocol_encode_op_broadcast(&ctx->broadcast_op, response,
+                                         sizeof(response)) != 0 ||
+        net_protocol_send_framed(client_fd, response) != 0)
+      goto paged_server_done;
+  }
+
+  for (int page = 0; page < ctx->page_count; page++) {
+    memset(frame, 0, sizeof(frame));
+    if (net_protocol_recv_framed(client_fd, frame, sizeof(frame)) != 0)
+      goto paged_server_done;
+    strncat(ctx->received, frame, sizeof(ctx->received) -
+                                      strlen(ctx->received) - 1);
+
+    long long page_last_seq = 0;
+    if (ctx->page_sizes[page] > 0)
+      page_last_seq = ctx->pages[page][ctx->page_sizes[page] - 1].global_seq;
+    memset(response, 0, sizeof(response));
+    if (net_protocol_encode_catchup_batch(
+            ctx->pages[page], ctx->page_sizes[page], page_last_seq,
+            ctx->page_has_more[page], response, sizeof(response)) != 0 ||
+        net_protocol_send_framed(client_fd, response) != 0)
+      goto paged_server_done;
+    ctx->ok = 1;
+  }
+
+  memset(frame, 0, sizeof(frame));
+  if (net_protocol_recv_framed(client_fd, frame, sizeof(frame)) == 0) {
+    strncat(ctx->received, frame, sizeof(ctx->received) -
+                                      strlen(ctx->received) - 1);
+    if (net_protocol_encode_ack_empty(0, response, sizeof(response)) == 0)
+      (void)net_protocol_send_framed(client_fd, response);
+  }
+
+paged_server_done:
+  close(client_fd);
+  close(server_fd);
+  return NULL;
+}
+
+static void fill_test_log_op(SyncLogOpEntry *op, long long global_seq,
+                             long long station_seq, const char *op_id) {
+  memset(op, 0, sizeof(*op));
+  op->global_seq = global_seq;
+  op->station_seq = station_seq;
+  op->logbook_id = 1;
+  snprintf(op->op_id, sizeof(op->op_id), "%s", op_id);
+  snprintf(op->station_id, sizeof(op->station_id), "%s", "st-page-client");
+  snprintf(op->op_type, sizeof(op->op_type), "%s", "NOOP");
+  snprintf(op->entity_id, sizeof(op->entity_id), "entity-%lld", station_seq);
+  snprintf(op->payload_json, sizeof(op->payload_json), "%s", "{}");
+  snprintf(op->op_utc, sizeof(op->op_utc), "%s", "2026-10-04T12:00:00Z");
+}
+
+static void test_net_sync_paged_catchup_replay_and_cursor(const char *tmp_dir) {
+  char case_dir[512];
+  snprintf(case_dir, sizeof(case_dir), "%s/net_sync_paged_catchup", tmp_dir);
+  expect_int_eq(mkdir(case_dir, 0777), 0,
+                "create paged catch-up test directory");
+  set_test_db_path(case_dir);
+  qso_init();
+
+  char db_path[512];
+  join_path(db_path, sizeof(db_path), case_dir, "unit.sqlite3");
+  sqlite3 *fault_db = NULL;
+  expect_int_eq(sqlite3_open(db_path, &fault_db), SQLITE_OK,
+                "open database to inject a page apply failure");
+  if (!fault_db)
+    return;
+  expect_int_eq(sqlite3_exec(
+                    fault_db,
+                    "CREATE TRIGGER fail_second_page_op BEFORE INSERT ON "
+                    "log_ops WHEN NEW.op_id = 'op-page-2' BEGIN "
+                    "SELECT RAISE(ABORT, 'injected page failure'); END;",
+                    NULL, NULL, NULL),
+                SQLITE_OK, "install catch-up page failure trigger");
+
+  int saved_net_enabled = config.net_enabled;
+  int saved_port = config.net_server_port;
+  int saved_heartbeat = config.net_heartbeat_sec;
+  char saved_role[16];
+  char saved_host[128];
+  snprintf(saved_role, sizeof(saved_role), "%s", config.net_role);
+  snprintf(saved_host, sizeof(saved_host), "%s", config.net_server_host);
+  config.net_enabled = 1;
+  config.net_heartbeat_sec = 1;
+  snprintf(config.net_role, sizeof(config.net_role), "%s", "client");
+  snprintf(config.net_server_host, sizeof(config.net_server_host), "%s",
+           "127.0.0.1");
+  config.net_server_port = 19328;
+
+  MockPagedSyncServerArgs failed_page_server;
+  memset(&failed_page_server, 0, sizeof(failed_page_server));
+  failed_page_server.port = config.net_server_port;
+  failed_page_server.page_count = 2;
+  failed_page_server.broadcast_before_pages = 1;
+  fill_test_log_op(&failed_page_server.broadcast_op, 100, 1, "op-broadcast-100");
+  snprintf(failed_page_server.broadcast_op.station_id,
+           sizeof(failed_page_server.broadcast_op.station_id), "%s",
+           "st-live-broadcast");
+  failed_page_server.page_sizes[0] = 2;
+  failed_page_server.page_has_more[0] = 1;
+  failed_page_server.page_sizes[1] = 1;
+  fill_test_log_op(&failed_page_server.pages[0][0], 1, 1, "op-page-1");
+  fill_test_log_op(&failed_page_server.pages[0][1], 2, 2, "op-page-2");
+  fill_test_log_op(&failed_page_server.pages[1][0], 3, 3, "op-page-3");
+
+  pthread_t server_thread;
+  expect_int_eq(pthread_create(&server_thread, NULL,
+                               mock_paged_sync_server_thread,
+                               &failed_page_server),
+                0, "start mock server for failed catch-up page");
+  usleep(120000);
+  expect_int_eq(net_sync_start(), 0, "start client for failed catch-up page");
+    expect_int_eq(net_sync_poll_once(), -1,
+                "apply failure should fail the current catch-up page");
+  net_sync_stop();
+  pthread_join(server_thread, NULL);
+  expect_true(failed_page_server.ok,
+              "mock server should deliver the failing catch-up page");
+  expect_true(strstr(failed_page_server.received,
+                     "\"from_global_seq\":0") != NULL,
+              "failed page should start at the persisted cursor");
+
+  long long cursor = -1;
+  expect_int_eq(db_sync_get_last_global_seq(&cursor), 0,
+                "cursor should be readable after page failure");
+  expect_true(cursor == 0,
+              "neither a broadcast nor a partial page may advance the cursor");
+
+  expect_int_eq(sqlite3_exec(fault_db, "DROP TRIGGER fail_second_page_op;",
+                             NULL, NULL, NULL),
+                SQLITE_OK, "remove catch-up page failure trigger");
+  sqlite3_close(fault_db);
+  fault_db = NULL;
+
+  config.net_server_port = 19329;
+  MockPagedSyncServerArgs retry_server;
+  memset(&retry_server, 0, sizeof(retry_server));
+  retry_server.port = config.net_server_port;
+  retry_server.page_count = 2;
+  retry_server.broadcast_before_pages = 1;
+  retry_server.broadcast_op = failed_page_server.broadcast_op;
+  retry_server.page_sizes[0] = 2;
+  retry_server.page_has_more[0] = 1;
+  retry_server.page_sizes[1] = 1;
+  fill_test_log_op(&retry_server.pages[0][0], 1, 1, "op-page-1");
+  fill_test_log_op(&retry_server.pages[0][1], 2, 2, "op-page-2");
+  fill_test_log_op(&retry_server.pages[1][0], 3, 3, "op-page-3");
+
+  pthread_t retry_thread;
+  expect_int_eq(pthread_create(&retry_thread, NULL,
+                               mock_paged_sync_server_thread, &retry_server),
+                0, "start mock server for catch-up restart");
+  usleep(120000);
+  expect_int_eq(net_sync_start(), 0, "restart client after partial page apply");
+  expect_int_eq(net_sync_poll_once(), 0,
+                "retry should replay partial page and continue to next page");
+  net_sync_stop();
+  pthread_join(retry_thread, NULL);
+  expect_true(retry_server.ok,
+              "mock server should complete both catch-up pages");
+  expect_true(strstr(retry_server.received, "\"from_global_seq\":0") != NULL,
+              "restart should request the uncommitted page from cursor zero");
+  expect_true(strstr(retry_server.received, "\"from_global_seq\":2") != NULL,
+              "client should request the next page from the prior page end");
+  expect_int_eq(db_sync_get_last_global_seq(&cursor), 0,
+                "cursor should be readable after catch-up restart");
+  expect_true(cursor == 3,
+              "successful replay and pagination should advance cursor to page end");
+
+  config.net_enabled = saved_net_enabled;
+  config.net_heartbeat_sec = saved_heartbeat;
+  snprintf(config.net_role, sizeof(config.net_role), "%s", saved_role);
+  snprintf(config.net_server_host, sizeof(config.net_server_host), "%s",
+           saved_host);
+  config.net_server_port = saved_port;
+  set_test_db_path(tmp_dir);
+  qso_init();
 }
 
 static void test_net_sync_mock_server_roundtrip(const char *tmp_dir) {
@@ -1318,6 +1936,7 @@ static void test_net_sync_mock_server_roundtrip(const char *tmp_dir) {
   expect_true(ops_count > 0, "outbox should contain pending operation");
 
   int saved_net_enabled = config.net_enabled;
+  int saved_sync_interval = config.net_sync_interval_ms;
   char saved_role[16];
   char saved_host[128];
   int saved_port = config.net_server_port;
@@ -1326,10 +1945,23 @@ static void test_net_sync_mock_server_roundtrip(const char *tmp_dir) {
   snprintf(saved_host, sizeof(saved_host), "%s", config.net_server_host);
 
   config.net_enabled = 1;
+  config.net_sync_interval_ms = 100;
   snprintf(config.net_role, sizeof(config.net_role), "%s", "client");
   snprintf(config.net_server_host, sizeof(config.net_server_host), "%s",
            "127.0.0.1");
-  config.net_server_port = 19321;
+  config.net_server_port = 19321 + ((int)getpid() % 20000);
+  expect_int_eq(db_sync_set_shared_log_id(config.net_shared_log_id), 0,
+                "explicitly pair mock client DB before starting sync");
+  char pairing_before_start[36] = {0};
+  expect_true(db_sync_get_shared_log_id(pairing_before_start,
+                                        sizeof(pairing_before_start)) == 0,
+              "mock client database should have an explicit shared-log pairing");
+  expect_str_eq(pairing_before_start, config.net_shared_log_id,
+                "mock client database pairing should match config");
+  char validation_before_start[128] = {0};
+  expect_true(net_sync_validate_config(validation_before_start,
+                                      sizeof(validation_before_start)) == 0,
+              "mock client config should pass shared-log validation");
 
   MockSyncServerArgs server;
   memset(&server, 0, sizeof(server));
@@ -1343,10 +1975,8 @@ static void test_net_sync_mock_server_roundtrip(const char *tmp_dir) {
   usleep(120000);
 
   expect_int_eq(net_sync_start(), 0, "net sync should start");
-  expect_int_eq(net_sync_poll_once(), 0, "net sync poll should succeed");
-  net_sync_stop();
-
   pthread_join(tid, NULL);
+  net_sync_stop();
 
   expect_true(server.ok == 1, "mock server should accept one client session");
   expect_true(strstr(server.received, "\"type\":\"HELLO\"") != NULL,
@@ -1354,6 +1984,8 @@ static void test_net_sync_mock_server_roundtrip(const char *tmp_dir) {
   expect_true(strstr(server.received, "\"type\":\"CATCHUP_REQUEST\"") !=
                   NULL,
               "client should send CATCHUP_REQUEST frame");
+  expect_true(strstr(server.received, "\"from_global_seq\":0") != NULL,
+              "catch-up should start from the locally committed cursor");
   expect_true(strstr(server.received, "\"type\":\"APPEND_OPS\"") != NULL,
               "client should send APPEND_OPS frame");
   expect_true(strstr(server.received, ops[0].op_id) != NULL,
@@ -1362,8 +1994,8 @@ static void test_net_sync_mock_server_roundtrip(const char *tmp_dir) {
   long long last_seq = 0;
   expect_int_eq(db_sync_get_last_global_seq(&last_seq), 0,
                 "global seq should be readable after sync");
-  expect_true(last_seq == server.ack_last_global_seq,
-              "ACK should update last_global_seq cursor");
+  expect_true(last_seq == 0,
+              "HELLO_ACK and APPEND_ACK must not advance the pull cursor");
 
   int pending = -1;
   expect_int_eq(db_sync_get_pending_outbox_count(&pending), 0,
@@ -1373,17 +2005,200 @@ static void test_net_sync_mock_server_roundtrip(const char *tmp_dir) {
   NetSyncStatus st;
   memset(&st, 0, sizeof(st));
   net_sync_get_status(&st);
-  expect_true(st.last_pulled_global_seq == server.ack_last_global_seq,
-              "net sync status should expose updated cursor");
+  expect_true(st.last_pulled_global_seq == 0,
+              "net sync status should expose the committed pull cursor");
+  expect_true(st.connected,
+              "periodic worker should complete a sync without manual polling");
   expect_true(st.pending_outbox == 0,
               "net sync status should expose empty pending outbox");
 
   config.net_enabled = saved_net_enabled;
+  config.net_sync_interval_ms = saved_sync_interval;
   snprintf(config.net_role, sizeof(config.net_role), "%s", saved_role);
   snprintf(config.net_server_host, sizeof(config.net_server_host), "%s",
            saved_host);
   config.net_server_port = saved_port;
 
+  set_test_db_path(tmp_dir);
+  qso_init();
+}
+
+typedef struct {
+  int port;
+  int ok;
+  char request_id[64];
+} MockSerialWorkerServerArgs;
+
+static int mock_accept_with_timeout(int server_fd) {
+  fd_set read_fds;
+  FD_ZERO(&read_fds);
+  FD_SET(server_fd, &read_fds);
+  struct timeval timeout = {.tv_sec = 5, .tv_usec = 0};
+  if (select(server_fd + 1, &read_fds, NULL, NULL, &timeout) <= 0)
+    return -1;
+  return accept(server_fd, NULL, NULL);
+}
+
+static int mock_serial_worker_handshake(int client_fd) {
+  char frame[2048] = {0};
+  char response[2048] = {0};
+  if (net_protocol_recv_framed(client_fd, frame, sizeof(frame)) != 0 ||
+      net_protocol_encode_hello_ack(1, 1, 9999, response,
+                                    sizeof(response)) != 0 ||
+      net_protocol_send_framed(client_fd, response) != 0)
+    return -1;
+  return 0;
+}
+
+static void *mock_serial_worker_server_thread(void *arg) {
+  MockSerialWorkerServerArgs *ctx = (MockSerialWorkerServerArgs *)arg;
+  if (!ctx)
+    return NULL;
+
+  int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (server_fd < 0)
+    return NULL;
+  int reuse = 1;
+  setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+
+  struct sockaddr_in address;
+  memset(&address, 0, sizeof(address));
+  address.sin_family = AF_INET;
+  address.sin_port = htons((uint16_t)ctx->port);
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) != 0 ||
+      listen(server_fd, 4) != 0) {
+    close(server_fd);
+    return NULL;
+  }
+
+  int client_fd = mock_accept_with_timeout(server_fd);
+  if (client_fd < 0)
+    goto serial_server_done;
+  struct timeval timeout = {.tv_sec = 3, .tv_usec = 0};
+  setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+  if (mock_serial_worker_handshake(client_fd) != 0)
+    goto serial_server_done;
+
+  char frame[2048] = {0};
+  char response[2048] = {0};
+  if (net_protocol_recv_framed(client_fd, frame, sizeof(frame)) != 0 ||
+      net_protocol_encode_catchup_batch(NULL, 0, 0, 0, response,
+                                        sizeof(response)) != 0 ||
+      net_protocol_send_framed(client_fd, response) != 0)
+    goto serial_server_done;
+  memset(frame, 0, sizeof(frame));
+  if (net_protocol_recv_framed(client_fd, frame, sizeof(frame)) != 0 ||
+      net_protocol_encode_ack_empty(0, response, sizeof(response)) != 0 ||
+      net_protocol_send_framed(client_fd, response) != 0)
+    goto serial_server_done;
+  close(client_fd);
+
+  client_fd = mock_accept_with_timeout(server_fd);
+  if (client_fd < 0)
+    goto serial_server_done;
+  setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+  if (mock_serial_worker_handshake(client_fd) != 0)
+    goto serial_server_done;
+
+  int logbook_id = 0;
+  int ttl_sec = 0;
+  if (net_protocol_recv_framed(client_fd, frame, sizeof(frame)) != 0 ||
+      net_protocol_parse_reserve_serial(frame, ctx->request_id,
+                                        sizeof(ctx->request_id), &logbook_id,
+                                        &ttl_sec) != 0 ||
+      logbook_id != 1 || ttl_sec <= 0 ||
+      net_protocol_encode_reserve_serial_ack(
+          ctx->request_id, "rsv-worker-serial-72", 72,
+          "2099-01-01T00:00:00Z", response, sizeof(response)) != 0 ||
+      net_protocol_send_framed(client_fd, response) != 0)
+    goto serial_server_done;
+  ctx->ok = 1;
+
+serial_server_done:
+  if (client_fd >= 0)
+    close(client_fd);
+  close(server_fd);
+  return NULL;
+}
+
+static void test_net_worker_prefetches_serial_reservations(const char *tmp_dir) {
+  char case_dir[512];
+  snprintf(case_dir, sizeof(case_dir), "%s/net_worker_serial_pool", tmp_dir);
+  expect_int_eq(mkdir(case_dir, 0777), 0,
+                "create worker serial pool test directory");
+  set_test_db_path(case_dir);
+  qso_init();
+
+  int saved_net_enabled = config.net_enabled;
+  int saved_interval = config.net_sync_interval_ms;
+  int saved_heartbeat = config.net_heartbeat_sec;
+  int saved_port = config.net_server_port;
+  char saved_role[16];
+  char saved_host[128];
+  snprintf(saved_role, sizeof(saved_role), "%s", config.net_role);
+  snprintf(saved_host, sizeof(saved_host), "%s", config.net_server_host);
+  config.net_enabled = 1;
+  config.net_sync_interval_ms = 100;
+  config.net_heartbeat_sec = 1;
+  snprintf(config.net_role, sizeof(config.net_role), "%s", "client");
+  snprintf(config.net_server_host, sizeof(config.net_server_host), "%s",
+           "127.0.0.1");
+  config.net_server_port = 19333;
+  net_sync_set_serial_prefetch_enabled(1);
+
+  MockSerialWorkerServerArgs server;
+  memset(&server, 0, sizeof(server));
+  server.port = config.net_server_port;
+  pthread_t server_thread;
+  expect_int_eq(pthread_create(&server_thread, NULL,
+                               mock_serial_worker_server_thread, &server),
+                0, "start mock serial worker server");
+  usleep(120000);
+
+  expect_int_eq(net_sync_start(), 0, "start client serial worker");
+  int serial = 0;
+  int reserved = 0;
+  for (int attempt = 0; attempt < 50; attempt++) {
+    if (net_sync_peek_serial_reservation(&serial) == 0) {
+      reserved = 1;
+      break;
+    }
+    usleep(100000);
+  }
+
+  expect_true(reserved,
+              "background worker should prefetch a serial without UI networking");
+  expect_int_eq(serial, 72, "prefetched serial should be visible to QSO entry");
+  pthread_join(server_thread, NULL);
+  expect_true(server.ok, "mock server should complete poll and reservation");
+  expect_true(strncmp(server.request_id, "req-", 4) == 0,
+              "reservation request should carry a unique generated ID");
+
+  char reservation_id[64] = {0};
+  int claimed_serial = 0;
+  int commit_remote = 0;
+  expect_int_eq(net_sync_reserve_serial_for_qso(
+                    &claimed_serial, reservation_id, sizeof(reservation_id),
+                    &commit_remote),
+                0, "QSO entry should claim its cached reservation locally");
+  expect_int_eq(claimed_serial, 72, "claimed serial should match preview");
+  expect_int_eq(commit_remote, 1,
+                "client reservation should be committed asynchronously");
+  expect_str_eq(reservation_id, "rsv-worker-serial-72",
+                "claim should retain server reservation identity");
+  expect_int_eq(db_sync_release_serial_reservation(reservation_id, 1), 0,
+                "test should release claimed reservation after verification");
+
+  net_sync_stop();
+  net_sync_set_serial_prefetch_enabled(0);
+  config.net_enabled = saved_net_enabled;
+  config.net_sync_interval_ms = saved_interval;
+  config.net_heartbeat_sec = saved_heartbeat;
+  config.net_server_port = saved_port;
+  snprintf(config.net_role, sizeof(config.net_role), "%s", saved_role);
+  snprintf(config.net_server_host, sizeof(config.net_server_host), "%s",
+           saved_host);
   set_test_db_path(tmp_dir);
   qso_init();
 }
@@ -1432,6 +2247,9 @@ static void test_net_sync_partial_ack_keeps_unacked_pending(const char *tmp_dir)
   server.port = config.net_server_port;
   server.ack_last_global_seq = 4333;
   snprintf(server.acked_json, sizeof(server.acked_json), "\"%s\"", ops[0].op_id);
+  snprintf(server.rejected_json, sizeof(server.rejected_json),
+           "[{\"op_id\":\"%s\",\"code\":\"SEQ_GAP\"}]",
+           ops[1].op_id);
 
   pthread_t tid;
   expect_int_eq(pthread_create(&tid, NULL, mock_sync_server_thread, &server), 0,
@@ -1441,6 +2259,11 @@ static void test_net_sync_partial_ack_keeps_unacked_pending(const char *tmp_dir)
   expect_int_eq(net_sync_start(), 0, "net sync should start for partial ACK");
   expect_int_eq(net_sync_poll_once(), 0,
                 "net sync poll should succeed for partial ACK");
+  NetSyncStatus gap_status;
+  memset(&gap_status, 0, sizeof(gap_status));
+  net_sync_get_status(&gap_status);
+  expect_true(strstr(gap_status.last_error, "station sequence gap") != NULL,
+              "sequence gap rejection should be visible in sync status");
   net_sync_stop();
   pthread_join(tid, NULL);
 
@@ -1609,12 +2432,15 @@ static void test_protocol_append_and_pull_parsing(void) {
   SyncLogOpEntry parsed_pull[2];
   int pull_count = 0;
   long long last_seq = 0;
+  int has_more = 1;
   memset(parsed_pull, 0, sizeof(parsed_pull));
   expect_int_eq(net_protocol_parse_pull_ops_resp(pull_frame, parsed_pull, 2,
-                                                 &pull_count, &last_seq),
+                                                 &pull_count, &last_seq,
+                                                 &has_more),
                 0, "parse PULL_OPS_RESP should succeed");
   expect_int_eq(pull_count, 1, "parsed pull ops count");
   expect_int_eq((int)last_seq, 123, "parsed last_global_seq");
+  expect_int_eq(has_more, 0, "parsed has_more flag");
   expect_str_eq(parsed_pull[0].op_id, "op-pull", "parsed pull op id");
 }
 
@@ -1724,8 +2550,9 @@ static void test_net_server_client_roundtrip_apply_pull(const char *tmp_dir) {
   expect_int_eq(net_protocol_encode_append_ops(&op, 1, frame, sizeof(frame)), 0,
                 "append frame for server test should encode");
   char hello_frame[1024] = {0};
-  expect_int_eq(net_protocol_encode_hello("st-client", "logger", "",
-                                          hello_frame, sizeof(hello_frame)),
+  expect_int_eq(net_protocol_encode_hello("st-client", "logger",
+                                          config.net_auth_token, hello_frame,
+                                          sizeof(hello_frame)),
                 0, "hello frame for server test should encode");
   expect_int_eq(net_protocol_send_framed(cli, hello_frame), 0,
                 "hello frame should be sent to server");
@@ -1822,8 +2649,9 @@ static void test_net_server_client_roundtrip_apply_pull_tls(const char *tmp_dir)
                 0, "TLS transport client init should succeed");
 
   char hello_frame[1024] = {0};
-  expect_int_eq(net_protocol_encode_hello("st-client-tls", "logger", "",
-                                          hello_frame, sizeof(hello_frame)),
+  expect_int_eq(net_protocol_encode_hello("st-client-tls", "logger",
+                                          config.net_auth_token, hello_frame,
+                                          sizeof(hello_frame)),
                 0, "TLS hello frame should encode");
   expect_int_eq(net_protocol_send_framed_io(&transport, net_transport_write_cb,
                                             hello_frame),
@@ -2017,8 +2845,9 @@ static void test_net_server_rate_limit(const char *tmp_dir) {
                 "client socket should connect for rate limit test");
 
   char hello_frame[1024] = {0};
-  expect_int_eq(net_protocol_encode_hello("st-rate", "logger", "",
-                                          hello_frame, sizeof(hello_frame)),
+  expect_int_eq(net_protocol_encode_hello("st-rate", "logger",
+                                          config.net_auth_token, hello_frame,
+                                          sizeof(hello_frame)),
                 0, "hello frame for rate limit should encode");
   expect_int_eq(net_protocol_send_framed(cli, hello_frame), 0,
                 "hello frame should be sent for rate limit");
@@ -2192,8 +3021,8 @@ static void test_net_sync_fault_delayed_pull_response(const char *tmp_dir) {
 
   expect_int_eq(net_sync_start(), 0,
                 "net sync should start for delayed pull response test");
-  expect_int_eq(net_sync_poll_once(), 0,
-                "net sync poll should tolerate delayed pull response");
+  expect_int_eq(net_sync_poll_once(), -1,
+                "net sync poll should fail on delayed pull response");
   net_sync_stop();
   pthread_join(tid, NULL);
 
@@ -2210,6 +3039,437 @@ static void test_net_sync_fault_delayed_pull_response(const char *tmp_dir) {
   snprintf(config.net_role, sizeof(config.net_role), "%s", saved_role);
   snprintf(config.net_server_host, sizeof(config.net_server_host), "%s",
            saved_host);
+  config.net_server_port = saved_port;
+  set_test_db_path(tmp_dir);
+  qso_init();
+}
+
+static int send_shared_log_mismatch_request(int port, const char *request_type) {
+  int client_fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (client_fd < 0)
+    return -1;
+
+  struct sockaddr_in address;
+  memset(&address, 0, sizeof(address));
+  address.sin_family = AF_INET;
+  address.sin_port = htons((uint16_t)port);
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  if (connect(client_fd, (struct sockaddr *)&address, sizeof(address)) != 0) {
+    close(client_fd);
+    return -1;
+  }
+
+  char frame[4096] = {0};
+  char response[4096] = {0};
+  char station_id[32] = {0};
+  snprintf(station_id, sizeof(station_id), "st-mismatch-%s", request_type);
+  if (net_protocol_encode_hello(station_id, "logger", config.net_auth_token,
+                                frame, sizeof(frame)) != 0 ||
+      net_protocol_send_framed(client_fd, frame) != 0 ||
+      net_protocol_recv_framed(client_fd, response, sizeof(response)) != 0 ||
+      !strstr(response, "\"accepted\":true")) {
+    close(client_fd);
+    return -1;
+  }
+
+  char saved_shared_log_id[36] = {0};
+  snprintf(saved_shared_log_id, sizeof(saved_shared_log_id), "%s",
+           config.net_shared_log_id);
+  snprintf(config.net_shared_log_id, sizeof(config.net_shared_log_id), "%s",
+           "sl-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  int encode_rc = -1;
+  if (strcmp(request_type, "APPEND_OPS") == 0) {
+    SyncOutboxEntry op;
+    memset(&op, 0, sizeof(op));
+    snprintf(op.op_id, sizeof(op.op_id), "%s", "op-mismatch-append");
+    op.station_seq = 1;
+    op.logbook_id = 1;
+    snprintf(op.op_type, sizeof(op.op_type), "%s", "NOOP");
+    snprintf(op.entity_id, sizeof(op.entity_id), "%s", "mismatch-entity");
+    snprintf(op.payload_json, sizeof(op.payload_json), "%s", "{}");
+    snprintf(op.op_utc, sizeof(op.op_utc), "%s", "2026-10-04T12:00:00Z");
+    encode_rc = net_protocol_encode_append_ops(&op, 1, frame, sizeof(frame));
+  } else if (strcmp(request_type, "CATCHUP_REQUEST") == 0) {
+    encode_rc = net_protocol_encode_catchup_request(0, 8, frame,
+                                                   sizeof(frame));
+  } else if (strcmp(request_type, "RESERVE_SERIAL") == 0) {
+    encode_rc = net_protocol_encode_reserve_serial("req-mismatch", 1, 120,
+                                                   frame, sizeof(frame));
+  }
+  snprintf(config.net_shared_log_id, sizeof(config.net_shared_log_id), "%s",
+           saved_shared_log_id);
+
+  int rc = -1;
+  if (encode_rc == 0 && net_protocol_send_framed(client_fd, frame) == 0 &&
+      net_protocol_recv_framed(client_fd, response, sizeof(response)) == 0 &&
+      strstr(response, "SHARED_LOG_MISMATCH"))
+    rc = 0;
+  close(client_fd);
+  return rc;
+}
+
+static void test_net_server_pages_and_station_sequence_gaps(
+    const char *tmp_dir) {
+  char case_dir[512];
+  snprintf(case_dir, sizeof(case_dir), "%s/net_server_pages_and_gaps",
+           tmp_dir);
+  expect_int_eq(mkdir(case_dir, 0777), 0,
+                "create server paging and sequence-gap test directory");
+  set_test_db_path(case_dir);
+  qso_init();
+
+  for (int i = 1; i <= 65; i++) {
+    char op_id[64] = {0};
+    char entity_id[64] = {0};
+    snprintf(op_id, sizeof(op_id), "op-page-source-%d", i);
+    snprintf(entity_id, sizeof(entity_id), "entity-page-source-%d", i);
+    long long global_seq = 0;
+    expect_true(db_sync_apply_remote_op(
+                    op_id, "st-page-source", i, 1, "NOOP", entity_id, "{}",
+                    "2026-10-04T12:00:00Z", &global_seq) >= 0,
+                "seed server operations for multiple catch-up pages");
+  }
+
+  int saved_net_enabled = config.net_enabled;
+  int saved_port = config.net_server_port;
+  char saved_role[16];
+  snprintf(saved_role, sizeof(saved_role), "%s", config.net_role);
+  config.net_enabled = 1;
+  snprintf(config.net_role, sizeof(config.net_role), "%s", "server");
+  config.net_server_port = 19330;
+  expect_int_eq(net_sync_start(), 0, "start server for paging and gap test");
+  usleep(120000);
+
+    long long before_mismatch_global_seq = 0;
+    int before_mismatch_serial = 0;
+    expect_int_eq(db_sync_get_max_global_seq(&before_mismatch_global_seq), 0,
+          "read server sequence before shared-log mismatch probes");
+    expect_int_eq(db_sync_peek_next_serial(1, &before_mismatch_serial), 0,
+          "read serial counter before shared-log mismatch probes");
+    expect_true(send_shared_log_mismatch_request(
+            config.net_server_port, "APPEND_OPS") == 0,
+          "server should reject APPEND with another shared_log_id");
+    expect_true(send_shared_log_mismatch_request(
+            config.net_server_port, "CATCHUP_REQUEST") == 0,
+          "server should reject CATCHUP with another shared_log_id");
+    expect_true(send_shared_log_mismatch_request(
+            config.net_server_port, "RESERVE_SERIAL") == 0,
+          "server should reject serial reservation with another shared_log_id");
+    long long after_mismatch_global_seq = 0;
+    int after_mismatch_serial = 0;
+    expect_int_eq(db_sync_get_max_global_seq(&after_mismatch_global_seq), 0,
+          "read server sequence after shared-log mismatch probes");
+    expect_int_eq(db_sync_peek_next_serial(1, &after_mismatch_serial), 0,
+          "read serial counter after shared-log mismatch probes");
+    expect_true(after_mismatch_global_seq == before_mismatch_global_seq,
+          "mismatched APPEND must not apply or allocate a global sequence");
+    expect_true(after_mismatch_serial == before_mismatch_serial,
+          "mismatched reservation must not advance central numbering");
+
+  struct sockaddr_in address;
+  memset(&address, 0, sizeof(address));
+  address.sin_family = AF_INET;
+  address.sin_port = htons((uint16_t)config.net_server_port);
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  char canonical_shared_log_id[36] = {0};
+  snprintf(canonical_shared_log_id, sizeof(canonical_shared_log_id), "%s",
+           config.net_shared_log_id);
+  const char *wrong_shared_log_id = "sl-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+  int mismatch_hello_fd = socket(AF_INET, SOCK_STREAM, 0);
+  expect_true(mismatch_hello_fd >= 0,
+              "create mismatched shared-ID HELLO socket");
+  if (mismatch_hello_fd >= 0) {
+    expect_int_eq(connect(mismatch_hello_fd, (struct sockaddr *)&address,
+                          sizeof(address)),
+                  0, "connect mismatched shared-ID HELLO socket");
+    char saved_shared_log_id[36] = {0};
+    snprintf(saved_shared_log_id, sizeof(saved_shared_log_id), "%s",
+             config.net_shared_log_id);
+    snprintf(config.net_shared_log_id, sizeof(config.net_shared_log_id), "%s",
+             wrong_shared_log_id);
+    char mismatch_frame[1024] = {0};
+    char mismatch_response[2048] = {0};
+    expect_int_eq(net_protocol_encode_hello(
+                      "st-wrong-log", "logger", config.net_auth_token,
+                      mismatch_frame, sizeof(mismatch_frame)),
+                  0, "encode HELLO with another shared log");
+    snprintf(config.net_shared_log_id, sizeof(config.net_shared_log_id), "%s",
+             saved_shared_log_id);
+    expect_int_eq(net_protocol_send_framed(mismatch_hello_fd, mismatch_frame),
+                  0, "send mismatched shared-ID HELLO");
+    expect_int_eq(net_protocol_recv_framed(mismatch_hello_fd,
+                                           mismatch_response,
+                                           sizeof(mismatch_response)),
+                  0, "receive mismatched shared-ID HELLO rejection");
+    expect_true(strstr(mismatch_response, "\"accepted\":false") != NULL,
+                "server should reject HELLO for another shared log");
+    close(mismatch_hello_fd);
+  }
+
+  int unauthenticated_fd = socket(AF_INET, SOCK_STREAM, 0);
+  expect_true(unauthenticated_fd >= 0,
+              "create unauthenticated protocol test socket");
+  if (unauthenticated_fd >= 0) {
+    expect_int_eq(connect(unauthenticated_fd,
+                          (struct sockaddr *)&address, sizeof(address)),
+                  0, "connect unauthenticated protocol test socket");
+    char unauthenticated_frame[1024] = {0};
+    char unauthenticated_response[2048] = {0};
+    expect_int_eq(net_protocol_encode_hello("st-no-token", "logger", "",
+                                            unauthenticated_frame,
+                                            sizeof(unauthenticated_frame)),
+                  0, "encode empty-token HELLO");
+    expect_int_eq(net_protocol_send_framed(unauthenticated_fd,
+                                           unauthenticated_frame),
+                  0, "send empty-token HELLO");
+    expect_int_eq(net_protocol_recv_framed(unauthenticated_fd,
+                                           unauthenticated_response,
+                                           sizeof(unauthenticated_response)),
+                  0, "receive empty-token HELLO rejection");
+    expect_true(strstr(unauthenticated_response, "\"accepted\":false") !=
+                    NULL,
+                "server should explicitly reject an empty authentication token");
+    close(unauthenticated_fd);
+  }
+
+  int mismatch_request_fd = socket(AF_INET, SOCK_STREAM, 0);
+  expect_true(mismatch_request_fd >= 0,
+              "create mismatched shared-ID request socket");
+  if (mismatch_request_fd >= 0) {
+    expect_int_eq(connect(mismatch_request_fd, (struct sockaddr *)&address,
+                          sizeof(address)),
+                  0, "connect mismatched shared-ID request socket");
+    char mismatch_frame[1024] = {0};
+    char mismatch_response[2048] = {0};
+    expect_int_eq(net_protocol_encode_hello(
+                      "st-mismatch-request", "logger", config.net_auth_token,
+                      mismatch_frame, sizeof(mismatch_frame)),
+                  0, "encode valid HELLO for mismatch request test");
+    expect_int_eq(net_protocol_send_framed(mismatch_request_fd,
+                                           mismatch_frame),
+                  0, "send valid HELLO for mismatch request test");
+    expect_int_eq(net_protocol_recv_framed(mismatch_request_fd,
+                                           mismatch_response,
+                                           sizeof(mismatch_response)),
+                  0, "receive valid HELLO_ACK before mismatch request");
+    char saved_shared_log_id[36] = {0};
+    snprintf(saved_shared_log_id, sizeof(saved_shared_log_id), "%s",
+             config.net_shared_log_id);
+    snprintf(config.net_shared_log_id, sizeof(config.net_shared_log_id), "%s",
+             wrong_shared_log_id);
+    expect_int_eq(net_protocol_encode_reserve_serial(
+                      "req-wrong-shared-log", 1, 120, mismatch_frame,
+                      sizeof(mismatch_frame)),
+                  0, "encode serial reservation for another shared log");
+    snprintf(config.net_shared_log_id, sizeof(config.net_shared_log_id), "%s",
+             saved_shared_log_id);
+    expect_int_eq(net_protocol_send_framed(mismatch_request_fd,
+                                           mismatch_frame),
+                  0, "send mismatched shared-ID reservation request");
+    memset(mismatch_response, 0, sizeof(mismatch_response));
+    expect_int_eq(net_protocol_recv_framed(mismatch_request_fd,
+                                           mismatch_response,
+                                           sizeof(mismatch_response)),
+                  0, "receive shared-ID reservation rejection");
+    expect_true(strstr(mismatch_response,
+                       "SHARED_LOG_MISMATCH") != NULL,
+                "server should reject mismatched ID before serial reservation");
+    close(mismatch_request_fd);
+  }
+
+  int client_fd = socket(AF_INET, SOCK_STREAM, 0);
+  expect_true(client_fd >= 0, "create direct protocol test socket");
+  if (client_fd < 0)
+    goto server_pages_cleanup;
+
+  struct timeval timeout = {.tv_sec = 2, .tv_usec = 0};
+  setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+  expect_int_eq(connect(client_fd, (struct sockaddr *)&address, sizeof(address)),
+                0, "connect direct protocol test socket");
+
+  char frame[16384] = {0};
+  char response[16384] = {0};
+  expect_int_eq(net_protocol_encode_hello(
+                    "st-page-reader", "logger", config.net_auth_token, frame,
+                    sizeof(frame)),
+                0, "encode HELLO for server page test");
+  expect_int_eq(net_protocol_send_framed(client_fd, frame), 0,
+                "send HELLO for server page test");
+  expect_int_eq(net_protocol_recv_framed(client_fd, response,
+                                         sizeof(response)),
+                0, "receive HELLO_ACK for server page test");
+
+  expect_int_eq(net_protocol_encode_catchup_request(0, 64, frame,
+                                                    sizeof(frame)),
+                0, "encode first page request");
+  expect_int_eq(net_protocol_send_framed(client_fd, frame), 0,
+                "send first page request");
+  expect_int_eq(net_protocol_recv_framed(client_fd, response,
+                                         sizeof(response)),
+                0, "receive first catch-up page");
+  SyncLogOpEntry page_ops[64];
+  int page_count = 0;
+  int has_more = 0;
+  long long page_last_seq = 0;
+  memset(page_ops, 0, sizeof(page_ops));
+  expect_int_eq(net_protocol_parse_pull_ops_resp(
+                    response, page_ops, 64, &page_count, &page_last_seq,
+                    &has_more),
+                0, "parse first catch-up page");
+  expect_int_eq(page_count, 64, "first catch-up page should fill its limit");
+  expect_true(has_more, "server should report more operations after page one");
+  expect_true(page_last_seq == 64,
+              "first page cursor should identify its final returned operation");
+
+  expect_int_eq(net_protocol_encode_catchup_request(64, 64, frame,
+                                                    sizeof(frame)),
+                0, "encode second page request");
+  expect_int_eq(net_protocol_send_framed(client_fd, frame), 0,
+                "send second page request");
+  memset(response, 0, sizeof(response));
+  expect_int_eq(net_protocol_recv_framed(client_fd, response,
+                                         sizeof(response)),
+                0, "receive second catch-up page");
+  memset(page_ops, 0, sizeof(page_ops));
+  page_count = 0;
+  has_more = 1;
+  page_last_seq = 0;
+  expect_int_eq(net_protocol_parse_pull_ops_resp(
+                    response, page_ops, 64, &page_count, &page_last_seq,
+                    &has_more),
+                0, "parse second catch-up page");
+  expect_int_eq(page_count, 1, "second catch-up page should contain the tail");
+  expect_true(!has_more && page_last_seq == 65,
+              "final catch-up page should end at the current operation tail");
+
+  SyncOutboxEntry append_op;
+  memset(&append_op, 0, sizeof(append_op));
+  append_op.logbook_id = 1;
+  snprintf(append_op.op_type, sizeof(append_op.op_type), "%s", "NOOP");
+  snprintf(append_op.op_utc, sizeof(append_op.op_utc), "%s",
+           "2026-10-04T12:01:00Z");
+  snprintf(append_op.entity_id, sizeof(append_op.entity_id), "%s",
+           "entity-gap-2");
+  snprintf(append_op.payload_json, sizeof(append_op.payload_json), "%s", "{}");
+  snprintf(append_op.op_id, sizeof(append_op.op_id), "%s", "op-gap-2");
+  append_op.station_seq = 2;
+  expect_int_eq(net_protocol_encode_append_ops(&append_op, 1, frame,
+                                               sizeof(frame)),
+                0, "encode out-of-order station sequence");
+  expect_int_eq(net_protocol_send_framed(client_fd, frame), 0,
+                "send out-of-order station sequence");
+  memset(response, 0, sizeof(response));
+  expect_int_eq(net_protocol_recv_framed(client_fd, response,
+                                         sizeof(response)),
+                0, "receive sequence-gap rejection");
+  expect_true(strstr(response, "\"code\":\"SEQ_GAP\"") != NULL,
+              "server should explicitly reject an operation past a sequence gap");
+
+  append_op.station_seq = 1;
+  snprintf(append_op.op_id, sizeof(append_op.op_id), "%s", "op-gap-1");
+  snprintf(append_op.entity_id, sizeof(append_op.entity_id), "%s",
+           "entity-gap-1");
+  expect_int_eq(net_protocol_encode_append_ops(&append_op, 1, frame,
+                                               sizeof(frame)),
+                0, "encode missing station sequence");
+  expect_int_eq(net_protocol_send_framed(client_fd, frame), 0,
+                "send missing station sequence");
+  memset(response, 0, sizeof(response));
+  expect_int_eq(net_protocol_recv_framed(client_fd, response,
+                                         sizeof(response)),
+                0, "receive missing sequence acceptance");
+  expect_true(strstr(response, "\"op-gap-1\"") != NULL,
+              "server should accept the missing lower sequence");
+
+  append_op.station_seq = 2;
+  snprintf(append_op.op_id, sizeof(append_op.op_id), "%s", "op-gap-2");
+  snprintf(append_op.entity_id, sizeof(append_op.entity_id), "%s",
+           "entity-gap-2");
+  expect_int_eq(net_protocol_encode_append_ops(&append_op, 1, frame,
+                                               sizeof(frame)),
+                0, "encode retry after sequence gap recovery");
+  expect_int_eq(net_protocol_send_framed(client_fd, frame), 0,
+                "send retry after sequence gap recovery");
+  memset(response, 0, sizeof(response));
+  expect_int_eq(net_protocol_recv_framed(client_fd, response,
+                                         sizeof(response)),
+                0, "receive sequence gap retry acceptance");
+  expect_true(strstr(response, "\"op-gap-2\"") != NULL,
+              "server should accept the retried operation after the gap is filled");
+
+  long long max_seq_before_duplicate = 0;
+  expect_int_eq(db_sync_get_max_global_seq(&max_seq_before_duplicate), 0,
+                "read operation high-water mark before duplicate append");
+  expect_int_eq(net_protocol_send_framed(client_fd, frame), 0,
+                "resend accepted operation to test idempotency");
+  memset(response, 0, sizeof(response));
+  expect_int_eq(net_protocol_recv_framed(client_fd, response,
+                                         sizeof(response)),
+                0, "receive duplicate operation acknowledgement");
+  long long max_seq_after_duplicate = 0;
+  expect_int_eq(db_sync_get_max_global_seq(&max_seq_after_duplicate), 0,
+                "read operation high-water mark after duplicate append");
+  expect_true(max_seq_after_duplicate == max_seq_before_duplicate,
+              "repeated append should not create a second log operation");
+
+    char reserve_frame[1024] = {0};
+    char reserve_response[2048] = {0};
+    expect_int_eq(net_protocol_encode_reserve_serial(
+            "req-reserve-idempotent", 3, 120, reserve_frame,
+            sizeof(reserve_frame)),
+          0, "encode idempotent serial reservation request");
+    expect_int_eq(net_protocol_send_framed(client_fd, reserve_frame), 0,
+          "send first serial reservation request");
+    expect_int_eq(net_protocol_recv_framed(client_fd, reserve_response,
+                       sizeof(reserve_response)),
+          0, "receive first serial reservation ACK");
+    char reserve_ack_request_id[64] = {0};
+    char first_reservation_id[64] = {0};
+    int first_reserved_serial = 0;
+    char first_reservation_expiry[32] = {0};
+    expect_int_eq(net_protocol_parse_reserve_serial_ack(
+                      reserve_response, reserve_ack_request_id,
+                      sizeof(reserve_ack_request_id), first_reservation_id,
+            sizeof(first_reservation_id), &first_reserved_serial,
+            first_reservation_expiry,
+            sizeof(first_reservation_expiry)),
+          0, "parse first reservation ACK");
+
+    memset(reserve_response, 0, sizeof(reserve_response));
+    expect_int_eq(net_protocol_send_framed(client_fd, reserve_frame), 0,
+          "retry serial reservation after a simulated lost ACK");
+    expect_int_eq(net_protocol_recv_framed(client_fd, reserve_response,
+                       sizeof(reserve_response)),
+          0, "receive idempotent reservation retry ACK");
+    char retry_reservation_id[64] = {0};
+    int retry_reserved_serial = 0;
+    char retry_reservation_expiry[32] = {0};
+    expect_int_eq(net_protocol_parse_reserve_serial_ack(
+                      reserve_response, reserve_ack_request_id,
+                      sizeof(reserve_ack_request_id), retry_reservation_id,
+            sizeof(retry_reservation_id), &retry_reserved_serial,
+            retry_reservation_expiry,
+            sizeof(retry_reservation_expiry)),
+          0, "parse retried reservation ACK");
+    expect_str_eq(retry_reservation_id, first_reservation_id,
+          "retry should return the original reservation ID");
+    expect_int_eq(retry_reserved_serial, first_reserved_serial,
+          "retry should return the original serial number");
+    expect_str_eq(retry_reservation_expiry, first_reservation_expiry,
+          "retry should return the original reservation expiry");
+    int next_reserved_serial = 0;
+    expect_int_eq(db_sync_peek_next_serial(1, &next_reserved_serial), 0,
+          "read central counter after repeated reservation request");
+    expect_true(next_reserved_serial == first_reserved_serial + 1,
+          "retry must not consume a second central serial number");
+
+  close(client_fd);
+
+server_pages_cleanup:
+  net_sync_stop();
+  config.net_enabled = saved_net_enabled;
+  snprintf(config.net_role, sizeof(config.net_role), "%s", saved_role);
   config.net_server_port = saved_port;
   set_test_db_path(tmp_dir);
   qso_init();
@@ -2249,8 +3509,9 @@ static void test_net_server_duplicate_append_is_idempotent(const char *tmp_dir) 
                 "client socket should connect for duplicate test");
 
   char hello_frame[1024] = {0};
-  expect_int_eq(net_protocol_encode_hello("st-dup", "logger", "",
-                                          hello_frame, sizeof(hello_frame)),
+  expect_int_eq(net_protocol_encode_hello("st-dup", "logger",
+                                          config.net_auth_token, hello_frame,
+                                          sizeof(hello_frame)),
                 0, "hello frame for duplicate test should encode");
   expect_int_eq(net_protocol_send_framed(cli, hello_frame), 0,
                 "hello frame should be sent for duplicate test");
@@ -2341,7 +3602,67 @@ static void test_db_sync_serial_reservation_and_commit(const char *tmp_dir) {
   set_test_db_path(case_dir);
   qso_init();
 
+  QSO existing_qso = {0};
+  snprintf(existing_qso.date, sizeof(existing_qso.date), "%s", "20261004");
+  snprintf(existing_qso.utc, sizeof(existing_qso.utc), "%s", "1200");
+  snprintf(existing_qso.call, sizeof(existing_qso.call), "%s", "SP9SERIAL");
+  existing_qso.freq = 7020;
+  snprintf(existing_qso.band, sizeof(existing_qso.band), "%s", "40M");
+  snprintf(existing_qso.mode, sizeof(existing_qso.mode), "%s", "CW");
+  snprintf(existing_qso.rst, sizeof(existing_qso.rst), "%s", "599");
+  snprintf(existing_qso.exchange_sent, sizeof(existing_qso.exchange_sent),
+           "%s", "42");
+  snprintf(existing_qso.country, sizeof(existing_qso.country), "%s", "POLAND");
+  existing_qso.cq_zone = 15;
+  existing_qso.itu_zone = 28;
+  long long existing_qso_id = 0;
+  expect_int_eq(db_insert_qso(&existing_qso, &existing_qso_id), 0,
+                "seed existing log before central serial initialization");
+
+  int next_serial = 0;
+  expect_int_eq(db_sync_peek_next_serial(1, &next_serial), 0,
+                "peek next central serial from existing log");
+  expect_int_eq(next_serial, 43,
+                "central serial should start above existing exchange values");
+
+  char pending_request_id[64] = {0};
+  expect_int_eq(db_sync_get_or_create_serial_request_id(
+                    "req-persist-a", pending_request_id,
+                    sizeof(pending_request_id)),
+                0, "create durable pending serial request ID");
+  expect_str_eq(pending_request_id, "req-persist-a",
+                "first reservation attempt should store its request ID");
+  char retried_request_id[64] = {0};
+  expect_int_eq(db_sync_get_or_create_serial_request_id(
+                    "req-persist-b", retried_request_id,
+                    sizeof(retried_request_id)),
+                0, "read durable serial request ID on retry");
+  expect_str_eq(retried_request_id, "req-persist-a",
+                "retry should reuse the unacknowledged request ID");
+  db_shutdown();
+  expect_int_eq(db_init(), 0,
+                "reopen DB while a serial request is waiting for ACK");
+  memset(retried_request_id, 0, sizeof(retried_request_id));
+  expect_int_eq(db_sync_get_or_create_serial_request_id(
+                    "req-persist-b", retried_request_id,
+                    sizeof(retried_request_id)),
+                0, "recover the request ID after process restart");
+  expect_str_eq(retried_request_id, "req-persist-a",
+                "restart should retain the in-flight request ID");
+  expect_int_eq(db_sync_clear_serial_request_id("req-persist-a"), 0,
+                "clear request ID after its reservation ACK is persisted");
+  memset(retried_request_id, 0, sizeof(retried_request_id));
+  expect_int_eq(db_sync_get_or_create_serial_request_id(
+                    "req-persist-b", retried_request_id,
+                    sizeof(retried_request_id)),
+                0, "create next request ID after previous ACK");
+  expect_str_eq(retried_request_id, "req-persist-b",
+                "next reservation should receive a fresh request ID");
+  expect_int_eq(db_sync_clear_serial_request_id("req-persist-b"), 0,
+                "clear second pending request after test ACK");
+
   char reservation_id[64] = {0};
+  char second_reservation_id[64] = {0};
   int serial = 0;
   char expires_utc[32] = {0};
   expect_int_eq(db_sync_reserve_serial(1, "st-a", "req-a", 120,
@@ -2352,9 +3673,169 @@ static void test_db_sync_serial_reservation_and_commit(const char *tmp_dir) {
   expect_true(serial >= 1, "serial reserve should return positive serial");
   expect_true(reservation_id[0] != 0,
               "serial reserve should return reservation id");
+    expect_int_eq(serial, 43,
+          "first reservation should continue existing serial sequence");
+
+  char retry_reservation_id[64] = {0};
+  int retry_serial = 0;
+  char retry_expires_utc[32] = {0};
+  expect_int_eq(db_sync_reserve_serial(
+                    1, "st-a", "req-a", 120, retry_reservation_id,
+                    sizeof(retry_reservation_id), &retry_serial,
+                    retry_expires_utc, sizeof(retry_expires_utc)),
+                0, "retry with the same station/request ID should succeed");
+  expect_str_eq(retry_reservation_id, reservation_id,
+                "retried request should return the original reservation ID");
+  expect_int_eq(retry_serial, serial,
+                "retried request should return the original serial");
+  expect_str_eq(retry_expires_utc, expires_utc,
+                "retried request should return the original expiry");
+
+  char other_station_reservation_id[64] = {0};
+  int other_station_serial = 0;
+  char other_station_expires_utc[32] = {0};
+  expect_int_eq(db_sync_reserve_serial(
+                    1, "st-b", "req-a", 120, other_station_reservation_id,
+                    sizeof(other_station_reservation_id),
+                    &other_station_serial, other_station_expires_utc,
+                    sizeof(other_station_expires_utc)),
+                0, "same request ID on another station should be independent");
+  expect_true(strcmp(other_station_reservation_id, reservation_id) != 0,
+              "reservation IDs must remain unique across stations");
+  expect_int_eq(other_station_serial, 44,
+                "different station request should receive the next serial");
+
+    int second_serial = 0;
+    char second_expires_utc[32] = {0};
+    expect_int_eq(db_sync_reserve_serial(
+            1, "st-a", "req-b", 120, second_reservation_id,
+            sizeof(second_reservation_id), &second_serial,
+            second_expires_utc, sizeof(second_expires_utc)),
+          0, "second unique serial reservation should succeed");
+    expect_true(strcmp(reservation_id, second_reservation_id) != 0,
+          "different reservation request IDs should produce unique IDs");
+    expect_int_eq(second_serial, 45,
+          "central counter should advance across reservations");
 
   expect_int_eq(db_sync_commit_serial(reservation_id, "q-serial-1"), 0,
                 "serial commit should succeed");
+    expect_int_eq(db_sync_commit_serial(reservation_id, "q-serial-1"), 0,
+          "repeated serial commit should be idempotent");
+
+    expect_int_eq(db_sync_cache_serial_reservation(
+            "rsv-client-cache-80", 1, "st-client", 80,
+            "2099-01-01T00:00:00Z"),
+          0, "client should persist a prefetched reservation");
+    int available_count = 0;
+    expect_int_eq(db_sync_count_available_serial_reservations(
+            1, "st-client", &available_count),
+          0, "cached reservation count should be readable");
+    expect_int_eq(available_count, 1,
+          "cached reservation should be available to the local operator");
+    char claimed_id[64] = {0};
+    int claimed_serial = 0;
+    expect_int_eq(db_sync_claim_available_serial_reservation(
+            1, "st-client", claimed_id, sizeof(claimed_id),
+            &claimed_serial),
+          0, "operator should atomically claim a cached serial");
+    expect_int_eq(claimed_serial, 80, "claim should return the reserved serial");
+    expect_str_eq(claimed_id, "rsv-client-cache-80",
+          "claim should return its stable reservation ID");
+    expect_int_eq(db_sync_recover_serial_claims(), 0,
+          "restart recovery should release stale local claims");
+    memset(claimed_id, 0, sizeof(claimed_id));
+    expect_int_eq(db_sync_claim_available_serial_reservation(
+            1, "st-client", claimed_id, sizeof(claimed_id),
+            &claimed_serial),
+          0, "recovered serial should be claimable after restart");
+
+    expect_int_eq(db_update_qso_contest_fields_with_reservation(
+            existing_qso_id, "80", "123", "RUN", "TEST", 1, 3,
+            claimed_id, 1),
+          0, "QSO contest update should queue its remote serial commit");
+    SyncSerialCommitEntry commits[4];
+    int commit_count = 0;
+    memset(commits, 0, sizeof(commits));
+    expect_int_eq(db_sync_load_pending_serial_commits(commits, 4, &commit_count),
+          0, "pending serial commits should be readable");
+    expect_int_eq(commit_count, 1,
+          "QSO save should persist one remote serial commit job");
+    expect_str_eq(commits[0].reservation_id, claimed_id,
+          "queued commit should retain the reservation ID");
+    expect_str_eq(commits[0].qso_uid, existing_qso.qso_uid,
+          "queued commit should target the saved QSO UID");
+    expect_int_eq(db_sync_mark_serial_commit_acked(claimed_id), 0,
+          "successful remote commit should consume the local reservation");
+
+    expect_int_eq(db_sync_cache_serial_reservation(
+            "rsv-client-cache-81", 1, "st-client", 81,
+            "2099-01-01T00:00:00Z"),
+          0, "cache a second reservation for rollback testing");
+    memset(claimed_id, 0, sizeof(claimed_id));
+    expect_int_eq(db_sync_claim_available_serial_reservation(
+            1, "st-client", claimed_id, sizeof(claimed_id),
+            &claimed_serial),
+          0, "claim second cached serial");
+    char db_path[512];
+    join_path(db_path, sizeof(db_path), case_dir, "unit.sqlite3");
+    sqlite3 *fault_db = NULL;
+    expect_int_eq(sqlite3_open(db_path, &fault_db), SQLITE_OK,
+          "open serial DB to inject outbox failure");
+    if (fault_db) {
+    expect_int_eq(sqlite3_exec(
+              fault_db,
+              "CREATE TRIGGER fail_serial_outbox BEFORE INSERT ON "
+              "log_outbox BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+              NULL, NULL, NULL),
+            SQLITE_OK, "install serial outbox failure trigger");
+    expect_int_eq(db_update_qso_contest_fields_with_reservation(
+              existing_qso_id, "81", "124", "RUN", "TEST", 1, 4,
+              claimed_id, 1),
+            -1, "outbox failure should roll back serial commit state");
+    expect_int_eq(sqlite3_exec(fault_db, "DROP TRIGGER fail_serial_outbox;",
+                   NULL, NULL, NULL),
+            SQLITE_OK, "remove serial outbox failure trigger");
+    sqlite3_close(fault_db);
+    }
+    memset(commits, 0, sizeof(commits));
+    commit_count = 0;
+    expect_int_eq(db_sync_load_pending_serial_commits(commits, 4, &commit_count),
+          0, "pending commits should remain queryable after rollback");
+    expect_int_eq(commit_count, 0,
+          "failed QSO update must not queue a serial commit");
+    expect_int_eq(db_sync_release_serial_reservation(claimed_id, 1), 0,
+          "rolled back reservation should return to the available pool");
+
+    expect_int_eq(db_sync_cache_serial_reservation(
+                      "rsv-client-qso-82", 1, "st-client", 82,
+                      "2099-01-01T00:00:00Z"),
+                  0, "cache reservation for public QSO save test");
+    memset(claimed_id, 0, sizeof(claimed_id));
+    expect_int_eq(db_sync_claim_available_serial_reservation(
+                      1, "st-client", claimed_id, sizeof(claimed_id),
+                      &claimed_serial),
+                  0, "claim reservation for public QSO save test");
+    char qso_status[128] = {0};
+    int saved_idx = qso_add_contest_fields_with_reservation(
+        "SP9RSV", 7022, "599", "CW", "", "82", "001", "RUN", "TEST", 1,
+        3, 1, claimed_id, 1, qso_status, sizeof(qso_status));
+    expect_true(saved_idx >= 0,
+                "contest QSO should save with a preclaimed serial reservation");
+    if (saved_idx >= 0) {
+      expect_str_eq(logbook[saved_idx].exchange_sent, "82",
+                    "saved QSO should retain the reserved contest serial");
+      expect_true(strstr(qso_status, "QSO OK") == qso_status,
+                  "reserved QSO save should report success");
+    }
+    memset(commits, 0, sizeof(commits));
+    commit_count = 0;
+    expect_int_eq(db_sync_load_pending_serial_commits(commits, 4, &commit_count),
+                  0, "load commit job from public QSO save");
+    expect_int_eq(commit_count, 1,
+                  "public QSO save should create one serial commit job");
+    if (saved_idx >= 0)
+      expect_str_eq(commits[0].qso_uid, logbook[saved_idx].qso_uid,
+                    "serial commit job should reference the saved QSO UID");
 
   set_test_db_path(tmp_dir);
   qso_init();
@@ -2369,8 +3850,10 @@ static void test_net_command_on_off_role_status(const char *tmp_dir) {
   expect_int_eq(chdir(case_dir), 0,
                 "chdir to net command test directory");
   set_test_db_path(case_dir);
-  expect_int_eq(write_text_file("logger.conf", "CONTEST_DEF_FILE=\n"), 0,
-                "write empty logger.conf for net command test");
+  expect_int_eq(write_text_file(
+                    "logger.conf",
+                    "CONTEST_DEF_FILE=\nNET_AUTH_TOKEN=" TEST_NET_AUTH_TOKEN "\n"),
+                0, "write authenticated logger.conf for net command test");
 
   app_controller_init();
 
@@ -2386,6 +3869,17 @@ static void test_net_command_on_off_role_status(const char *tmp_dir) {
   if (state.status)
     expect_true(strstr(state.status, "NET enabled") != NULL,
                 "net on command should enable network");
+
+  int qso_count_before_blocked_switch = qso_count;
+  send_controller_text("newlog blocked-while-online");
+  app_controller_get_render_state(&state);
+  if (state.status)
+    expect_true(strstr(state.status, "NET active: stop sync") != NULL,
+                "controller should explain why active log switching is blocked");
+  expect_int_eq(qso_count, qso_count_before_blocked_switch,
+                "blocked log switch should leave the active log data untouched");
+  expect_int_eq(db_clear_logbook(), DB_ERR_LOG_CHANGE_WHILE_NET_ACTIVE,
+                "DB clear should be blocked while network service is enabled");
 
   send_controller_text("net status");
   app_controller_get_render_state(&state);
@@ -2436,7 +3930,10 @@ static void test_netsync_offline_queue_status(const char *tmp_dir) {
   expect_int_eq(chdir(case_dir), 0,
                 "chdir to netsync offline test directory");
   set_test_db_path(case_dir);
-  expect_int_eq(write_text_file("logger.conf", "CONTEST_DEF_FILE=\n"), 0,
+  expect_int_eq(write_text_file(
+                    "logger.conf",
+                    "CONTEST_DEF_FILE=\nNET_SHARED_LOG_ID=" TEST_SHARED_LOG_ID "\n"),
+                0,
                 "write empty logger.conf for netsync offline test");
 
   int saved_net_enabled = config.net_enabled;
@@ -4910,6 +6407,36 @@ int main(void) {
 
   test_config_load(tmp_dir);
   test_config_save_roundtrip(tmp_dir);
+#ifdef LOGGER_NETWORK_TESTS_ONLY
+  test_db_sync_identity_and_sequence(tmp_dir);
+  test_db_sync_outbox_lifecycle(tmp_dir);
+  test_db_sync_outbox_retry_limit_marks_failed(tmp_dir);
+  test_qso_sync_metadata_roundtrip(tmp_dir);
+  test_db_sync_atomic_writes_and_legacy_migration(tmp_dir);
+  test_net_sync_config_validation();
+  test_net_protocol_frames();
+  test_net_sync_mock_server_roundtrip(tmp_dir);
+  test_net_worker_prefetches_serial_reservations(tmp_dir);
+  test_net_sync_paged_catchup_replay_and_cursor(tmp_dir);
+  test_net_sync_partial_ack_keeps_unacked_pending(tmp_dir);
+  test_net_sync_connect_backoff(tmp_dir);
+#ifdef HAVE_OPENSSL
+  test_tls_transport_fingerprint_pinning(tmp_dir);
+#endif
+  test_net_server_rate_limit(tmp_dir);
+  test_net_server_pages_and_station_sequence_gaps(tmp_dir);
+  test_net_sync_fault_drop_append_ack_retries(tmp_dir);
+  test_net_sync_fault_delayed_pull_response(tmp_dir);
+  test_protocol_append_and_pull_parsing();
+  test_db_sync_apply_remote_op_and_pull(tmp_dir);
+  test_net_server_client_roundtrip_apply_pull(tmp_dir);
+#ifdef HAVE_OPENSSL
+  test_net_server_client_roundtrip_apply_pull_tls(tmp_dir);
+#endif
+  test_net_server_duplicate_append_is_idempotent(tmp_dir);
+  test_db_sync_qso_uid_conflict_is_rejected(tmp_dir);
+  test_db_sync_serial_reservation_and_commit(tmp_dir);
+#else
   test_cty_load_and_lookup(tmp_dir);
   test_cty_download_latest_failure_path(tmp_dir);
   test_qso_helpers();
@@ -4919,12 +6446,17 @@ int main(void) {
   test_db_sync_outbox_lifecycle(tmp_dir);
   test_db_sync_outbox_retry_limit_marks_failed(tmp_dir);
   test_qso_sync_metadata_roundtrip(tmp_dir);
+  test_db_sync_atomic_writes_and_legacy_migration(tmp_dir);
+  test_net_sync_config_validation();
   test_net_protocol_frames();
   test_net_sync_mock_server_roundtrip(tmp_dir);
+  test_net_worker_prefetches_serial_reservations(tmp_dir);
+  test_net_sync_paged_catchup_replay_and_cursor(tmp_dir);
   test_net_sync_partial_ack_keeps_unacked_pending(tmp_dir);
   test_net_sync_connect_backoff(tmp_dir);
   test_tls_transport_fingerprint_pinning(tmp_dir);
   test_net_server_rate_limit(tmp_dir);
+  test_net_server_pages_and_station_sequence_gaps(tmp_dir);
   test_net_sync_fault_drop_append_ack_retries(tmp_dir);
   test_net_sync_fault_delayed_pull_response(tmp_dir);
   test_protocol_append_and_pull_parsing();
@@ -4994,6 +6526,7 @@ int main(void) {
   test_export_cabrillo_qtc_lines(tmp_dir);
   test_export_cabrillo_qtc_lines_without_qtc_definition(tmp_dir);
 
+#endif
   if (g_failures == 0) {
     printf("All unit tests passed.\n");
     return 0;

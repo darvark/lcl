@@ -1,10 +1,12 @@
 # Praca Sieciowa w Topologii Gwiazdy z Centralnym Logiem
 
-> Dokument archiwalny. Funkcjonalność sieci z centralnym logiem została usunięta z aktywnej wersji aplikacji. Niniejsze materiały istnieją wyłącznie jako historia projektowa i nie opisują obecnego stanu produktu.
+Dokument opisuje aktywny runtime klient-serwer. Szczegółowa konfiguracja
+sekretu, TLS pinning i backupu znajduje się w
+[procedurze operacyjnej TLS](self-signed-tls-operacja.md).
 
 ## Cel dokumentu
 
-Dokument opisuje konkretna propozycje techniczna dla tego repo, aby dodac prace wielu stacji w sieci (topologia gwiazdy), gdzie:
+Dokument obejmuje aktualny model pracy wielu stacji w sieci (topologia gwiazdy), gdzie:
 
 - jedna instancja pelni role centralnego serwera logu,
 - stacje klienckie synchronizuja swoje logi z serwerem,
@@ -38,7 +40,9 @@ Dokument ten opisuje działający model sieci. W repo znajduje się już pełna 
 - błędne dane sieciowe nie są już automatycznie domykane do domyślnego `logbook_id = 1`,
 - sesje serwera mają timeout nieaktywności i czyszczą slot po rozłączeniu lub utracie aktywności.
 
-Dodatkowo implementacja ma warstwę retry/backoff, obróbkę błędów po stronie klienta oraz testy, które sprawdzają logbook validation, serial reservation, idempotent append oraz pełne scenariusze round-trip.
+Dodatkowo klient ma okresowego workera poza UI, lokalną pulę rezerwacji numerów,
+trwały commit seriali i czytelny status kolejki. CTest obejmuje test migracji,
+integrację sieciową oraz osobny test wieloprocesowy z serwerem i dwoma klientami.
 
 ## 1. Propozycja zmian schematu SQLite
 
@@ -380,19 +384,20 @@ Pobranie zmian z serwera.
   - fallback: `last_modified_utc` + `station_id` tie-breaker.
 - Operacja typu toggle nie jest przesylana; przesylamy stan docelowy (`invalid=true/false`).
 
-## 2.5 Bezpieczenstwo (MVP vs docelowo)
+## 2.5 Bezpieczeństwo wdrożenia
 
-MVP (LAN):
-
-- bez TLS,
-- allowlist `station_id` w config serwera,
-- osobny port sieci lokalnej.
-
-Docelowo:
-
-- TLS (mTLS lub token HMAC),
-- rotacja kluczy,
-- jawne wersjonowanie protokolu i kompatybilnosc wsteczna.
+- Serwer odrzuca start bez silnego `NET_AUTH_TOKEN`/`NET_SHARED_KEY` oraz
+  odrzuca HELLO z pustym lub niezgodnym tokenem.
+- Token ma co najmniej 32 znaki i co najmniej trzy klasy znaków. Używaj
+  identycznego sekretu na serwerze i klientach; pliki `logger.conf` chroń
+  uprawnieniami operatora usługi.
+- TLS jest opcjonalny. Po jego włączeniu klient wymaga jawnego
+  `NET_TLS_PEER_FINGERPRINT` SHA-256; brak pinu blokuje połączenie. Fingerprint
+  należy przekazać klientom poza kanałem, który jest dopiero weryfikowany.
+- Pierwsze połączenie nie używa TOFU. mTLS i zewnętrzne CA nie są obecnie
+  obsługiwane.
+- Bez TLS token jest przesyłany jawnie; plain TCP ogranicz do zaufanej,
+  izolowanej sieci.
 
 ## 3. Lista zmian funkcji w plikach source
 
@@ -636,7 +641,7 @@ Do tego dodac testy manualne:
 - Rozproszony consensus (Raft itp.).
 - Synchronizacja przez UDP jako kanal krytyczny.
 
-## 6. Status implementacji (2026-08-20)
+## 6. Status implementacji (2026-10-04)
 
 Zrealizowano pelny pakiet 5 etapow wdrozenia technicznego (bez czekania na kroki posrednie):
 
@@ -655,7 +660,8 @@ Zrealizowano pelny pakiet 5 etapow wdrozenia technicznego (bez czekania na kroki
 - Serwer pracuje juz na framed transporcie (`uint32_be + JSON`), obsluguje `HELLO/HELLO_ACK` oraz walidacje tokenu/shared-key.
 - Gdy `NET_TLS=1` i build ma OpenSSL, polaczenie klient-serwer przechodzi przez rzeczywista warstwe TLS przed wymiana ramek protokolu.
 - Serwer utrzymuje trwale pliki self-signed (`NET_TLS_CERT_FILE`, `NET_TLS_KEY_FILE`) zamiast generowac nowy certyfikat przy kazdym starcie.
-- Klient moze pinowac fingerprint certyfikatu serwera przez `NET_TLS_PEER_FINGERPRINT`; przy pustej wartosci pierwszy udany handshake zapisuje fingerprint do aktywnego `logger.conf`.
+- Klient TLS wymaga jawnego `NET_TLS_PEER_FINGERPRINT` SHA-256; brak pinu blokuje handshake. Pierwsze połączenie nie zapisuje fingerprintu automatycznie (bez TOFU).
+- Serwer odrzuca start bez silnego `NET_AUTH_TOKEN` lub `NET_SHARED_KEY`; pusty sekret nie uwierzytelnia HELLO.
 - Sesja przechowuje rzeczywisty `station_id` klienta zamiast stalego `"remote"`.
 - Serwer jest uruchamiany w trybie `NET_ROLE=server` przez `net_sync_start()`.
 
@@ -677,11 +683,13 @@ Zrealizowano pelny pakiet 5 etapow wdrozenia technicznego (bez czekania na kroki
   - `RESERVE_SERIAL`
   - `RESERVE_SERIAL_ACK`
   - `COMMIT_SERIAL`
-- W `qso_add_contest_fields(...)` dodano probe centralnej rezerwacji serialu w trybie klienta (`NET_ENABLED=1`, `NET_ROLE=client`) gdy `exchange_sent` jest puste/zerowe.
-- Dodano housekeeping wygasania rezerwacji (`db_sync_expire_serial_reservations()`) wykonywany okresowo w workerze runtime.
+- Klient pobiera pule rezerwacji w workerze, a QSO claimuje numer lokalnie bez operacji sieciowej w UI.
+- Zapis QSO, outbox i zadanie `COMMIT_SERIAL` sa trwale powiazane; commit jest ponawiany po restarcie.
+- Centralny licznik inicjuje się powyżej najwyższego numeru już obecnego w logu.
 
 5. Etap 5: runtime i komendy operatora
-- Dodano cykliczny worker poll w runtime (`app_controller_runtime.inc`) oparty o `NET_SYNC_INTERVAL_MS`.
+- Klient ma cykliczny worker poll poza wątkiem UI, zatrzymywany i dołączany przy shutdown.
+- `NET_ENABLED=1` i `NET_ROLE` z logger.conf są respektowane przy starcie aplikacji.
 - Dodano komendy:
   - `net on`
   - `net off`
@@ -691,6 +699,7 @@ Zrealizowano pelny pakiet 5 etapow wdrozenia technicznego (bez czekania na kroki
 - Komendy `sync` i `syncstatus` pozostaly wspierane.
 - Dodano wsparcie konfiguracyjne dla: `NET_STATION_ID`, `NET_SHARED_KEY`, `NET_HEARTBEAT_SEC`, `NET_RETRY_MIN_MS`, `NET_RETRY_MAX_MS`, `NET_TLS`.
 - Konfiguracja sieci obejmuje tez: `NET_TLS_CERT_FILE`, `NET_TLS_KEY_FILE`, `NET_TLS_PEER_FINGERPRINT`, `NET_RATE_LIMIT_WINDOW_SEC`, `NET_RATE_LIMIT_BURST`, `NET_MAX_FRAME_BYTES`.
+- `multiprocess_sync_tests` uruchamia serwer i dwóch klientów z osobnymi bazami; obejmuje równoległe QSO, outage/reconnect, paginację catch-up, powtórzony APPEND, restart procesów i wspólną numerację.
 
 ## 6.1 Rozszerzenia protokolu
 

@@ -97,6 +97,13 @@ int qso_add_contest_fields(const char *call, int freq_khz, const char *rst,
                            const char *contest_id, int radio_nr, int points,
                            int allow_duplicate_qso,
                            char *status, size_t status_size);
+              int qso_add_contest_fields_with_reservation(
+                const char *call, int freq_khz, const char *rst, const char *mode,
+                const char *comments, const char *exchange_sent,
+                const char *exchange_recv, const char *operator_mode,
+                const char *contest_id, int radio_nr, int points, int allow_duplicate_qso,
+                const char *reservation_id, int commit_remote, char *status,
+                size_t status_size);
 
 /*
  * Toggle the invalid flag for a QSO row.

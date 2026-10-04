@@ -2,14 +2,6 @@
 
 Ten dokument opisuje pola obsługiwane w `logger.conf` oraz klucze dozwolone w plikach definicji zawodów w katalogu `contest_defs/`.
 
-## Uwaga o bieżącym stanie implementacji
-
-W obecnym etapie pracy projekt jest w fazie stabilizacji po dodaniu obsługi VHF/UHF/SHF, exchange `SERIAL_GRID`, `GRID_PER_BAND` i testów dla VHF. W praktyce oznacza to, że:
-
-- niektóre ścieżki logiki VHF są już zaimplementowane, ale wymagają dodatkowego dopracowania i testów regresyjnych,
-- główny nacisk przeniesiono na wykrycie i usunięcie krytycznych problemów w stanie logbooku, pracy sieciowej i bezpieczeństwie buforów,
-- z perspektywy użytkownika definicje zawodów VHF powinny być traktowane jako częściowo aktywne, a nie jako w pełni zakończoną i stabilną funkcjonalność.
-
 ## Format pliku `logger.conf`
 
 - Format: `KLUCZ=WARTOŚĆ`
@@ -88,13 +80,6 @@ Pola `CAT2_*` działają tak samo jak `CAT_*`, ale dotyczą drugiego radia.
 | `CONTEST_DEF_FILE` | ścieżka lub nazwa pliku | `contest.conf` | Definicja zawodów. Może wskazywać plik lokalny albo preset z `contest_defs/`. |
 | `CONTEST_TECHNIQUE` | `SO1R`, `SO2V`, `SO2R` | `SO1R` | Technika operatorska. |
 
-Ważna reguła dla wymiany nadawanej:
-
-- `EXCHANGE_SENT=#` zawsze oznacza numer inkrementowany od `1` w górę.
-- `EXCHANGE_SENT=SERIAL_GRID` (lub `#LOCATOR`) generuje numer i własny lokator sklejone, np. `12JO92DF`.
-- `EXCHANGE_SENT=# LOCATOR` (ze spacją; także `# GRID`, `SERIAL LOCATOR`) generuje numer i lokator rozdzielone spacją, np. `12 JO92DF`.
-- nadawana wymiana jest wyznaczana wyłącznie przez definicję zawodów, bez osobnego nadpisania w `logger.conf`.
-
 ### CW keyer
 
 | Klucz | Typ / wartości | Domyślna wartość | Opis |
@@ -103,6 +88,90 @@ Ważna reguła dla wymiany nadawanej:
 | `CW_KEYER_LINE` | `DTR` lub `RTS` | `DTR` | Linia sterująca używana przez keyer. |
 | `CW_WPM` | liczba całkowita | `20` | Tempo nadawania. Parser ogranicza zakres do `1..60`. Wartość jest natychmiast stosowana po zmianie w głównym interfejsie. |
 | `CW_ESM` | `0` lub `1` | `0` | Włącza Enter Sends Message (ESM) dla CW. Działa wyłącznie pod `Enter` i opiera decyzje na RUN/S&P, aktywnym polu (`Call`/`Exchange`) oraz tym, czy pola `Call` i `Exchange` są puste. |
+
+### Centralny log i synchronizacja
+
+| Klucz | Typ / wartości | Domyślna wartość | Opis |
+| --- | --- | --- | --- |
+| `NET_ENABLED` | `0` lub `1` | `0` | Uruchamia serwer lub okresowego workera klienta. |
+| `NET_ROLE` | `client`, `server` | `client` | Rola tej instancji. |
+| `NET_STATION_ID` | tekst | generowany lokalnie | Stabilna tożsamość stacji; nie kopiuj jej między klientami. |
+| `NET_SHARED_LOG_ID` | `sl-` + 32 małe znaki hex | pusty | Wymagany dla klienta. Serwer tworzy ID w aktywnej bazie i pokazuje je w `net status`; sparuj klienta poleceniem `netsync pair <ID>` przy wyłączonej sieci. |
+| `NET_SERVER_HOST` | nazwa lub adres IP | `127.0.0.1` | Adres serwera dla klienta. |
+| `NET_SERVER_PORT` | `1..65535` | `9230` | Port TCP serwera. |
+| `NET_AUTH_TOKEN` | sekret 32+ znaków | pusty | Wymagany sekret serwera i klienta; serwer nie wystartuje bez silnego tokenu. `NET_SHARED_KEY` jest aliasem zgodności. |
+| `NET_TLS` | `0` lub `1` | `0` | Włącza TLS. Dla klienta wymagany jest wcześniej skonfigurowany fingerprint. |
+| `NET_TLS_CERT_FILE` | ścieżka PEM | `logger_net_cert.pem` | Certyfikat serwera; przy pierwszym starcie może zostać wygenerowany self-signed. |
+| `NET_TLS_KEY_FILE` | ścieżka PEM | `logger_net_key.pem` | Prywatny klucz serwera; ogranicz prawa pliku do operatora. |
+| `NET_TLS_PEER_FINGERPRINT` | SHA-256 z dwukropkami | pusty | Obowiązkowy pin klienta przy `NET_TLS=1`; nie jest akceptowany automatycznie przy pierwszym połączeniu. |
+| `NET_SYNC_INTERVAL_MS` | `100..60000` | `1000` | Odstęp okresowego pollingu klienta. Sesje TCP są krótkie; catch-up może pobrać wiele stron. |
+| `NET_HEARTBEAT_SEC` | `1..300` | `5` | Timeout/heartbeat sesji. |
+| `NET_RETRY_MIN_MS` / `NET_RETRY_MAX_MS` | liczba milisekund | `1000` / `30000` | Zakres retry z backoffem. |
+| `NET_MAX_FRAME_BYTES` | `1024..65536` | `65536` | Limit ramki protokołu. |
+
+Token musi mieć co najmniej 32 znaki, co najmniej trzy klasy znaków i być
+identyczny na serwerze oraz klientach. Wygeneruj go bez spacji/nowej linii, np.:
+
+```bash
+openssl rand -base64 48 | tr -d '\n'
+```
+
+Przykład serwera:
+
+```ini
+NET_ENABLED=1
+NET_ROLE=server
+NET_SERVER_PORT=9230
+NET_AUTH_TOKEN=<wspólny-silny-sekret>
+NET_TLS=1
+NET_TLS_CERT_FILE=/etc/contest-logger/server-cert.pem
+NET_TLS_KEY_FILE=/etc/contest-logger/server-key.pem
+```
+
+Przykład klienta:
+
+```ini
+NET_ENABLED=1
+NET_ROLE=client
+NET_SERVER_HOST=192.0.2.10
+NET_SERVER_PORT=9230
+NET_AUTH_TOKEN=<ten-sam-wspólny-sekret>
+NET_SHARED_LOG_ID=sl-0123456789abcdef0123456789abcdef
+NET_TLS=1
+NET_TLS_PEER_FINGERPRINT=<SHA-256-fingerprint-serwera>
+```
+
+Serwer nie przyjmuje ID z klienta i nie przypisuje ponownie ID istniejącej
+bazie. Klient bez parowania nie wystartuje; brak lub różnica ID w dowolnym
+envelope kończy sesję przed apply, pull/catch-up, rezerwacją lub commit.
+`logbook_id` w operacji jest lokalny: serwer zapisuje APPEND do swojego
+aktywnego logbooka, a klient stosuje catch-up w swoim aktywnym logbooku. Jedna
+instancja serwera obsługuje jeden aktywny wspólny log; dla różnych logów
+uruchamiaj osobne instancje serwera.
+
+Zmiana lub czyszczenie aktywnego logu jest blokowane, gdy `NET_ENABLED=1`.
+Bezpieczny workflow zmiany:
+
+1. `net off` na serwerze i klientach.
+2. Otwórz lub utwórz docelowy log.
+3. Na serwerze wykonaj `net on`; nowa, nieparowana baza dostanie własny ID.
+4. Odczytaj `shared=` z `net status` na serwerze.
+5. Na każdym kliencie wykonaj `netsync pair <shared_log_id>`, potem `net on`.
+
+Nie kopiuj ID z poprzedniego serwerowego pliku do nowego logu. Klient odrzuci
+start, jeśli jego lokalna baza ma inne, już zapisane pairing.
+
+Przy `NET_TLS=1` kompilacja wymaga OpenSSL (`libssl-dev` na Debian/Ubuntu,
+`openssl-devel` na Fedora, `openssl` na Arch). Odczytaj fingerprint serwera
+poza połączeniem aplikacji poleceniem `openssl x509 -in server-cert.pem
+-noout -fingerprint -sha256` i skonfiguruj go na klientach przed startem.
+
+Sterowanie runtime: `net on|off|status`, `net role client|server`,
+`netsync catchup`, `netserver start|stop`. Pasek statusu pokazuje online/offline,
+zaległe i błędne operacje. Dla spójnego backupu zatrzymaj aplikacje i zachowaj
+serwerową bazę SQLite, bazy klientów (outbox/cursor), `logger.conf` oraz
+serwerowy certyfikat i klucz. Szczegóły pinowania i odtwarzania opisuje
+[procedura TLS](self-signed-tls-operacja.md).
 
 ## Przykład `logger.conf`
 
@@ -179,7 +248,20 @@ CW_ESM=1
 | Klucz | Typ / wartości | Domyślna wartość | Opis |
 | --- | --- | --- | --- |
 | `EXCHANGE_SENT` | tekst | `#` | Szablon nadawanej wymiany. `#` zawsze daje rosnący numer `1`, `2`, `3`... |
-| `FIELD` | `NAZWA,ETIETA,required?` | brak | Definicja jednego pola odbieranej wymiany. Można zdefiniować maksymalnie 16 pól. |
+| `FIELD` | `NAZWA,ETYKIETA,required?` | brak | Jedno pole odbieranej wymiany. Powtarzaj klucz, aby zdefiniować do 16 pól. |
+
+Okno konfiguracji zawodów udostępnia osobne ustawienia dla pierwszego pola
+odbieranego (`FIELD`: typ i etykieta) oraz szablonu wymiany nadawanej
+(`EXCHANGE_SENT`). Zmiany zapisują się do pliku definicji. Pozostałe pola
+`FIELD` pozostają zachowane i można je edytować bezpośrednio w pliku.
+
+Szablony wymiany nadawanej:
+
+- `EXCHANGE_SENT=#` generuje kolejny numer, zaczynając od `1`.
+- `EXCHANGE_SENT=SERIAL_GRID` (także `#LOCATOR`) łączy numer z własnym lokatorem, np. `12JO92DF`.
+- `EXCHANGE_SENT=# LOCATOR` (także `# GRID`, `SERIAL LOCATOR`) rozdziela numer i lokator spacją, np. `12 JO92DF`.
+- inne wartości, np. `EXCHANGE_SENT=ITU`, są wysyłane dosłownie.
+- nadawana wymiana pochodzi z definicji zawodów; `logger.conf` nie ma osobnego nadpisania.
 
 Reguły `FIELD`:
 
@@ -187,6 +269,8 @@ Reguły `FIELD`:
 - drugi element to etykieta widoczna w UI, np. `Serial Number`
 - trzeci element jest opcjonalny i oznacza wymagalność
 - jako trzeci element parser rozumie: `required`, `1`, `yes`
+- nazwy zawierające `SERIAL`, `NR`, `NUMBER`, `NUM` lub `ZONE` wymuszają wartość numeryczną
+- inne nazwy, np. `EXCHANGE`, przyjmują wymianę jako tekst i nie sprawdzają jej formatu
 
 Przykłady:
 
@@ -195,10 +279,6 @@ FIELD=SERIAL,Serial Number,required
 FIELD=ITU_ZONE,ITU Zone,required
 FIELD=NAME,Operator Name
 ```
-
-Uwaga praktyczna:
-
-- walidacja numeryczna w UI jest automatycznie stosowana dla nazw pól zawierających m.in. `SERIAL`, `NR`, `NUMBER`, `NUM`, `ZONE`
 
 ### Punktacja i mnożniki
 
@@ -232,6 +312,20 @@ MULTIPLIER=NONE
 FIELD=SERIAL,Serial Number,required
 ```
 
+### WAG: różne formaty wymiany
+
+Stacja spoza Niemiec może nadawać numer kolejny, a odbierać DOK lub numer
+seryjny. Użyj tekstowego typu `EXCHANGE`, aby logger nie wymuszał cyfr:
+
+```ini
+EXCHANGE_SENT=#
+FIELD=EXCHANGE,Rcv Exch,required
+```
+
+W tym ustawieniu można wpisać np. `DOK12`, `NM` albo numer. Program nie
+sprawdza jeszcze, który format powinien nadejść od danego znaku. Mnożnik DOK
+w WAG również nie jest zaimplementowany.
+
 ## Presety dostarczane z programem
 
 W katalogu `contest_defs/` znajdują się gotowe definicje wyprowadzone z oficjalnych plików DXLog.net.
@@ -257,7 +351,7 @@ Każdy plik zawiera komentarze opisujące zasady punktowania i ewentualne ograni
 | `rdxc_cw.conf` | Russian DX CW | `RDXC` | DXCC/band | Uproszczone; oblast nie zaimplementowany |
 | `rdxc_ssb.conf` | Russian DX SSB | `RDXC` | DXCC/band | j.w. |
 | `holyland.conf` | Holyland DX | `HOLYLAND-DX` | DXCC/band | 4X obszary nie zaimplementowane |
-| `wag.conf` | Worked All Germany | `WAG` | DXCC/band | DOK multiplier nie zaimplementowany |
+| `wag.conf` | Worked All Germany | `WAG` | DXCC/band | DOK i numer odbierane jako tekst; mnożnik DOK niezaimplementowany |
 
 ### Zawody krajowe
 
@@ -286,6 +380,7 @@ Niektóre zaawansowane funkcje z definicji DXLog nie są jeszcze obsługiwane:
 ### Konfiguracja zawodów z poziomu UI Qt
 
 - Okno konfiguracji zawodów otworzysz przez `Ctrl+F8` albo `Menu -> Contest Config`.
+- Formularz edytuje typ i etykietę pierwszego pola odbieranego oraz szablon wymiany nadawanej. Dodatkowe pola odbierane edytuje się w pliku definicji.
 - Po zatwierdzeniu formularza aplikacja zapisuje plik definicji zawodów i aktualizuje `logger.conf`.
 - Przeładowanie zawodów odbywa się po zamknięciu okna dialogowego, aby zminimalizować chwilowe zacięcia UI przy większych logach.
 

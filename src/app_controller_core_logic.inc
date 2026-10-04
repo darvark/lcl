@@ -11,6 +11,7 @@ static const ContestFieldDef *active_exchange_field_def(void) {
 }
 
 static int contest_exchange_is_serial_locator(const ContestFieldDef *field);
+static int contest_exchange_uses_serial_counter(void);
 
 static int contest_exchange_is_numeric(const ContestFieldDef *field) {
   if (!field || !field->name[0])
@@ -797,7 +798,8 @@ static int highest_numeric_exchange_sent(void) {
   return max_serial;
 }
 
-static void build_exchange_sent(char *out, size_t out_size) {
+static void build_exchange_sent_with_serial(char *out, size_t out_size,
+                                            int reserved_serial) {
   if (!out || out_size < 2)
     return;
 
@@ -805,7 +807,11 @@ static void build_exchange_sent(char *out, size_t out_size) {
   const char *tpl = active_contest_def.exchange_sent_template;
   if (!tpl || !tpl[0]) {
     const int largest_serial = highest_numeric_exchange_sent();
-    const int next_serial = (qso_count > largest_serial ? qso_count : largest_serial) + 1;
+    const int next_serial = reserved_serial > 0
+                                ? reserved_serial
+                                : (qso_count > largest_serial ? qso_count
+                                                              : largest_serial) +
+                                      1;
     snprintf(out, out_size, "%d", next_serial);
     return;
   }
@@ -825,7 +831,11 @@ static void build_exchange_sent(char *out, size_t out_size) {
 
   if (is_numeric_serial_template || is_spaced_serial_locator_template) {
     const int largest_serial = highest_numeric_exchange_sent();
-    const int next_serial = (qso_count > largest_serial ? qso_count : largest_serial) + 1;
+    const int next_serial = reserved_serial > 0
+                                ? reserved_serial
+                                : (qso_count > largest_serial ? qso_count
+                                                              : largest_serial) +
+                                      1;
     if (is_spaced_serial_locator_template) {
       if (config.locator[0])
         snprintf(out, out_size, "%d %s", next_serial, config.locator);
@@ -853,6 +863,18 @@ static void build_exchange_sent(char *out, size_t out_size) {
   snprintf(out, out_size, "%s", tpl);
 }
 
+static void build_exchange_sent(char *out, size_t out_size) {
+  int reserved_serial = 0;
+  if (config.net_enabled && contest_exchange_uses_serial_counter()) {
+    if (net_sync_peek_serial_reservation(&reserved_serial) != 0) {
+      if (out && out_size > 1)
+        snprintf(out, out_size, "%s", "...");
+      return;
+    }
+  }
+  build_exchange_sent_with_serial(out, out_size, reserved_serial);
+}
+
 static int band_is_vhf_uhf_shf(const char *band) {
   if (!band || !band[0])
     return 0;
@@ -873,7 +895,14 @@ static int contest_uses_locator_exchange(void) {
 
 static int contest_exchange_uses_serial_counter(void) {
   const char *tpl = active_contest_def.exchange_sent_template;
-  return !tpl || !tpl[0] || strcmp(tpl, "#") == 0;
+  return !tpl || !tpl[0] || strcmp(tpl, "#") == 0 ||
+         strcmp(tpl, "SERIAL") == 0 || strcmp(tpl, "SERIAL+LOCATOR") == 0 ||
+         strcmp(tpl, "SERIAL_GRID") == 0 || strcmp(tpl, "#GRID") == 0 ||
+         strcmp(tpl, "#LOCATOR") == 0 || strcmp(tpl, "NR") == 0 ||
+         strcmp(tpl, "# LOCATOR") == 0 || strcmp(tpl, "# GRID") == 0 ||
+         strcmp(tpl, "SERIAL LOCATOR") == 0 ||
+         strcmp(tpl, "SERIAL GRID") == 0 ||
+         strcmp(tpl, "NR LOCATOR") == 0 || strcmp(tpl, "NR GRID") == 0;
 }
 
 static const char *active_operator_mode_text(void) {

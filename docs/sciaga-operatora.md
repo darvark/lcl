@@ -70,6 +70,8 @@ Ważne:
 - raport nadawany ustawia się automatycznie
 - `TX Exchange` jest wyliczane z definicji zawodów
 - `EXCHANGE_SENT=#` zawsze daje `1`, `2`, `3`...
+- typ i etykieta odebranej wymiany pochodzą z pierwszego `FIELD` w definicji zawodów
+- w WAG `FIELD=EXCHANGE,Rcv Exch,required` pozwala wpisać DOK, `NM` lub numer; program nie rozpoznaje formatu na podstawie znaku
 
 ## Ręczne ustawienie częstotliwości
 
@@ -100,7 +102,8 @@ Funkcjonalność sieci z centralnym logiem została usunięta z aktywnej aplikac
 
 - brak CTY: sprawdź `wl_cty.dat`
 - brak CAT: sprawdź `CAT_*` albo `CAT2_*`
-- zła wymiana contestowa: sprawdź `CONTEST_DEF_FILE` i `EXCHANGE_SENT`
+- zła wymiana odebrana: sprawdź typ i etykietę `FIELD` w definicji zawodów
+- zła wymiana nadawana: sprawdź `EXCHANGE_SENT` w definicji zawodów
 - brak CW: sprawdź `CW_DEVICE`, `CW_KEYER_LINE`, `cw_keys.ini`
 
 ## UI pod ręką

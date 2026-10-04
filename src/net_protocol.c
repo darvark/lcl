@@ -1,5 +1,6 @@
 
 #include "net_protocol.h"
+#include "config.h"
 
 #include <arpa/inet.h>
 #include <stdio.h>
@@ -175,11 +176,12 @@ static int net_protocol_wrap(const char *type, const char *station_id,
 
   const char *sid = station_id ? station_id : "";
   const char *token = auth_token ? auth_token : "";
+  const char *shared_log_id = config.net_shared_log_id;
 
   int n = snprintf(out, out_size,
-                   "{\"protocol_ver\":%d,\"protocol_version\":%d,\"msg_id\":\"%s\",\"type\":\"%s\",\"station_id\":\"%s\",\"auth_token\":\"%s\",\"payload\":%s}",
+                   "{\"protocol_ver\":%d,\"protocol_version\":%d,\"msg_id\":\"%s\",\"type\":\"%s\",\"station_id\":\"%s\",\"auth_token\":\"%s\",\"shared_log_id\":\"%s\",\"payload\":%s}",
                    NET_PROTOCOL_VERSION, NET_PROTOCOL_VERSION, msg_id, type,
-                   sid, token, payload_json);
+                   sid, token, shared_log_id, payload_json);
   return (n > 0 && (size_t)n < out_size) ? 0 : -1;
 }
 
@@ -569,6 +571,8 @@ int net_protocol_parse_station_meta(const char *frame, NetSessionMeta *out) {
                         sizeof(out->station_id));
   (void)json_get_string(frame, "auth_token", out->auth_token,
                         sizeof(out->auth_token));
+  (void)json_get_string(frame, "shared_log_id", out->shared_log_id,
+                        sizeof(out->shared_log_id));
   return 0;
 }
 
@@ -576,18 +580,46 @@ int net_protocol_parse_hello_meta(const char *frame, NetSessionMeta *out) {
   return net_protocol_parse_station_meta(frame, out);
 }
 
+int net_protocol_validate_shared_log_id(const char *frame,
+                                        const char *expected_shared_log_id) {
+  if (!frame || !expected_shared_log_id ||
+      !db_sync_validate_shared_log_id(expected_shared_log_id))
+    return -1;
+  char actual_shared_log_id[36] = {0};
+  if (json_get_string(frame, "shared_log_id", actual_shared_log_id,
+                      sizeof(actual_shared_log_id)) != 0 ||
+      !db_sync_validate_shared_log_id(actual_shared_log_id))
+    return -1;
+  return strcmp(actual_shared_log_id, expected_shared_log_id) == 0 ? 0 : -1;
+}
+
 int net_protocol_parse_hello_ack(const char *frame, int *out_accepted,
-                                 long long *out_server_global_seq) {
-  if (!frame || !out_accepted || !out_server_global_seq)
+                                 long long *out_next_expected_station_seq,
+                                 long long *out_server_global_seq,
+                                 char *out_shared_log_id,
+                                 size_t out_shared_log_id_size) {
+  if (!frame || !out_accepted || !out_next_expected_station_seq ||
+      !out_server_global_seq || !out_shared_log_id ||
+      out_shared_log_id_size < 36)
     return -1;
 
   int accepted = 0;
+  long long next_expected_seq = 0;
   long long server_seq = 0;
 
-  (void)json_get_bool(frame, "accepted", &accepted);
-  (void)json_get_i64(frame, "server_global_seq", &server_seq);
+  if (json_get_bool(frame, "accepted", &accepted) != 0 ||
+      json_get_i64(frame, "next_expected_station_seq", &next_expected_seq) !=
+          0 ||
+      json_get_i64(frame, "server_global_seq", &server_seq) != 0 ||
+      json_get_string(frame, "shared_log_id", out_shared_log_id,
+                      out_shared_log_id_size) != 0 ||
+      next_expected_seq < 1 || server_seq < 0)
+    return -1;
+  if (!db_sync_validate_shared_log_id(out_shared_log_id))
+    return -1;
 
   *out_accepted = accepted;
+  *out_next_expected_station_seq = next_expected_seq;
   *out_server_global_seq = server_seq;
   return 0;
 }
@@ -676,14 +708,20 @@ int net_protocol_parse_append_ops(const char *frame, NetAppendOp *out,
 
 int net_protocol_parse_pull_ops_resp(const char *frame, SyncLogOpEntry *out,
                                      int max_items, int *out_count,
-                                     long long *out_last_global_seq) {
-  if (!frame || !out || max_items <= 0 || !out_count || !out_last_global_seq)
+                                     long long *out_last_global_seq,
+                                     int *out_has_more) {
+  if (!frame || !out || max_items <= 0 || !out_count ||
+      !out_last_global_seq || !out_has_more)
     return -1;
 
   *out_count = 0;
   *out_last_global_seq = 0;
+  *out_has_more = 0;
 
-  (void)json_get_i64(frame, "last_global_seq", out_last_global_seq);
+  if (json_get_i64(frame, "last_global_seq", out_last_global_seq) != 0 ||
+      *out_last_global_seq < 0 ||
+      json_get_bool(frame, "has_more", out_has_more) != 0)
+    return -1;
 
   const char *start = NULL;
   const char *end = NULL;
@@ -701,17 +739,20 @@ int net_protocol_parse_pull_ops_resp(const char *frame, SyncLogOpEntry *out,
     memset(dst, 0, sizeof(*dst));
 
     long long logbook_id = 0;
-    (void)json_get_i64(obj, "global_seq", &dst->global_seq);
-    (void)json_get_string(obj, "op_id", dst->op_id, sizeof(dst->op_id));
-    (void)json_get_string(obj, "station_id", dst->station_id,
-                          sizeof(dst->station_id));
-    (void)json_get_i64(obj, "station_seq", &dst->station_seq);
-    if (json_get_i64(obj, "logbook_id", &logbook_id) != 0 || logbook_id <= 0)
-      continue;
-    (void)json_get_string(obj, "op_type", dst->op_type, sizeof(dst->op_type));
-    (void)json_get_string(obj, "entity_id", dst->entity_id,
-                          sizeof(dst->entity_id));
-    (void)json_get_string(obj, "op_utc", dst->op_utc, sizeof(dst->op_utc));
+    if (json_get_i64(obj, "global_seq", &dst->global_seq) != 0 ||
+        dst->global_seq <= 0 ||
+        json_get_string(obj, "op_id", dst->op_id, sizeof(dst->op_id)) != 0 ||
+        json_get_string(obj, "station_id", dst->station_id,
+                        sizeof(dst->station_id)) != 0 ||
+        json_get_i64(obj, "station_seq", &dst->station_seq) != 0 ||
+        dst->station_seq <= 0 ||
+        json_get_i64(obj, "logbook_id", &logbook_id) != 0 || logbook_id <= 0 ||
+        json_get_string(obj, "op_type", dst->op_type,
+                        sizeof(dst->op_type)) != 0 ||
+        json_get_string(obj, "entity_id", dst->entity_id,
+                        sizeof(dst->entity_id)) != 0 ||
+        json_get_string(obj, "op_utc", dst->op_utc, sizeof(dst->op_utc)) != 0)
+      return -1;
     dst->logbook_id = (int)logbook_id;
 
     const char *payload = strstr(obj, "\"payload\":");
@@ -741,9 +782,20 @@ int net_protocol_parse_pull_ops_resp(const char *frame, SyncLogOpEntry *out,
       }
     }
 
-    if (dst->op_id[0])
-      count++;
+    if (!dst->payload_json[0])
+      snprintf(dst->payload_json, sizeof(dst->payload_json), "{}");
+    if (count > 0 && dst->global_seq <= out[count - 1].global_seq)
+      return -1;
+    count++;
   }
+
+  const char *remaining = cursor;
+  while (remaining < end && (*remaining == ',' || *remaining == ' ' ||
+                             *remaining == '\t' || *remaining == '\r' ||
+                             *remaining == '\n'))
+    remaining++;
+  if (remaining < end)
+    return -1;
 
   *out_count = count;
   return 0;
@@ -755,29 +807,40 @@ int net_protocol_parse_op_broadcast(const char *frame, SyncLogOpEntry *out) {
 
   memset(out, 0, sizeof(*out));
 
+  const char *payload_cursor = strstr(frame, "\"payload\":");
+  if (!payload_cursor)
+    return -1;
+  payload_cursor += strlen("\"payload\":");
+  char payload_obj[4096] = {0};
+  if (extract_object(&payload_cursor, frame + strlen(frame), payload_obj,
+                     sizeof(payload_obj)) != 0)
+    return -1;
+
   long long logbook_id = 0;
-  if (json_get_obj_i64(frame, "global_seq", &out->global_seq) != 0)
+  if (json_get_obj_i64(payload_obj, "global_seq", &out->global_seq) != 0)
     return -1;
-  if (json_get_string(frame, "op_id", out->op_id, sizeof(out->op_id)) != 0)
+  if (json_get_string(payload_obj, "op_id", out->op_id, sizeof(out->op_id)) !=
+      0)
     return -1;
-  if (json_get_string(frame, "station_id", out->station_id,
+  if (json_get_string(payload_obj, "station_id", out->station_id,
                       sizeof(out->station_id)) != 0)
     return -1;
-  if (json_get_obj_i64(frame, "station_seq", &out->station_seq) != 0)
+  if (json_get_obj_i64(payload_obj, "station_seq", &out->station_seq) != 0)
     return -1;
-  if (json_get_obj_i64(frame, "logbook_id", &logbook_id) != 0 ||
+  if (json_get_obj_i64(payload_obj, "logbook_id", &logbook_id) != 0 ||
       logbook_id <= 0)
     return -1;
   out->logbook_id = (int)logbook_id;
-  if (json_get_string(frame, "op_type", out->op_type, sizeof(out->op_type)) !=
-      0)
+  if (json_get_string(payload_obj, "op_type", out->op_type,
+                      sizeof(out->op_type)) != 0)
     return -1;
-  if (json_get_string(frame, "entity_id", out->entity_id,
+  if (json_get_string(payload_obj, "entity_id", out->entity_id,
                       sizeof(out->entity_id)) != 0)
     return -1;
-  (void)json_get_string(frame, "op_utc", out->op_utc, sizeof(out->op_utc));
+  (void)json_get_string(payload_obj, "op_utc", out->op_utc,
+                        sizeof(out->op_utc));
 
-  const char *payload = strstr(frame, "\"payload\":");
+  const char *payload = strstr(payload_obj, "\"payload\":");
   if (payload) {
     payload += strlen("\"payload\":");
     while (*payload == ' ' || *payload == '\t')

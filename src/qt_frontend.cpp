@@ -68,6 +68,7 @@ extern "C" {
 #include "db.h"
 #include "dxcluster.h"
 #include "globals.h"
+#include "net_sync.h"
 #include "qso.h"
 #include "qtc.h"
 #include "stats.h"

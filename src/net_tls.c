@@ -8,6 +8,15 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+static void ignore_sigpipe_once(void) {
+  static int initialized = 0;
+  if (initialized)
+    return;
+
+  signal(SIGPIPE, SIG_IGN);
+  initialized = 1;
+}
+
 #ifdef HAVE_OPENSSL
 #include <openssl/bn.h>
 #include <openssl/err.h>
@@ -16,16 +25,6 @@
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
 #include <openssl/pem.h>
-
-static void ignore_sigpipe_once(void) {
-  static int initialized = 0;
-  if (initialized)
-    return;
-
-    signal(SIGPIPE, SIG_IGN);
-
-  initialized = 1;
-}
 
 static void set_ssl_error(char *error_text, size_t error_size,
                           const char *prefix) {

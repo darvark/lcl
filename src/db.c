@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <pthread.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -48,6 +49,9 @@ static char pending_logbook_name[64] = "GeneralLog";
 static int db_initialized = 0;
 static int db_is_default_path = 1;
 static int db_bootstrap_import_done = 0;
+static pthread_mutex_t db_operation_mutex;
+static pthread_once_t db_operation_mutex_once = PTHREAD_ONCE_INIT;
+static _Thread_local int db_transaction_lock_depth = 0;
 
 #define DB_SYNC_MAX_RETRY 6
 
@@ -105,6 +109,32 @@ static int sync_qso_upsert_from_payload(const char *op_id,
                                         int logbook_id,
                                         const char *payload_json,
                                         int *out_changed);
+
+static void db_operation_mutex_init(void) {
+  pthread_mutexattr_t attr;
+  pthread_mutexattr_init(&attr);
+  pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+  pthread_mutex_init(&db_operation_mutex, &attr);
+  pthread_mutexattr_destroy(&attr);
+}
+
+static void db_operation_lock(void) {
+  pthread_once(&db_operation_mutex_once, db_operation_mutex_init);
+  pthread_mutex_lock(&db_operation_mutex);
+}
+
+static void db_operation_unlock(void) {
+  pthread_mutex_unlock(&db_operation_mutex);
+}
+
+static int db_sqlite_step_locked(sqlite3_stmt *stmt) {
+  db_operation_lock();
+  int rc = sqlite3_step(stmt);
+  db_operation_unlock();
+  return rc;
+}
+
+#define sqlite3_step db_sqlite_step_locked
 
 /*
  * Bind a text value or SQL NULL-equivalent empty string.
@@ -422,8 +452,8 @@ static int list_log_db_files(char paths[][512], char names[][64],
   return 0;
 }
 
-static int switch_to_db_file(const char *path, const char *log_name,
-                             int remember_previous) {
+static int switch_to_db_file_impl(const char *path, const char *log_name,
+                                  int remember_previous) {
   if (!path || !path[0])
     return -1;
 
@@ -482,7 +512,17 @@ static int switch_to_db_file(const char *path, const char *log_name,
   return 0;
 }
 
-static int switch_to_named_log(const char *name, int fail_if_exists) {
+static int switch_to_db_file(const char *path, const char *log_name,
+                             int remember_previous) {
+  if (config.net_enabled)
+    return DB_ERR_LOG_CHANGE_WHILE_NET_ACTIVE;
+  db_operation_lock();
+  int rc = switch_to_db_file_impl(path, log_name, remember_previous);
+  db_operation_unlock();
+  return rc;
+}
+
+static int switch_to_named_log_impl(const char *name, int fail_if_exists) {
   char db_file[512] = {0};
   char safe_name[64] = {0};
 
@@ -500,6 +540,13 @@ static int switch_to_named_log(const char *name, int fail_if_exists) {
     return -1;
 
   return switch_to_db_file(db_file, safe_name, 1);
+}
+
+static int switch_to_named_log(const char *name, int fail_if_exists) {
+  db_operation_lock();
+  int rc = switch_to_named_log_impl(name, fail_if_exists);
+  db_operation_unlock();
+  return rc;
 }
 
 /*
@@ -534,6 +581,24 @@ static int sync_generate_hex_token(int bytes, char *out, size_t out_size) {
 
   sqlite3_finalize(stmt);
   return rc;
+}
+
+static int sync_shared_log_id_is_valid(const char *shared_log_id) {
+  if (!shared_log_id || strlen(shared_log_id) != 35 ||
+      strncmp(shared_log_id, "sl-", 3) != 0)
+    return 0;
+
+  for (size_t i = 3; i < 35; i++) {
+    const char ch = shared_log_id[i];
+    if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')))
+      return 0;
+  }
+
+  return 1;
+}
+
+int db_sync_validate_shared_log_id(const char *shared_log_id) {
+  return sync_shared_log_id_is_valid(shared_log_id);
 }
 
 /*
@@ -1149,10 +1214,35 @@ static int ensure_logbook_context(void) {
  * @return SQLite status code.
  */
 static int exec_sql(const char *sql) {
+  if (!sql)
+    return -1;
+
+  const char *command = sql;
+  while (*command == ' ' || *command == '\t' || *command == '\r' ||
+         *command == '\n')
+    command++;
+  int begins_transaction = strncmp(command, "BEGIN", 5) == 0;
+  int ends_transaction = strncmp(command, "COMMIT", 6) == 0 ||
+                         strncmp(command, "ROLLBACK", 8) == 0;
+  if (begins_transaction) {
+    db_operation_lock();
+    db_transaction_lock_depth++;
+  }
+  db_operation_lock();
   char *err = NULL;
   int rc = sqlite3_exec(db, sql, NULL, NULL, &err);
   if (err) {
     sqlite3_free(err);
+  }
+  db_operation_unlock();
+
+  if (begins_transaction && rc != SQLITE_OK) {
+    db_transaction_lock_depth--;
+    db_operation_unlock();
+  } else if (ends_transaction && rc == SQLITE_OK &&
+             db_transaction_lock_depth > 0) {
+    db_transaction_lock_depth--;
+    db_operation_unlock();
   }
   return rc;
 }
@@ -1361,6 +1451,7 @@ static int ensure_open(void) {
               "station_id TEXT NOT NULL,"
               "station_name TEXT NOT NULL DEFAULT '',"
               "role TEXT NOT NULL DEFAULT 'client',"
+              "shared_log_id TEXT NOT NULL DEFAULT '',"
               "created_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP"
               ");") != SQLITE_OK)
             return -1;
@@ -1370,7 +1461,8 @@ static int ensure_open(void) {
               "id INTEGER PRIMARY KEY CHECK (id = 1),"
               "last_pulled_global_seq INTEGER NOT NULL DEFAULT 0,"
               "last_acked_local_seq INTEGER NOT NULL DEFAULT 0,"
-              "last_server_epoch TEXT NOT NULL DEFAULT ''"
+              "last_server_epoch TEXT NOT NULL DEFAULT '',"
+              "pending_serial_request_id TEXT NOT NULL DEFAULT ''"
               ");") != SQLITE_OK)
             return -1;
 
@@ -1416,6 +1508,7 @@ static int ensure_open(void) {
           if (exec_sql(
               "CREATE TABLE IF NOT EXISTS serial_reservations ("
               "reservation_id TEXT PRIMARY KEY,"
+              "request_id TEXT NOT NULL DEFAULT '',"
               "logbook_id INTEGER NOT NULL,"
               "station_id TEXT NOT NULL,"
               "reserved_serial INTEGER NOT NULL,"
@@ -1426,6 +1519,20 @@ static int ensure_open(void) {
               "consumed_qso_uid TEXT NOT NULL DEFAULT ''"
               ");") != SQLITE_OK)
             return -1;
+
+  if (!table_has_column("sync_cursors", "pending_serial_request_id")) {
+    if (exec_sql_checked("ALTER TABLE sync_cursors ADD COLUMN pending_serial_request_id TEXT NOT NULL DEFAULT '';"))
+      return -1;
+  }
+
+  if (!table_has_column("serial_reservations", "request_id")) {
+    if (exec_sql_checked("ALTER TABLE serial_reservations ADD COLUMN request_id TEXT NOT NULL DEFAULT '';"))
+      return -1;
+  }
+  if (exec_sql_checked(
+          "UPDATE serial_reservations SET request_id = substr(reservation_id, 5) "
+          "WHERE request_id = '' AND reservation_id LIKE 'rsv-%';") != 0)
+    return -1;
 
   if (exec_sql(
           "CREATE TABLE IF NOT EXISTS previous_qso ("
@@ -1530,6 +1637,11 @@ static int ensure_open(void) {
       return -1;
   }
 
+  if (!table_has_column("sync_identity", "shared_log_id")) {
+    if (exec_sql_checked("ALTER TABLE sync_identity ADD COLUMN shared_log_id TEXT NOT NULL DEFAULT '';") != 0)
+      return -1;
+  }
+
   if (!table_has_column("qso", "qso_uid")) {
     if (exec_sql_checked("ALTER TABLE qso ADD COLUMN qso_uid TEXT NOT NULL DEFAULT '';") != 0)
       return -1;
@@ -1608,14 +1720,27 @@ static int ensure_open(void) {
   if (ensure_logbook_context() != 0)
     return -1;
 
-  exec_sql_checked("CREATE UNIQUE INDEX IF NOT EXISTS idx_qso_qso_uid ON qso(qso_uid);");
+  if (exec_sql_checked("UPDATE qso SET qso_uid = 'legacy-' || id WHERE qso_uid = '';") != 0)
+    return -1;
+  if (exec_sql_checked("CREATE UNIQUE INDEX IF NOT EXISTS idx_qso_qso_uid ON qso(qso_uid);") != 0)
+    return -1;
   exec_sql_checked("CREATE INDEX IF NOT EXISTS idx_qso_origin_station ON qso(origin_station_id, origin_station_seq);");
   exec_sql_checked("CREATE INDEX IF NOT EXISTS idx_qso_last_modified ON qso(last_modified_utc);");
   exec_sql_checked("CREATE INDEX IF NOT EXISTS idx_log_outbox_status_retry ON log_outbox(status, next_retry_utc);");
+  if (exec_sql_checked("CREATE UNIQUE INDEX IF NOT EXISTS idx_log_outbox_op_id_unique ON log_outbox(op_id);") != 0)
+    return -1;
+  if (exec_sql_checked("CREATE UNIQUE INDEX IF NOT EXISTS idx_log_outbox_station_seq_unique ON log_outbox(station_seq);") != 0)
+    return -1;
   exec_sql_checked("CREATE INDEX IF NOT EXISTS idx_log_ops_station_seq ON log_ops(station_id, station_seq);");
+  if (exec_sql_checked("CREATE UNIQUE INDEX IF NOT EXISTS idx_log_ops_op_id_unique ON log_ops(op_id);") != 0)
+    return -1;
   if (exec_sql_checked("CREATE UNIQUE INDEX IF NOT EXISTS idx_log_ops_station_seq_unique ON log_ops(station_id, station_seq);") != 0)
     return -1;
   exec_sql_checked("CREATE INDEX IF NOT EXISTS idx_serial_reservations_lookup ON serial_reservations(logbook_id, station_id, status);");
+  if (exec_sql_checked(
+          "CREATE UNIQUE INDEX IF NOT EXISTS idx_serial_reservations_request_unique "
+          "ON serial_reservations(station_id, request_id) WHERE request_id != '';") != 0)
+    return -1;
 
   if (exec_sql_checked(
           "INSERT OR IGNORE INTO sync_cursors (id, last_pulled_global_seq, last_acked_local_seq, last_server_epoch) "
@@ -1726,7 +1851,7 @@ static int meta_set_int(const char *key, int value) {
  *
  * @return Nothing.
  */
-void db_shutdown(void) {
+static void db_shutdown_impl(void) {
   if (db) {
     sqlite3_close(db);
     db = NULL;
@@ -1740,12 +1865,18 @@ void db_shutdown(void) {
   db_bootstrap_import_done = 0;
 }
 
+void db_shutdown(void) {
+  db_operation_lock();
+  db_shutdown_impl();
+  db_operation_unlock();
+}
+
 /*
  * Initialize the database layer and open the SQLite database.
  *
  * @return 0 on success, or -1 on failure.
  */
-int db_init(void) {
+static int db_init_impl(void) {
   const char *env_path = getenv("LOGGER_DB_PATH");
   const char *target_path = env_path && env_path[0] ? env_path : db_path[0] ? db_path : NULL;
 
@@ -1775,6 +1906,13 @@ int db_init(void) {
 
   db_initialized = 1;
   return 0;
+}
+
+int db_init(void) {
+  db_operation_lock();
+  int rc = db_init_impl();
+  db_operation_unlock();
+  return rc;
 }
 
 /*
@@ -1883,7 +2021,7 @@ int db_load_qsos(QSO *logbook, int max_qso, long long *ids, int *out_count) {
  * @param out_id Optional destination for the inserted row id.
  * @return 0 on success, or -1 on failure.
  */
-int db_insert_qso(const QSO *qso, long long *out_id) {
+static int db_insert_qso_impl(QSO *qso, long long *out_id) {
   if (out_id)
     *out_id = 0;
 
@@ -1904,9 +2042,12 @@ int db_insert_qso(const QSO *qso, long long *out_id) {
     return -1;
   }
 
+  if (exec_sql_checked("BEGIN IMMEDIATE;") != 0)
+    return -1;
+
   long long station_seq = qso->origin_station_seq;
   if (station_seq <= 0 && db_sync_next_station_seq(&station_seq) != 0)
-    return -1;
+    goto rollback;
 
   int version = qso->version > 0 ? qso->version : 1;
 
@@ -1922,7 +2063,7 @@ int db_insert_qso(const QSO *qso, long long *out_id) {
   } else {
     char uid_token[25] = {0};
     if (sync_generate_hex_token(12, uid_token, sizeof(uid_token)) != 0)
-      return -1;
+      goto rollback;
     char short_station[9] = {0};
     size_t sid_len = strlen(station_id);
     const char *tail = sid_len > 8 ? station_id + sid_len - 8 : station_id;
@@ -1933,7 +2074,7 @@ int db_insert_qso(const QSO *qso, long long *out_id) {
   char op_id[96] = {0};
   char op_token[17] = {0};
   if (sync_generate_hex_token(8, op_token, sizeof(op_token)) != 0)
-    return -1;
+    goto rollback;
   snprintf(op_id, sizeof(op_id), "op-%s-%lld-%s", station_id, station_seq,
            op_token);
 
@@ -1941,7 +2082,7 @@ int db_insert_qso(const QSO *qso, long long *out_id) {
   if (prepare_stmt(&stmt,
                    "INSERT INTO qso (logbook_id,qso_uid,origin_station_id,origin_station_seq,last_op_id,last_modified_utc,version,date,utc,call,freq,band,mode,rst,comments,exchange_sent,exchange_recv,operator_mode,contest_id,radio_nr,points,country,cq_zone,itu_zone,invalid) "
                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);") != SQLITE_OK)
-    return -1;
+    goto rollback;
 
   sqlite3_bind_int(stmt, 1, logbook_id);
   sqlite3_bind_text(stmt, 2, qso_uid, -1, SQLITE_TRANSIENT);
@@ -1972,27 +2113,46 @@ int db_insert_qso(const QSO *qso, long long *out_id) {
   int rc = sqlite3_step(stmt);
   if (rc != SQLITE_DONE) {
     sqlite3_finalize(stmt);
-    return -1;
+    goto rollback;
   }
 
-  if (out_id)
-    *out_id = sqlite3_last_insert_rowid(db);
+  long long inserted_id = sqlite3_last_insert_rowid(db);
 
   sqlite3_finalize(stmt);
 
   char payload[2048] = {0};
-  if (out_id && *out_id > 0)
-    (void)sync_build_qso_payload_from_row(*out_id, logbook_id, payload,
-                                          sizeof(payload));
-  if (!payload[0]) {
-    snprintf(payload, sizeof(payload),
-             "{\"kind\":\"qso_full\",\"qso_uid\":\"%s\",\"version\":%d}",
-             qso_uid, version);
-  }
-  (void)db_sync_outbox_enqueue(op_id, station_seq, logbook_id, "QSO_INSERT",
-                               qso_uid, payload, modified_utc);
+  if (sync_build_qso_payload_from_row(inserted_id, logbook_id, payload,
+                                      sizeof(payload)) != 0 || !payload[0])
+    goto rollback;
+  if (db_sync_outbox_enqueue(op_id, station_seq, logbook_id, "QSO_INSERT",
+                             qso_uid, payload, modified_utc) != 0)
+    goto rollback;
+  if (exec_sql_checked("COMMIT;") != 0)
+    goto rollback;
+
+  if (out_id)
+    *out_id = inserted_id;
+  snprintf(qso->origin_station_id, sizeof(qso->origin_station_id), "%s",
+           station_id);
+  qso->origin_station_seq = station_seq;
+  snprintf(qso->qso_uid, sizeof(qso->qso_uid), "%s", qso_uid);
+  snprintf(qso->last_modified_utc, sizeof(qso->last_modified_utc), "%s",
+           modified_utc);
+  qso->version = version;
+  qso->db_id = inserted_id;
 
   return 0;
+
+rollback:
+  (void)exec_sql_checked("ROLLBACK;");
+  return -1;
+}
+
+int db_insert_qso(QSO *qso, long long *out_id) {
+  db_operation_lock();
+  int rc = db_insert_qso_impl(qso, out_id);
+  db_operation_unlock();
+  return rc;
 }
 
 /*
@@ -2002,7 +2162,7 @@ int db_insert_qso(const QSO *qso, long long *out_id) {
  * @param invalid Nonzero marks the row invalid.
  * @return 0 on success, or -1 on failure.
  */
-int db_update_qso_invalid(long long id, int invalid) {
+static int db_update_qso_invalid_impl(long long id, int invalid) {
   if (id <= 0)
     return -1;
 
@@ -2021,13 +2181,16 @@ int db_update_qso_invalid(long long id, int invalid) {
   if (db_sync_get_or_create_station_id(station_id, sizeof(station_id)) != 0)
     return -1;
 
+  if (exec_sql_checked("BEGIN IMMEDIATE;") != 0)
+    return -1;
+
   long long station_seq = 0;
   if (db_sync_next_station_seq(&station_seq) != 0)
-    return -1;
+    goto invalid_rollback;
 
   char op_token[17] = {0};
   if (sync_generate_hex_token(8, op_token, sizeof(op_token)) != 0)
-    return -1;
+    goto invalid_rollback;
   snprintf(op_id, sizeof(op_id), "op-%s-%lld-%s", station_id, station_seq,
            op_token);
 
@@ -2035,7 +2198,7 @@ int db_update_qso_invalid(long long id, int invalid) {
   if (prepare_stmt(&stmt,
                    "UPDATE qso SET invalid = ?, version = version + 1, last_modified_utc = ?, last_op_id = ? WHERE id = ? AND logbook_id = ?;") !=
       SQLITE_OK)
-    return -1;
+    goto invalid_rollback;
 
   sqlite3_bind_int(stmt, 1, invalid ? 1 : 0);
   sqlite3_bind_text(stmt, 2, modified_utc, -1, SQLITE_TRANSIENT);
@@ -2046,36 +2209,42 @@ int db_update_qso_invalid(long long id, int invalid) {
   int rc = sqlite3_step(stmt);
   sqlite3_finalize(stmt);
 
-  if (rc == SQLITE_DONE) {
-    char qso_uid[40] = {0};
-    char origin_station_id[32] = {0};
-    long long origin_seq = 0;
-    int version = 0;
-    if (sync_fetch_qso_meta(id, logbook_id, qso_uid, sizeof(qso_uid),
-                            origin_station_id, sizeof(origin_station_id),
-                            &origin_seq, &version) == 0) {
-      char payload[2048] = {0};
-      (void)sync_build_qso_payload_from_row(id, logbook_id, payload,
-                                            sizeof(payload));
-      if (!payload[0]) {
-        snprintf(payload, sizeof(payload),
-                 "{\"kind\":\"qso_full\",\"qso_uid\":\"%s\",\"invalid\":%s,\"version\":%d}",
-                 qso_uid, invalid ? "true" : "false", version);
-      }
-      (void)db_sync_outbox_enqueue(op_id, station_seq, logbook_id,
-                                   "QSO_INVALID", qso_uid, payload,
-                                   modified_utc);
-    }
-  }
+  if (rc != SQLITE_DONE)
+    goto invalid_rollback;
 
-  return rc == SQLITE_DONE ? 0 : -1;
+  char qso_uid[40] = {0};
+  char origin_station_id[32] = {0};
+  long long origin_seq = 0;
+  int version = 0;
+  char payload[2048] = {0};
+  if (sync_fetch_qso_meta(id, logbook_id, qso_uid, sizeof(qso_uid),
+                          origin_station_id, sizeof(origin_station_id),
+                          &origin_seq, &version) != 0 || !qso_uid[0] ||
+      sync_build_qso_payload_from_row(id, logbook_id, payload,
+                                      sizeof(payload)) != 0 || !payload[0] ||
+      db_sync_outbox_enqueue(op_id, station_seq, logbook_id, "QSO_INVALID",
+                             qso_uid, payload, modified_utc) != 0 ||
+      exec_sql_checked("COMMIT;") != 0)
+    goto invalid_rollback;
+
+  return 0;
+
+invalid_rollback:
+  (void)exec_sql_checked("ROLLBACK;");
+  return -1;
 }
 
-int db_update_qso_contest_fields(long long id, const char *exchange_sent,
-                                 const char *exchange_recv,
-                                 const char *operator_mode,
-                                 const char *contest_id, int radio_nr,
-                                 int points) {
+int db_update_qso_invalid(long long id, int invalid) {
+  db_operation_lock();
+  int rc = db_update_qso_invalid_impl(id, invalid);
+  db_operation_unlock();
+  return rc;
+}
+
+static int db_update_qso_contest_fields_with_reservation_impl(
+  long long id, const char *exchange_sent, const char *exchange_recv,
+  const char *operator_mode, const char *contest_id, int radio_nr,
+  int points, const char *reservation_id, int commit_remote) {
   if (id <= 0)
     return -1;
 
@@ -2093,14 +2262,17 @@ int db_update_qso_contest_fields(long long id, const char *exchange_sent,
   if (db_sync_get_or_create_station_id(station_id, sizeof(station_id)) != 0)
     return -1;
 
+  if (exec_sql_checked("BEGIN IMMEDIATE;") != 0)
+    return -1;
+
   long long station_seq = 0;
   if (db_sync_next_station_seq(&station_seq) != 0)
-    return -1;
+    goto contest_rollback;
 
   char op_id[96] = {0};
   char op_token[17] = {0};
   if (sync_generate_hex_token(8, op_token, sizeof(op_token)) != 0)
-    return -1;
+    goto contest_rollback;
   snprintf(op_id, sizeof(op_id), "op-%s-%lld-%s", station_id, station_seq,
            op_token);
 
@@ -2113,7 +2285,7 @@ int db_update_qso_contest_fields(long long id, const char *exchange_sent,
   if (prepare_stmt(&stmt,
                    "UPDATE qso SET exchange_sent = ?, exchange_recv = ?, operator_mode = ?, contest_id = ?, radio_nr = ?, points = ?, version = version + 1, last_modified_utc = ?, last_op_id = ? WHERE id = ? AND logbook_id = ?;") !=
       SQLITE_OK)
-    return -1;
+    goto contest_rollback;
 
   sqlite3_bind_text(stmt, 1, exchange_sent ? exchange_sent : "", -1,
                     SQLITE_TRANSIENT);
@@ -2133,29 +2305,74 @@ int db_update_qso_contest_fields(long long id, const char *exchange_sent,
   int rc = sqlite3_step(stmt);
   sqlite3_finalize(stmt);
 
-  if (rc == SQLITE_DONE) {
-    char qso_uid[40] = {0};
-    char origin_station_id[32] = {0};
-    long long origin_seq = 0;
-    int version = 0;
-    if (sync_fetch_qso_meta(id, logbook_id, qso_uid, sizeof(qso_uid),
-                            origin_station_id, sizeof(origin_station_id),
-                            &origin_seq, &version) == 0) {
-      char payload[2048] = {0};
-      (void)sync_build_qso_payload_from_row(id, logbook_id, payload,
-                                            sizeof(payload));
-      if (!payload[0]) {
-        snprintf(payload, sizeof(payload),
-                 "{\"kind\":\"qso_full\",\"qso_uid\":\"%s\",\"version\":%d,\"radio_nr\":%d,\"points\":%d}",
-                 qso_uid, version, radio_nr, points);
-      }
-      (void)db_sync_outbox_enqueue(op_id, station_seq, logbook_id,
-                                   "QSO_CONTEST", qso_uid, payload,
-                                   modified_utc);
-    }
+  if (rc != SQLITE_DONE)
+    goto contest_rollback;
+
+  char qso_uid[40] = {0};
+  char origin_station_id[32] = {0};
+  long long origin_seq = 0;
+  int version = 0;
+  char payload[2048] = {0};
+  if (sync_fetch_qso_meta(id, logbook_id, qso_uid, sizeof(qso_uid),
+                          origin_station_id, sizeof(origin_station_id),
+                          &origin_seq, &version) != 0 || !qso_uid[0] ||
+      sync_build_qso_payload_from_row(id, logbook_id, payload,
+                                      sizeof(payload)) != 0 || !payload[0] ||
+      db_sync_outbox_enqueue(op_id, station_seq, logbook_id, "QSO_CONTEST",
+                             qso_uid, payload, modified_utc) != 0)
+    goto contest_rollback;
+
+  if (reservation_id && reservation_id[0]) {
+    sqlite3_stmt *reservation = NULL;
+    if (prepare_stmt(&reservation,
+                     "UPDATE serial_reservations SET status = ?, "
+                     "consumed_utc = ?, consumed_qso_uid = ? "
+                     "WHERE reservation_id = ? AND status IN ('claimed', "
+                     "'reserved') AND datetime(expires_utc) >= CURRENT_TIMESTAMP;") !=
+        SQLITE_OK)
+      goto contest_rollback;
+    sqlite3_bind_text(reservation, 1,
+                       commit_remote ? "commit_pending" : "consumed", -1,
+                       SQLITE_TRANSIENT);
+    sqlite3_bind_text(reservation, 2, modified_utc, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(reservation, 3, qso_uid, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(reservation, 4, reservation_id, -1, SQLITE_TRANSIENT);
+    rc = sqlite3_step(reservation);
+    sqlite3_finalize(reservation);
+    if (rc != SQLITE_DONE || sqlite3_changes(db) != 1)
+      goto contest_rollback;
   }
 
-  return rc == SQLITE_DONE ? 0 : -1;
+  if (exec_sql_checked("COMMIT;") != 0)
+    goto contest_rollback;
+
+  return 0;
+
+contest_rollback:
+  (void)exec_sql_checked("ROLLBACK;");
+  return -1;
+}
+
+int db_update_qso_contest_fields_with_reservation(
+    long long id, const char *exchange_sent, const char *exchange_recv,
+    const char *operator_mode, const char *contest_id, int radio_nr,
+    int points, const char *reservation_id, int commit_remote) {
+  db_operation_lock();
+  int rc = db_update_qso_contest_fields_with_reservation_impl(
+      id, exchange_sent, exchange_recv, operator_mode, contest_id, radio_nr,
+      points, reservation_id, commit_remote);
+  db_operation_unlock();
+  return rc;
+}
+
+int db_update_qso_contest_fields(long long id, const char *exchange_sent,
+                                 const char *exchange_recv,
+                                 const char *operator_mode,
+                                 const char *contest_id, int radio_nr,
+                                 int points) {
+  return db_update_qso_contest_fields_with_reservation(
+      id, exchange_sent, exchange_recv, operator_mode, contest_id, radio_nr,
+      points, NULL, 0);
 }
 
 /*
@@ -2283,6 +2500,9 @@ int db_import_call_history_file(const char *path) {
  * @return 0 on success, or -1 on failure.
  */
 int db_clear_logbook(void) {
+  if (config.net_enabled)
+    return DB_ERR_LOG_CHANGE_WHILE_NET_ACTIVE;
+
   if (db_init() != 0)
     return -1;
 
@@ -2833,7 +3053,188 @@ int db_load_qtc_bundles(QTCBundle *out, int max_items, int *out_count) {
   return 0;
 }
 
-int db_sync_get_or_create_station_id(char *out, size_t out_size) {
+int db_sync_get_shared_log_id(char *out, size_t out_size) {
+  if (!out || out_size < 36)
+    return -1;
+
+  out[0] = 0;
+  if (db_init() != 0)
+    return -1;
+
+  sqlite3_stmt *stmt = NULL;
+  if (prepare_stmt(&stmt,
+                   "SELECT shared_log_id FROM sync_identity WHERE id = 1 LIMIT 1;") !=
+      SQLITE_OK)
+    return -1;
+
+  int result = 1;
+  int rc = sqlite3_step(stmt);
+  if (rc == SQLITE_ROW) {
+    const unsigned char *id = sqlite3_column_text(stmt, 0);
+    if (id && id[0]) {
+      if (!sync_shared_log_id_is_valid((const char *)id)) {
+        result = -1;
+      } else {
+        snprintf(out, out_size, "%s", (const char *)id);
+        result = 0;
+      }
+    }
+  } else if (rc != SQLITE_DONE) {
+    result = -1;
+  }
+
+  sqlite3_finalize(stmt);
+  return result;
+}
+
+int db_sync_set_shared_log_id(const char *shared_log_id) {
+  if (!sync_shared_log_id_is_valid(shared_log_id) || db_init() != 0 ||
+      exec_sql_checked("BEGIN IMMEDIATE;") != 0)
+    return -1;
+
+  sqlite3_stmt *stmt = NULL;
+  if (prepare_stmt(&stmt,
+                   "SELECT shared_log_id FROM sync_identity WHERE id = 1 LIMIT 1;") !=
+      SQLITE_OK) {
+    (void)exec_sql_checked("ROLLBACK;");
+    return -1;
+  }
+
+  int row_exists = 0;
+  char existing[36] = {0};
+  int rc = sqlite3_step(stmt);
+  if (rc == SQLITE_ROW) {
+    row_exists = 1;
+    const unsigned char *id = sqlite3_column_text(stmt, 0);
+    if (id)
+      snprintf(existing, sizeof(existing), "%s", (const char *)id);
+  } else if (rc != SQLITE_DONE) {
+    sqlite3_finalize(stmt);
+    (void)exec_sql_checked("ROLLBACK;");
+    return -1;
+  }
+  sqlite3_finalize(stmt);
+
+  if (existing[0]) {
+    if (!sync_shared_log_id_is_valid(existing) ||
+        strcmp(existing, shared_log_id) != 0) {
+      (void)exec_sql_checked("ROLLBACK;");
+      return -1;
+    }
+    return exec_sql_checked("COMMIT;") == 0 ? 0 : -1;
+  }
+
+  if (row_exists) {
+    if (prepare_stmt(&stmt,
+                     "UPDATE sync_identity SET shared_log_id = ? WHERE id = 1 AND shared_log_id = '';") !=
+        SQLITE_OK) {
+      (void)exec_sql_checked("ROLLBACK;");
+      return -1;
+    }
+    sqlite3_bind_text(stmt, 1, shared_log_id, -1, SQLITE_TRANSIENT);
+  } else {
+    if (prepare_stmt(&stmt,
+                     "INSERT INTO sync_identity (id, station_id, station_name, role, shared_log_id, created_utc) "
+                     "VALUES (1, '', '', 'client', ?, CURRENT_TIMESTAMP);") !=
+        SQLITE_OK) {
+      (void)exec_sql_checked("ROLLBACK;");
+      return -1;
+    }
+    sqlite3_bind_text(stmt, 1, shared_log_id, -1, SQLITE_TRANSIENT);
+  }
+
+  rc = sqlite3_step(stmt);
+  sqlite3_finalize(stmt);
+  if (rc != SQLITE_DONE || sqlite3_changes(db) != 1 ||
+      exec_sql_checked("COMMIT;") != 0) {
+    (void)exec_sql_checked("ROLLBACK;");
+    return -1;
+  }
+
+  return 0;
+}
+
+int db_sync_create_shared_log_id(char *out, size_t out_size) {
+  if (!out || out_size < 36)
+    return -1;
+
+  out[0] = 0;
+  if (db_init() != 0 || exec_sql_checked("BEGIN IMMEDIATE;") != 0)
+    return -1;
+
+  sqlite3_stmt *stmt = NULL;
+  if (prepare_stmt(&stmt,
+                   "SELECT shared_log_id FROM sync_identity WHERE id = 1 LIMIT 1;") !=
+      SQLITE_OK) {
+    (void)exec_sql_checked("ROLLBACK;");
+    return -1;
+  }
+
+  int row_exists = 0;
+  char existing[36] = {0};
+  int rc = sqlite3_step(stmt);
+  if (rc == SQLITE_ROW) {
+    row_exists = 1;
+    const unsigned char *id = sqlite3_column_text(stmt, 0);
+    if (id)
+      snprintf(existing, sizeof(existing), "%s", (const char *)id);
+  } else if (rc != SQLITE_DONE) {
+    sqlite3_finalize(stmt);
+    (void)exec_sql_checked("ROLLBACK;");
+    return -1;
+  }
+  sqlite3_finalize(stmt);
+
+  if (existing[0]) {
+    if (!sync_shared_log_id_is_valid(existing) ||
+        exec_sql_checked("COMMIT;") != 0) {
+      (void)exec_sql_checked("ROLLBACK;");
+      return -1;
+    }
+    snprintf(out, out_size, "%s", existing);
+    return 0;
+  }
+
+  char token[33] = {0};
+  if (sync_generate_hex_token(16, token, sizeof(token)) != 0) {
+    (void)exec_sql_checked("ROLLBACK;");
+    return -1;
+  }
+
+  char shared_log_id[36] = {0};
+  snprintf(shared_log_id, sizeof(shared_log_id), "sl-%s", token);
+  if (row_exists) {
+    if (prepare_stmt(&stmt,
+                     "UPDATE sync_identity SET shared_log_id = ?, role = 'server' WHERE id = 1 AND shared_log_id = '';") !=
+        SQLITE_OK) {
+      (void)exec_sql_checked("ROLLBACK;");
+      return -1;
+    }
+    sqlite3_bind_text(stmt, 1, shared_log_id, -1, SQLITE_TRANSIENT);
+  } else {
+    if (prepare_stmt(&stmt,
+                     "INSERT INTO sync_identity (id, station_id, station_name, role, shared_log_id, created_utc) "
+                     "VALUES (1, '', '', 'server', ?, CURRENT_TIMESTAMP);") !=
+        SQLITE_OK) {
+      (void)exec_sql_checked("ROLLBACK;");
+      return -1;
+    }
+    sqlite3_bind_text(stmt, 1, shared_log_id, -1, SQLITE_TRANSIENT);
+  }
+
+  rc = sqlite3_step(stmt);
+  sqlite3_finalize(stmt);
+  if (rc != SQLITE_DONE || sqlite3_changes(db) != 1 ||
+      exec_sql_checked("COMMIT;") != 0) {
+    (void)exec_sql_checked("ROLLBACK;");
+    return -1;
+  }
+
+  snprintf(out, out_size, "%s", shared_log_id);
+  return 0;
+}
+
+static int db_sync_get_or_create_station_id_impl(char *out, size_t out_size) {
   if (!out || out_size < 2)
     return -1;
 
@@ -2870,7 +3271,7 @@ int db_sync_get_or_create_station_id(char *out, size_t out_size) {
 
   sqlite3_stmt *insert_stmt = NULL;
   if (prepare_stmt(&insert_stmt,
-                   "INSERT OR REPLACE INTO sync_identity "
+                   "INSERT OR IGNORE INTO sync_identity "
                    "(id, station_id, station_name, role, created_utc) "
                    "VALUES (1, ?, '', 'client', CURRENT_TIMESTAMP);") != SQLITE_OK)
     return -1;
@@ -2882,8 +3283,25 @@ int db_sync_get_or_create_station_id(char *out, size_t out_size) {
   if (rc != SQLITE_DONE)
     return -1;
 
+  if (prepare_stmt(&insert_stmt,
+                   "UPDATE sync_identity SET station_id = ? WHERE id = 1;") !=
+      SQLITE_OK)
+    return -1;
+  sqlite3_bind_text(insert_stmt, 1, station_id, -1, SQLITE_TRANSIENT);
+  rc = sqlite3_step(insert_stmt);
+  sqlite3_finalize(insert_stmt);
+  if (rc != SQLITE_DONE)
+    return -1;
+
   snprintf(out, out_size, "%s", station_id);
   return 0;
+}
+
+int db_sync_get_or_create_station_id(char *out, size_t out_size) {
+  db_operation_lock();
+  int rc = db_sync_get_or_create_station_id_impl(out, out_size);
+  db_operation_unlock();
+  return rc;
 }
 
 int db_sync_set_station_id(const char *station_id) {
@@ -2895,7 +3313,7 @@ int db_sync_set_station_id(const char *station_id) {
 
   sqlite3_stmt *stmt = NULL;
   if (prepare_stmt(&stmt,
-                   "INSERT OR REPLACE INTO sync_identity "
+                   "INSERT OR IGNORE INTO sync_identity "
                    "(id, station_id, station_name, role, created_utc) "
                    "VALUES (1, ?, '', 'client', CURRENT_TIMESTAMP);") !=
       SQLITE_OK)
@@ -2904,10 +3322,20 @@ int db_sync_set_station_id(const char *station_id) {
   sqlite3_bind_text(stmt, 1, station_id, -1, SQLITE_TRANSIENT);
   int rc = sqlite3_step(stmt);
   sqlite3_finalize(stmt);
+  if (rc != SQLITE_DONE)
+    return -1;
+
+  if (prepare_stmt(&stmt,
+                   "UPDATE sync_identity SET station_id = ? WHERE id = 1;") !=
+      SQLITE_OK)
+    return -1;
+  sqlite3_bind_text(stmt, 1, station_id, -1, SQLITE_TRANSIENT);
+  rc = sqlite3_step(stmt);
+  sqlite3_finalize(stmt);
   return rc == SQLITE_DONE ? 0 : -1;
 }
 
-int db_sync_next_station_seq(long long *out_seq) {
+static int db_sync_next_station_seq_impl(long long *out_seq) {
   if (!out_seq)
     return -1;
 
@@ -2934,8 +3362,12 @@ int db_sync_next_station_seq(long long *out_seq) {
   sqlite3_bind_text(stmt, 1, station_id, -1, SQLITE_TRANSIENT);
 
   long long max_seq = 0;
-  if (sqlite3_step(stmt) == SQLITE_ROW)
-    max_seq = sqlite3_column_int64(stmt, 0);
+  int rc = sqlite3_step(stmt);
+  if (rc != SQLITE_ROW) {
+    sqlite3_finalize(stmt);
+    return -1;
+  }
+  max_seq = sqlite3_column_int64(stmt, 0);
 
   sqlite3_finalize(stmt);
 
@@ -2945,15 +3377,26 @@ int db_sync_next_station_seq(long long *out_seq) {
                    "UPDATE sync_cursors SET last_acked_local_seq = ? WHERE id = 1;") ==
       SQLITE_OK) {
     sqlite3_bind_int64(update_stmt, 1, next_seq);
-    sqlite3_step(update_stmt);
+    rc = sqlite3_step(update_stmt);
     sqlite3_finalize(update_stmt);
+  } else {
+    return -1;
   }
+  if (rc != SQLITE_DONE)
+    return -1;
 
   *out_seq = next_seq;
   return 0;
 }
 
-int db_sync_outbox_enqueue(const char *op_id, long long station_seq,
+int db_sync_next_station_seq(long long *out_seq) {
+  db_operation_lock();
+  int rc = db_sync_next_station_seq_impl(out_seq);
+  db_operation_unlock();
+  return rc;
+}
+
+static int db_sync_outbox_enqueue_impl(const char *op_id, long long station_seq,
                           int logbook_id, const char *op_type,
                           const char *entity_id, const char *payload_json,
                           const char *op_utc) {
@@ -2967,7 +3410,7 @@ int db_sync_outbox_enqueue(const char *op_id, long long station_seq,
 
   sqlite3_stmt *stmt = NULL;
   if (prepare_stmt(&stmt,
-                   "INSERT OR IGNORE INTO log_outbox "
+                   "INSERT INTO log_outbox "
                    "(op_id, station_seq, logbook_id, op_type, entity_id, payload_json, op_utc, status, retry_count, next_retry_utc) "
                    "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, CURRENT_TIMESTAMP);") !=
       SQLITE_OK)
@@ -2987,8 +3430,19 @@ int db_sync_outbox_enqueue(const char *op_id, long long station_seq,
   return rc == SQLITE_DONE ? 0 : -1;
 }
 
-int db_sync_outbox_load_pending(SyncOutboxEntry *out, int max_items,
-                                int *out_count) {
+int db_sync_outbox_enqueue(const char *op_id, long long station_seq,
+                          int logbook_id, const char *op_type,
+                          const char *entity_id, const char *payload_json,
+                          const char *op_utc) {
+  db_operation_lock();
+  int rc = db_sync_outbox_enqueue_impl(op_id, station_seq, logbook_id, op_type,
+                                       entity_id, payload_json, op_utc);
+  db_operation_unlock();
+  return rc;
+}
+
+static int db_sync_outbox_load_pending_impl(SyncOutboxEntry *out, int max_items,
+                                            int *out_count) {
   if (!out || max_items <= 0)
     return -1;
 
@@ -3045,7 +3499,15 @@ int db_sync_outbox_load_pending(SyncOutboxEntry *out, int max_items,
   return 0;
 }
 
-int db_sync_outbox_mark_sent(const char *op_id) {
+int db_sync_outbox_load_pending(SyncOutboxEntry *out, int max_items,
+                                int *out_count) {
+  db_operation_lock();
+  int rc = db_sync_outbox_load_pending_impl(out, max_items, out_count);
+  db_operation_unlock();
+  return rc;
+}
+
+static int db_sync_outbox_mark_sent_impl(const char *op_id) {
   if (!op_id || !op_id[0])
     return -1;
 
@@ -3066,7 +3528,15 @@ int db_sync_outbox_mark_sent(const char *op_id) {
   return rc == SQLITE_DONE ? 0 : -1;
 }
 
-int db_sync_outbox_mark_retry(const char *op_id, int delay_seconds) {
+int db_sync_outbox_mark_sent(const char *op_id) {
+  db_operation_lock();
+  int rc = db_sync_outbox_mark_sent_impl(op_id);
+  db_operation_unlock();
+  return rc;
+}
+
+static int db_sync_outbox_mark_retry_impl(const char *op_id,
+                                          int delay_seconds) {
   if (!op_id || !op_id[0])
     return -1;
 
@@ -3105,7 +3575,14 @@ int db_sync_outbox_mark_retry(const char *op_id, int delay_seconds) {
   return rc == SQLITE_DONE ? 0 : -1;
 }
 
-int db_sync_outbox_mark_acked(const char *op_id) {
+int db_sync_outbox_mark_retry(const char *op_id, int delay_seconds) {
+  db_operation_lock();
+  int rc = db_sync_outbox_mark_retry_impl(op_id, delay_seconds);
+  db_operation_unlock();
+  return rc;
+}
+
+static int db_sync_outbox_mark_acked_impl(const char *op_id) {
   if (!op_id || !op_id[0])
     return -1;
 
@@ -3126,7 +3603,14 @@ int db_sync_outbox_mark_acked(const char *op_id) {
   return rc == SQLITE_DONE ? 0 : -1;
 }
 
-int db_sync_get_pending_outbox_count(int *out_count) {
+int db_sync_outbox_mark_acked(const char *op_id) {
+  db_operation_lock();
+  int rc = db_sync_outbox_mark_acked_impl(op_id);
+  db_operation_unlock();
+  return rc;
+}
+
+static int db_sync_get_pending_outbox_count_impl(int *out_count) {
   if (!out_count)
     return -1;
 
@@ -3137,9 +3621,41 @@ int db_sync_get_pending_outbox_count(int *out_count) {
 
   sqlite3_stmt *stmt = NULL;
   if (prepare_stmt(&stmt,
-                   "SELECT COUNT(*) FROM log_outbox "
-                   "WHERE (status = 'pending' OR status = 'sent') "
-                   "AND (next_retry_utc IS NULL OR next_retry_utc <= CURRENT_TIMESTAMP);") !=
+                   "SELECT (SELECT COUNT(*) FROM log_outbox "
+                   "WHERE status = 'pending' OR status = 'sent') + "
+                   "(SELECT COUNT(*) FROM serial_reservations "
+                   "WHERE status = 'commit_pending');") !=
+      SQLITE_OK)
+    return -1;
+
+  if (sqlite3_step(stmt) == SQLITE_ROW)
+    *out_count = sqlite3_column_int(stmt, 0);
+
+  sqlite3_finalize(stmt);
+  return 0;
+}
+
+int db_sync_get_pending_outbox_count(int *out_count) {
+  db_operation_lock();
+  int rc = db_sync_get_pending_outbox_count_impl(out_count);
+  db_operation_unlock();
+  return rc;
+}
+
+static int db_sync_get_failed_outbox_count_impl(int *out_count) {
+  if (!out_count)
+    return -1;
+
+  *out_count = 0;
+
+  if (db_init() != 0)
+    return -1;
+
+  sqlite3_stmt *stmt = NULL;
+  if (prepare_stmt(&stmt,
+                   "SELECT (SELECT COUNT(*) FROM log_outbox WHERE status = 'failed') + "
+                   "(SELECT COUNT(*) FROM serial_reservations "
+                   "WHERE status = 'commit_failed');") !=
       SQLITE_OK)
     return -1;
 
@@ -3151,28 +3667,13 @@ int db_sync_get_pending_outbox_count(int *out_count) {
 }
 
 int db_sync_get_failed_outbox_count(int *out_count) {
-  if (!out_count)
-    return -1;
-
-  *out_count = 0;
-
-  if (db_init() != 0)
-    return -1;
-
-  sqlite3_stmt *stmt = NULL;
-  if (prepare_stmt(&stmt,
-                   "SELECT COUNT(*) FROM log_outbox WHERE status = 'failed';") !=
-      SQLITE_OK)
-    return -1;
-
-  if (sqlite3_step(stmt) == SQLITE_ROW)
-    *out_count = sqlite3_column_int(stmt, 0);
-
-  sqlite3_finalize(stmt);
-  return 0;
+  db_operation_lock();
+  int rc = db_sync_get_failed_outbox_count_impl(out_count);
+  db_operation_unlock();
+  return rc;
 }
 
-int db_get_current_logbook_id(int *out_id) {
+static int db_get_current_logbook_id_impl(int *out_id) {
   if (!out_id)
     return -1;
 
@@ -3182,7 +3683,7 @@ int db_get_current_logbook_id(int *out_id) {
 
   sqlite3_stmt *stmt = NULL;
   if (prepare_stmt(&stmt,
-                   "SELECT value FROM app_metadata WHERE key = 'current_logbook_id' LIMIT 1;") != SQLITE_OK)
+                   "SELECT value FROM app_meta WHERE key = 'current_logbook_id' LIMIT 1;") != SQLITE_OK)
     return -1;
 
   if (sqlite3_step(stmt) == SQLITE_ROW)
@@ -3192,7 +3693,14 @@ int db_get_current_logbook_id(int *out_id) {
   return 0;
 }
 
-int db_sync_get_last_global_seq(long long *out_seq) {
+int db_get_current_logbook_id(int *out_id) {
+  db_operation_lock();
+  int rc = db_get_current_logbook_id_impl(out_id);
+  db_operation_unlock();
+  return rc;
+}
+
+static int db_sync_get_last_global_seq_impl(long long *out_seq) {
   if (!out_seq)
     return -1;
 
@@ -3214,7 +3722,14 @@ int db_sync_get_last_global_seq(long long *out_seq) {
   return 0;
 }
 
-int db_sync_set_last_global_seq(long long seq) {
+int db_sync_get_last_global_seq(long long *out_seq) {
+  db_operation_lock();
+  int rc = db_sync_get_last_global_seq_impl(out_seq);
+  db_operation_unlock();
+  return rc;
+}
+
+static int db_sync_set_last_global_seq_impl(long long seq) {
   if (seq < 0)
     return -1;
 
@@ -3233,7 +3748,14 @@ int db_sync_set_last_global_seq(long long seq) {
   return rc == SQLITE_DONE ? 0 : -1;
 }
 
-int db_sync_get_max_global_seq(long long *out_seq) {
+int db_sync_set_last_global_seq(long long seq) {
+  db_operation_lock();
+  int rc = db_sync_set_last_global_seq_impl(seq);
+  db_operation_unlock();
+  return rc;
+}
+
+static int db_sync_get_max_global_seq_impl(long long *out_seq) {
   if (!out_seq)
     return -1;
 
@@ -3255,8 +3777,15 @@ int db_sync_get_max_global_seq(long long *out_seq) {
   return 0;
 }
 
-int db_sync_get_next_expected_station_seq(const char *station_id,
-                                          long long *out_seq) {
+int db_sync_get_max_global_seq(long long *out_seq) {
+  db_operation_lock();
+  int rc = db_sync_get_max_global_seq_impl(out_seq);
+  db_operation_unlock();
+  return rc;
+}
+
+static int db_sync_get_next_expected_station_seq_impl(const char *station_id,
+                                                      long long *out_seq) {
   if (!station_id || !station_id[0] || !out_seq)
     return -1;
 
@@ -3281,11 +3810,19 @@ int db_sync_get_next_expected_station_seq(const char *station_id,
   return 0;
 }
 
-int db_sync_apply_remote_op(const char *op_id, const char *station_id,
-                            long long station_seq, int logbook_id,
-                            const char *op_type, const char *entity_id,
-                            const char *payload_json, const char *op_utc,
-                            long long *out_global_seq) {
+int db_sync_get_next_expected_station_seq(const char *station_id,
+                                          long long *out_seq) {
+  db_operation_lock();
+  int rc = db_sync_get_next_expected_station_seq_impl(station_id, out_seq);
+  db_operation_unlock();
+  return rc;
+}
+
+static int db_sync_apply_remote_op_with_cursor_impl(
+  const char *op_id, const char *station_id, long long station_seq,
+  int logbook_id, const char *op_type, const char *entity_id,
+  const char *payload_json, const char *op_utc, long long global_seq,
+  long long *out_global_seq) {
   if (out_global_seq)
     *out_global_seq = 0;
 
@@ -3298,36 +3835,52 @@ int db_sync_apply_remote_op(const char *op_id, const char *station_id,
   if (db_init() != 0)
     return -1;
 
+  if (exec_sql_checked("BEGIN IMMEDIATE;") != 0)
+    return DB_SYNC_APPLY_ERR;
+
+  int apply_result = DB_SYNC_APPLY_ERR;
+  int changed = 0;
+  int rc = SQLITE_OK;
+
   sqlite3_stmt *exists = NULL;
   if (prepare_stmt(&exists,
                    "SELECT global_seq FROM log_ops WHERE op_id = ? LIMIT 1;") !=
       SQLITE_OK)
-    return DB_SYNC_APPLY_ERR;
+    goto apply_rollback;
   sqlite3_bind_text(exists, 1, op_id, -1, SQLITE_TRANSIENT);
 
-  if (sqlite3_step(exists) == SQLITE_ROW) {
+  rc = sqlite3_step(exists);
+  if (rc == SQLITE_ROW) {
     if (out_global_seq)
       *out_global_seq = sqlite3_column_int64(exists, 0);
     sqlite3_finalize(exists);
-    return DB_SYNC_APPLY_ALREADY_PRESENT;
+    apply_result = DB_SYNC_APPLY_ALREADY_PRESENT;
+    goto apply_commit;
   }
   sqlite3_finalize(exists);
+  if (rc != SQLITE_DONE)
+    goto apply_rollback;
 
   sqlite3_stmt *conflict = NULL;
   if (prepare_stmt(&conflict,
                    "SELECT op_id FROM log_ops WHERE station_id = ? AND station_seq = ? LIMIT 1;") !=
       SQLITE_OK)
-    return DB_SYNC_APPLY_ERR;
+    goto apply_rollback;
 
   sqlite3_bind_text(conflict, 1, station_id, -1, SQLITE_TRANSIENT);
   sqlite3_bind_int64(conflict, 2, station_seq);
 
-  if (sqlite3_step(conflict) == SQLITE_ROW) {
+  rc = sqlite3_step(conflict);
+  if (rc == SQLITE_ROW) {
     const unsigned char *existing_op = sqlite3_column_text(conflict, 0);
     if (!existing_op || strcmp((const char *)existing_op, op_id) != 0) {
       sqlite3_finalize(conflict);
-      return DB_SYNC_APPLY_STATION_SEQ_CONFLICT;
+      apply_result = DB_SYNC_APPLY_STATION_SEQ_CONFLICT;
+      goto apply_rollback_result;
     }
+  } else if (rc != SQLITE_DONE) {
+    sqlite3_finalize(conflict);
+    goto apply_rollback;
   }
   sqlite3_finalize(conflict);
 
@@ -3335,31 +3888,48 @@ int db_sync_apply_remote_op(const char *op_id, const char *station_id,
     char qso_uid_buf[40] = {0};
     if (sync_json_get_string(payload_json, "qso_uid", qso_uid_buf,
                              sizeof(qso_uid_buf)) == 0 && qso_uid_buf[0]) {
+      char qso_origin_station_id[32] = {0};
+      long long qso_origin_station_seq = station_seq;
+      if (sync_json_get_string(payload_json, "origin_station_id",
+                               qso_origin_station_id,
+                               sizeof(qso_origin_station_id)) != 0 ||
+          !qso_origin_station_id[0])
+        snprintf(qso_origin_station_id, sizeof(qso_origin_station_id), "%s",
+                 station_id);
+      if (sync_json_get_i64(payload_json, "origin_station_seq",
+                            &qso_origin_station_seq) != 0 ||
+          qso_origin_station_seq <= 0)
+        qso_origin_station_seq = station_seq;
+
       sqlite3_stmt *uid_conflict = NULL;
       if (prepare_stmt(&uid_conflict,
                        "SELECT id FROM qso WHERE qso_uid = ? AND logbook_id = ? AND id NOT IN (SELECT id FROM qso WHERE qso_uid = ? AND logbook_id = ? AND origin_station_id = ? AND origin_station_seq = ?);") != SQLITE_OK)
-        return DB_SYNC_APPLY_ERR;
+        goto apply_rollback;
 
       sqlite3_bind_text(uid_conflict, 1, qso_uid_buf, -1, SQLITE_TRANSIENT);
       sqlite3_bind_int(uid_conflict, 2, logbook_id);
       sqlite3_bind_text(uid_conflict, 3, qso_uid_buf, -1, SQLITE_TRANSIENT);
       sqlite3_bind_int(uid_conflict, 4, logbook_id);
-      sqlite3_bind_text(uid_conflict, 5, station_id, -1, SQLITE_TRANSIENT);
-      sqlite3_bind_int64(uid_conflict, 6, station_seq);
+      sqlite3_bind_text(uid_conflict, 5, qso_origin_station_id, -1,
+            SQLITE_TRANSIENT);
+      sqlite3_bind_int64(uid_conflict, 6, qso_origin_station_seq);
 
-      if (sqlite3_step(uid_conflict) == SQLITE_ROW) {
+      rc = sqlite3_step(uid_conflict);
+      if (rc == SQLITE_ROW) {
         sqlite3_finalize(uid_conflict);
-        return DB_SYNC_APPLY_QSO_UID_CONFLICT;
+        apply_result = DB_SYNC_APPLY_QSO_UID_CONFLICT;
+        goto apply_rollback_result;
       }
       sqlite3_finalize(uid_conflict);
+      if (rc != SQLITE_DONE)
+        goto apply_rollback;
     }
   }
 
-  int changed = 0;
   if (strncmp(op_type, "QSO_", 4) == 0) {
     if (sync_qso_upsert_from_payload(op_id, station_id, station_seq, logbook_id,
                                      payload_json, &changed) != 0)
-      return DB_SYNC_APPLY_ERR;
+      goto apply_rollback;
   }
 
   sqlite3_stmt *ins = NULL;
@@ -3367,7 +3937,7 @@ int db_sync_apply_remote_op(const char *op_id, const char *station_id,
                    "INSERT INTO log_ops "
                    "(op_id, station_id, station_seq, logbook_id, op_type, entity_id, payload_json, op_utc) "
                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?);") != SQLITE_OK)
-    return DB_SYNC_APPLY_ERR;
+          goto apply_rollback;
 
   sqlite3_bind_text(ins, 1, op_id, -1, SQLITE_TRANSIENT);
   sqlite3_bind_text(ins, 2, station_id, -1, SQLITE_TRANSIENT);
@@ -3378,31 +3948,87 @@ int db_sync_apply_remote_op(const char *op_id, const char *station_id,
   sqlite3_bind_text(ins, 7, payload_json, -1, SQLITE_TRANSIENT);
   sqlite3_bind_text(ins, 8, op_utc, -1, SQLITE_TRANSIENT);
 
-  int rc = sqlite3_step(ins);
+  rc = sqlite3_step(ins);
   sqlite3_finalize(ins);
   if (rc != SQLITE_DONE)
-    return DB_SYNC_APPLY_ERR;
+    goto apply_rollback;
 
   sqlite3_stmt *sel = NULL;
   if (prepare_stmt(&sel,
-                   "SELECT global_seq FROM log_ops WHERE op_id = ? LIMIT 1;") ==
-      SQLITE_OK) {
-    sqlite3_bind_text(sel, 1, op_id, -1, SQLITE_TRANSIENT);
-    if (sqlite3_step(sel) == SQLITE_ROW && out_global_seq)
-      *out_global_seq = sqlite3_column_int64(sel, 0);
-    sqlite3_finalize(sel);
+                   "SELECT global_seq FROM log_ops WHERE op_id = ? LIMIT 1;") !=
+      SQLITE_OK)
+    goto apply_rollback;
+  sqlite3_bind_text(sel, 1, op_id, -1, SQLITE_TRANSIENT);
+  rc = sqlite3_step(sel);
+  if (rc == SQLITE_ROW && out_global_seq)
+    *out_global_seq = sqlite3_column_int64(sel, 0);
+  sqlite3_finalize(sel);
+  if (rc != SQLITE_ROW)
+    goto apply_rollback;
+
+  apply_result = changed ? DB_SYNC_APPLY_CHANGED : DB_SYNC_APPLY_ALREADY_PRESENT;
+
+apply_commit:
+  if (global_seq > 0) {
+    sqlite3_stmt *cursor = NULL;
+    if (prepare_stmt(&cursor,
+                     "UPDATE sync_cursors SET last_pulled_global_seq = "
+                     "CASE WHEN last_pulled_global_seq < ? THEN ? "
+                     "ELSE last_pulled_global_seq END WHERE id = 1;") !=
+        SQLITE_OK)
+      goto apply_rollback;
+    sqlite3_bind_int64(cursor, 1, global_seq);
+    sqlite3_bind_int64(cursor, 2, global_seq);
+    rc = sqlite3_step(cursor);
+    sqlite3_finalize(cursor);
+    if (rc != SQLITE_DONE)
+      goto apply_rollback;
   }
 
-  if (changed || sqlite3_changes(db) > 0) {
+  if (exec_sql_checked("COMMIT;") != 0)
+    goto apply_rollback;
+
+  if (changed)
     qso_init();
-  }
 
-  return changed ? DB_SYNC_APPLY_CHANGED : DB_SYNC_APPLY_ALREADY_PRESENT;
+  return apply_result;
+
+apply_rollback_result:
+  (void)exec_sql_checked("ROLLBACK;");
+  return apply_result;
+
+apply_rollback:
+  (void)exec_sql_checked("ROLLBACK;");
+  return DB_SYNC_APPLY_ERR;
 }
 
-int db_sync_pull_ops(long long from_global_seq, int limit, SyncLogOpEntry *out,
-                     int max_items, int *out_count,
-                     long long *out_last_global_seq) {
+int db_sync_apply_remote_op_with_cursor(
+    const char *op_id, const char *station_id, long long station_seq,
+    int logbook_id, const char *op_type, const char *entity_id,
+    const char *payload_json, const char *op_utc, long long global_seq,
+    long long *out_global_seq) {
+  db_operation_lock();
+  int rc = db_sync_apply_remote_op_with_cursor_impl(
+      op_id, station_id, station_seq, logbook_id, op_type, entity_id,
+      payload_json, op_utc, global_seq, out_global_seq);
+  db_operation_unlock();
+  return rc;
+}
+
+int db_sync_apply_remote_op(const char *op_id, const char *station_id,
+                            long long station_seq, int logbook_id,
+                            const char *op_type, const char *entity_id,
+                            const char *payload_json, const char *op_utc,
+                            long long *out_global_seq) {
+  return db_sync_apply_remote_op_with_cursor(
+      op_id, station_id, station_seq, logbook_id, op_type, entity_id,
+      payload_json, op_utc, 0, out_global_seq);
+}
+
+static int db_sync_pull_ops_impl(long long from_global_seq, int limit,
+                                 SyncLogOpEntry *out, int max_items,
+                                 int *out_count,
+                                 long long *out_last_global_seq) {
   if (!out || max_items <= 0 || !out_count || !out_last_global_seq ||
       from_global_seq < 0)
     return -1;
@@ -3466,7 +4092,158 @@ int db_sync_pull_ops(long long from_global_seq, int limit, SyncLogOpEntry *out,
   return 0;
 }
 
-int db_sync_reserve_serial(int logbook_id, const char *station_id,
+int db_sync_pull_ops(long long from_global_seq, int limit, SyncLogOpEntry *out,
+                     int max_items, int *out_count,
+                     long long *out_last_global_seq) {
+  db_operation_lock();
+  int rc = db_sync_pull_ops_impl(from_global_seq, limit, out, max_items,
+                                 out_count, out_last_global_seq);
+  db_operation_unlock();
+  return rc;
+}
+
+static int sync_existing_serial_max(int logbook_id, int *out_max_serial) {
+  if (logbook_id <= 0 || !out_max_serial)
+    return -1;
+  *out_max_serial = 0;
+
+  sqlite3_stmt *stmt = NULL;
+  if (prepare_stmt(&stmt,
+                   "SELECT IFNULL(MAX(CAST(exchange_sent AS INTEGER)), 0) "
+                   "FROM qso WHERE logbook_id = ? "
+                   "AND exchange_sent GLOB '[0-9]*';") != SQLITE_OK)
+    return -1;
+  sqlite3_bind_int(stmt, 1, logbook_id);
+  int rc = sqlite3_step(stmt);
+  if (rc == SQLITE_ROW)
+    *out_max_serial = sqlite3_column_int(stmt, 0);
+  sqlite3_finalize(stmt);
+  return rc == SQLITE_ROW ? 0 : -1;
+}
+
+int db_sync_get_or_create_serial_request_id(const char *candidate_request_id,
+                                             char *out_request_id,
+                                             size_t out_request_id_size) {
+  if (!candidate_request_id || !candidate_request_id[0] ||
+      strlen(candidate_request_id) >= 64 || !out_request_id ||
+      out_request_id_size < 2 || db_init() != 0)
+    return -1;
+  out_request_id[0] = 0;
+  db_operation_lock();
+
+  if (exec_sql_checked("BEGIN IMMEDIATE;") != 0) {
+    db_operation_unlock();
+    return -1;
+  }
+
+  sqlite3_stmt *select_stmt = NULL;
+  if (prepare_stmt(&select_stmt,
+                   "SELECT pending_serial_request_id FROM sync_cursors "
+                   "WHERE id = 1 LIMIT 1;") != SQLITE_OK) {
+    (void)exec_sql_checked("ROLLBACK;");
+    db_operation_unlock();
+    return -1;
+  }
+
+  int rc = sqlite3_step(select_stmt);
+  char pending_id[64] = {0};
+  if (rc == SQLITE_ROW) {
+    const unsigned char *stored = sqlite3_column_text(select_stmt, 0);
+    if (stored)
+      snprintf(pending_id, sizeof(pending_id), "%s", (const char *)stored);
+  }
+  sqlite3_finalize(select_stmt);
+  if (rc != SQLITE_ROW) {
+    (void)exec_sql_checked("ROLLBACK;");
+    db_operation_unlock();
+    return -1;
+  }
+
+  if (!pending_id[0]) {
+    sqlite3_stmt *update_stmt = NULL;
+    if (prepare_stmt(&update_stmt,
+                     "UPDATE sync_cursors SET pending_serial_request_id = ? "
+                     "WHERE id = 1 AND pending_serial_request_id = '';") !=
+        SQLITE_OK) {
+      (void)exec_sql_checked("ROLLBACK;");
+      db_operation_unlock();
+      return -1;
+    }
+    sqlite3_bind_text(update_stmt, 1, candidate_request_id, -1,
+                      SQLITE_TRANSIENT);
+    rc = sqlite3_step(update_stmt);
+    sqlite3_finalize(update_stmt);
+    if (rc != SQLITE_DONE || sqlite3_changes(db) != 1) {
+      (void)exec_sql_checked("ROLLBACK;");
+      db_operation_unlock();
+      return -1;
+    }
+    snprintf(pending_id, sizeof(pending_id), "%s", candidate_request_id);
+  }
+
+  if (strlen(pending_id) >= out_request_id_size ||
+      exec_sql_checked("COMMIT;") != 0) {
+    (void)exec_sql_checked("ROLLBACK;");
+    db_operation_unlock();
+    return -1;
+  }
+  snprintf(out_request_id, out_request_id_size, "%s", pending_id);
+  db_operation_unlock();
+  return 0;
+}
+
+int db_sync_clear_serial_request_id(const char *request_id) {
+  if (!request_id || !request_id[0] || db_init() != 0)
+    return -1;
+  db_operation_lock();
+  sqlite3_stmt *stmt = NULL;
+  if (prepare_stmt(&stmt,
+                   "UPDATE sync_cursors SET pending_serial_request_id = '' "
+                   "WHERE id = 1 AND pending_serial_request_id = ?;") !=
+      SQLITE_OK) {
+    db_operation_unlock();
+    return -1;
+  }
+  sqlite3_bind_text(stmt, 1, request_id, -1, SQLITE_TRANSIENT);
+  int rc = sqlite3_step(stmt);
+  sqlite3_finalize(stmt);
+  db_operation_unlock();
+  return rc == SQLITE_DONE ? 0 : -1;
+}
+
+static int db_sync_peek_next_serial_impl(int logbook_id, int *out_serial) {
+  if (logbook_id <= 0 || !out_serial || db_init() != 0)
+    return -1;
+
+  int max_existing = 0;
+  if (sync_existing_serial_max(logbook_id, &max_existing) != 0)
+    return -1;
+
+  int next_serial = 1;
+  sqlite3_stmt *stmt = NULL;
+  if (prepare_stmt(&stmt,
+                   "SELECT next_serial FROM serial_alloc WHERE logbook_id = ? LIMIT 1;") !=
+      SQLITE_OK)
+    return -1;
+  sqlite3_bind_int(stmt, 1, logbook_id);
+  if (sqlite3_step(stmt) == SQLITE_ROW)
+    next_serial = sqlite3_column_int(stmt, 0);
+  sqlite3_finalize(stmt);
+
+  if (next_serial <= max_existing)
+    next_serial = max_existing + 1;
+  *out_serial = next_serial;
+  return 0;
+}
+
+int db_sync_peek_next_serial(int logbook_id, int *out_serial) {
+  db_operation_lock();
+  int rc = db_sync_peek_next_serial_impl(logbook_id, out_serial);
+  db_operation_unlock();
+  return rc;
+}
+
+static int db_sync_reserve_serial_impl(int logbook_id, const char *station_id,
                            const char *request_id, int ttl_sec,
                            char *out_reservation_id,
                            size_t out_reservation_id_size, int *out_serial,
@@ -3485,10 +4262,65 @@ int db_sync_reserve_serial(int logbook_id, const char *station_id,
   if (db_init() != 0)
     return -1;
 
+  char generated_request_id[64] = {0};
+  if (!request_id || !request_id[0]) {
+    char request_token[25] = {0};
+    if (sync_generate_hex_token(12, request_token, sizeof(request_token)) != 0)
+      return -1;
+    snprintf(generated_request_id, sizeof(generated_request_id), "req-%s",
+             request_token);
+    request_id = generated_request_id;
+  }
+  if (strlen(request_id) >= sizeof(generated_request_id))
+    return -1;
+
   (void)db_sync_expire_serial_reservations();
 
   if (exec_sql_checked("BEGIN IMMEDIATE;") != 0)
     return -1;
+
+  sqlite3_stmt *existing_stmt = NULL;
+  if (prepare_stmt(&existing_stmt,
+                   "SELECT reservation_id,reserved_serial,logbook_id,expires_utc "
+                   "FROM serial_reservations WHERE station_id = ? "
+                   "AND request_id = ? LIMIT 1;") != SQLITE_OK) {
+    (void)exec_sql_checked("ROLLBACK;");
+    return -1;
+  }
+  sqlite3_bind_text(existing_stmt, 1, station_id, -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(existing_stmt, 2, request_id, -1, SQLITE_TRANSIENT);
+  int existing_rc = sqlite3_step(existing_stmt);
+  if (existing_rc == SQLITE_ROW) {
+    const unsigned char *existing_reservation =
+        sqlite3_column_text(existing_stmt, 0);
+    const unsigned char *existing_expiry = sqlite3_column_text(existing_stmt, 3);
+    int existing_serial = sqlite3_column_int(existing_stmt, 1);
+    int existing_logbook_id = sqlite3_column_int(existing_stmt, 2);
+    char saved_reservation_id[64] = {0};
+    char saved_expires_utc[32] = {0};
+    snprintf(saved_reservation_id, sizeof(saved_reservation_id), "%s",
+             existing_reservation ? (const char *)existing_reservation : "");
+    snprintf(saved_expires_utc, sizeof(saved_expires_utc), "%s",
+             existing_expiry ? (const char *)existing_expiry : "");
+    sqlite3_finalize(existing_stmt);
+    if (existing_logbook_id != logbook_id || !saved_reservation_id[0] ||
+        strlen(saved_reservation_id) >= out_reservation_id_size ||
+        strlen(saved_expires_utc) >= out_expires_utc_size ||
+        exec_sql_checked("COMMIT;") != 0) {
+      (void)exec_sql_checked("ROLLBACK;");
+      return -1;
+    }
+    snprintf(out_reservation_id, out_reservation_id_size, "%s",
+             saved_reservation_id);
+    snprintf(out_expires_utc, out_expires_utc_size, "%s", saved_expires_utc);
+    *out_serial = existing_serial;
+    return 0;
+  }
+  sqlite3_finalize(existing_stmt);
+  if (existing_rc != SQLITE_DONE) {
+    (void)exec_sql_checked("ROLLBACK;");
+    return -1;
+  }
 
   sqlite3_stmt *init = NULL;
   if (prepare_stmt(&init,
@@ -3523,6 +4355,14 @@ int db_sync_reserve_serial(int logbook_id, const char *station_id,
   int serial = sqlite3_column_int(sel, 0);
   sqlite3_finalize(sel);
 
+  int max_existing_serial = 0;
+  if (sync_existing_serial_max(logbook_id, &max_existing_serial) != 0) {
+    (void)exec_sql_checked("ROLLBACK;");
+    return -1;
+  }
+  if (serial <= max_existing_serial)
+    serial = max_existing_serial + 1;
+
   char token[25] = {0};
   if (sync_generate_hex_token(8, token, sizeof(token)) != 0) {
     (void)exec_sql_checked("ROLLBACK;");
@@ -3530,10 +4370,7 @@ int db_sync_reserve_serial(int logbook_id, const char *station_id,
   }
 
   char reservation_id[64] = {0};
-  if (request_id && request_id[0])
-    snprintf(reservation_id, sizeof(reservation_id), "rsv-%s", request_id);
-  else
-    snprintf(reservation_id, sizeof(reservation_id), "rsv-%s", token);
+  snprintf(reservation_id, sizeof(reservation_id), "rsv-%s", token);
 
   char reserved_utc[32] = {0};
   char expires_utc[32] = {0};
@@ -3543,18 +4380,19 @@ int db_sync_reserve_serial(int logbook_id, const char *station_id,
   sqlite3_stmt *ins = NULL;
   if (prepare_stmt(&ins,
                    "INSERT INTO serial_reservations "
-                   "(reservation_id, logbook_id, station_id, reserved_serial, status, reserved_utc, expires_utc, consumed_utc, consumed_qso_uid) "
-                   "VALUES (?, ?, ?, ?, 'reserved', ?, ?, '', '');") != SQLITE_OK) {
+                   "(reservation_id, request_id, logbook_id, station_id, reserved_serial, status, reserved_utc, expires_utc, consumed_utc, consumed_qso_uid) "
+                   "VALUES (?, ?, ?, ?, ?, 'reserved', ?, ?, '', '');") != SQLITE_OK) {
     (void)exec_sql_checked("ROLLBACK;");
     return -1;
   }
 
   sqlite3_bind_text(ins, 1, reservation_id, -1, SQLITE_TRANSIENT);
-  sqlite3_bind_int(ins, 2, logbook_id);
-  sqlite3_bind_text(ins, 3, station_id, -1, SQLITE_TRANSIENT);
-  sqlite3_bind_int(ins, 4, serial);
-  sqlite3_bind_text(ins, 5, reserved_utc, -1, SQLITE_TRANSIENT);
-  sqlite3_bind_text(ins, 6, expires_utc, -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(ins, 2, request_id, -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int(ins, 3, logbook_id);
+  sqlite3_bind_text(ins, 4, station_id, -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int(ins, 5, serial);
+  sqlite3_bind_text(ins, 6, reserved_utc, -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(ins, 7, expires_utc, -1, SQLITE_TRANSIENT);
 
   if (sqlite3_step(ins) != SQLITE_DONE) {
     sqlite3_finalize(ins);
@@ -3591,7 +4429,23 @@ int db_sync_reserve_serial(int logbook_id, const char *station_id,
   return 0;
 }
 
-int db_sync_commit_serial(const char *reservation_id, const char *qso_uid) {
+int db_sync_reserve_serial(int logbook_id, const char *station_id,
+                           const char *request_id, int ttl_sec,
+                           char *out_reservation_id,
+                           size_t out_reservation_id_size, int *out_serial,
+                           char *out_expires_utc,
+                           size_t out_expires_utc_size) {
+  db_operation_lock();
+  int rc = db_sync_reserve_serial_impl(
+      logbook_id, station_id, request_id, ttl_sec, out_reservation_id,
+      out_reservation_id_size, out_serial, out_expires_utc,
+      out_expires_utc_size);
+  db_operation_unlock();
+  return rc;
+}
+
+static int db_sync_commit_serial_impl(const char *reservation_id,
+                                      const char *qso_uid) {
   if (!reservation_id || !reservation_id[0] || !qso_uid || !qso_uid[0])
     return DB_SYNC_COMMIT_ERR;
 
@@ -3608,7 +4462,7 @@ int db_sync_commit_serial(const char *reservation_id, const char *qso_uid) {
                    "UPDATE serial_reservations "
                    "SET status = 'consumed', consumed_utc = ?, consumed_qso_uid = ? "
                    "WHERE reservation_id = ? AND status = 'reserved' "
-                   "AND (expires_utc = '' OR expires_utc >= CURRENT_TIMESTAMP);") !=
+                   "AND (expires_utc = '' OR datetime(expires_utc) >= CURRENT_TIMESTAMP);") !=
       SQLITE_OK)
     return DB_SYNC_COMMIT_ERR;
 
@@ -3621,10 +4475,33 @@ int db_sync_commit_serial(const char *reservation_id, const char *qso_uid) {
   if (rc != SQLITE_DONE)
     return DB_SYNC_COMMIT_ERR;
 
-  return sqlite3_changes(db) > 0 ? DB_SYNC_COMMIT_OK : DB_SYNC_COMMIT_NOT_FOUND;
+  if (sqlite3_changes(db) > 0)
+    return DB_SYNC_COMMIT_OK;
+
+  sqlite3_stmt *existing = NULL;
+  if (prepare_stmt(&existing,
+                   "SELECT consumed_qso_uid FROM serial_reservations "
+                   "WHERE reservation_id = ? AND status = 'consumed' LIMIT 1;") !=
+      SQLITE_OK)
+    return DB_SYNC_COMMIT_ERR;
+  sqlite3_bind_text(existing, 1, reservation_id, -1, SQLITE_TRANSIENT);
+  rc = sqlite3_step(existing);
+  const unsigned char *consumed_uid =
+      rc == SQLITE_ROW ? sqlite3_column_text(existing, 0) : NULL;
+  int already_committed =
+      consumed_uid && strcmp((const char *)consumed_uid, qso_uid) == 0;
+  sqlite3_finalize(existing);
+  return already_committed ? DB_SYNC_COMMIT_OK : DB_SYNC_COMMIT_NOT_FOUND;
 }
 
-int db_sync_expire_serial_reservations(void) {
+int db_sync_commit_serial(const char *reservation_id, const char *qso_uid) {
+  db_operation_lock();
+  int rc = db_sync_commit_serial_impl(reservation_id, qso_uid);
+  db_operation_unlock();
+  return rc;
+}
+
+static int db_sync_expire_serial_reservations_impl(void) {
   if (db_init() != 0)
     return -1;
 
@@ -3632,12 +4509,329 @@ int db_sync_expire_serial_reservations(void) {
   if (prepare_stmt(&stmt,
                    "UPDATE serial_reservations "
                    "SET status = 'expired' "
-                   "WHERE status = 'reserved' "
-                   "AND expires_utc != '' AND expires_utc < CURRENT_TIMESTAMP;") !=
+                   "WHERE status IN ('reserved', 'available', 'claimed') "
+                   "AND expires_utc != '' "
+                   "AND datetime(expires_utc) < CURRENT_TIMESTAMP;") !=
       SQLITE_OK)
     return -1;
 
   int rc = sqlite3_step(stmt);
   sqlite3_finalize(stmt);
   return rc == SQLITE_DONE ? 0 : -1;
+}
+
+int db_sync_expire_serial_reservations(void) {
+  db_operation_lock();
+  int rc = db_sync_expire_serial_reservations_impl();
+  db_operation_unlock();
+  return rc;
+}
+
+static int db_sync_cache_serial_reservation_impl(const char *reservation_id,
+                                     int logbook_id, const char *station_id,
+                                     int serial, const char *expires_utc) {
+  if (!reservation_id || !reservation_id[0] || logbook_id <= 0 || !station_id ||
+      !station_id[0] || serial <= 0 || !expires_utc || !expires_utc[0] ||
+      db_init() != 0)
+    return -1;
+
+  char reserved_utc[32] = {0};
+  utc_now_iso(reserved_utc, sizeof(reserved_utc));
+  sqlite3_stmt *stmt = NULL;
+  if (prepare_stmt(&stmt,
+                   "INSERT OR IGNORE INTO serial_reservations "
+                   "(reservation_id,logbook_id,station_id,reserved_serial,status,"
+                   "reserved_utc,expires_utc,consumed_utc,consumed_qso_uid) "
+                   "VALUES (?,?,?,?,'available',?,?, '', '');") != SQLITE_OK)
+    return -1;
+  sqlite3_bind_text(stmt, 1, reservation_id, -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int(stmt, 2, logbook_id);
+  sqlite3_bind_text(stmt, 3, station_id, -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int(stmt, 4, serial);
+  sqlite3_bind_text(stmt, 5, reserved_utc, -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt, 6, expires_utc, -1, SQLITE_TRANSIENT);
+  int rc = sqlite3_step(stmt);
+  sqlite3_finalize(stmt);
+  return rc == SQLITE_DONE ? 0 : -1;
+}
+
+int db_sync_cache_serial_reservation(const char *reservation_id,
+                                     int logbook_id, const char *station_id,
+                                     int serial, const char *expires_utc) {
+  db_operation_lock();
+  int rc = db_sync_cache_serial_reservation_impl(
+      reservation_id, logbook_id, station_id, serial, expires_utc);
+  db_operation_unlock();
+  return rc;
+}
+
+static int db_sync_count_available_serial_reservations_impl(int logbook_id,
+                                                const char *station_id,
+                                                int *out_count) {
+  if (!out_count || logbook_id <= 0 || !station_id || !station_id[0] ||
+      db_init() != 0)
+    return -1;
+  *out_count = 0;
+
+  sqlite3_stmt *stmt = NULL;
+  if (prepare_stmt(&stmt,
+                   "SELECT COUNT(*) FROM serial_reservations "
+                   "WHERE logbook_id = ? AND station_id = ? "
+                   "AND status = 'available' "
+                   "AND datetime(expires_utc) >= CURRENT_TIMESTAMP;") !=
+      SQLITE_OK)
+    return -1;
+  sqlite3_bind_int(stmt, 1, logbook_id);
+  sqlite3_bind_text(stmt, 2, station_id, -1, SQLITE_TRANSIENT);
+  int rc = sqlite3_step(stmt);
+  if (rc == SQLITE_ROW)
+    *out_count = sqlite3_column_int(stmt, 0);
+  sqlite3_finalize(stmt);
+  return rc == SQLITE_ROW ? 0 : -1;
+}
+
+int db_sync_count_available_serial_reservations(int logbook_id,
+                                                const char *station_id,
+                                                int *out_count) {
+  db_operation_lock();
+  int rc = db_sync_count_available_serial_reservations_impl(
+      logbook_id, station_id, out_count);
+  db_operation_unlock();
+  return rc;
+}
+
+static int db_sync_peek_available_serial_reservation_impl(int logbook_id,
+                                              const char *station_id,
+                                              int *out_serial) {
+  if (!out_serial || logbook_id <= 0 || !station_id || !station_id[0] ||
+      db_init() != 0)
+    return -1;
+  *out_serial = 0;
+
+  sqlite3_stmt *stmt = NULL;
+  if (prepare_stmt(&stmt,
+                   "SELECT reserved_serial FROM serial_reservations "
+                   "WHERE logbook_id = ? AND station_id = ? "
+                   "AND status = 'available' "
+                   "AND datetime(expires_utc) >= CURRENT_TIMESTAMP "
+                   "ORDER BY reserved_serial ASC LIMIT 1;") != SQLITE_OK)
+    return -1;
+  sqlite3_bind_int(stmt, 1, logbook_id);
+  sqlite3_bind_text(stmt, 2, station_id, -1, SQLITE_TRANSIENT);
+  int rc = sqlite3_step(stmt);
+  if (rc == SQLITE_ROW)
+    *out_serial = sqlite3_column_int(stmt, 0);
+  sqlite3_finalize(stmt);
+  return rc == SQLITE_ROW ? 0 : rc == SQLITE_DONE ? 1 : -1;
+}
+
+int db_sync_peek_available_serial_reservation(int logbook_id,
+                                              const char *station_id,
+                                              int *out_serial) {
+  db_operation_lock();
+  int rc = db_sync_peek_available_serial_reservation_impl(
+      logbook_id, station_id, out_serial);
+  db_operation_unlock();
+  return rc;
+}
+
+static int db_sync_claim_available_serial_reservation_impl(
+    int logbook_id, const char *station_id, char *out_reservation_id,
+    size_t out_reservation_id_size, int *out_serial) {
+  if (logbook_id <= 0 || !station_id || !station_id[0] ||
+      !out_reservation_id || out_reservation_id_size < 2 || !out_serial ||
+      db_init() != 0)
+    return -1;
+  out_reservation_id[0] = 0;
+  *out_serial = 0;
+
+  if (exec_sql_checked("BEGIN IMMEDIATE;") != 0)
+    return -1;
+
+  sqlite3_stmt *select_stmt = NULL;
+  if (prepare_stmt(&select_stmt,
+                   "SELECT reservation_id,reserved_serial "
+                   "FROM serial_reservations WHERE logbook_id = ? "
+                   "AND station_id = ? AND status = 'available' "
+                   "AND datetime(expires_utc) >= CURRENT_TIMESTAMP "
+                   "ORDER BY reserved_serial ASC LIMIT 1;") != SQLITE_OK) {
+    (void)exec_sql_checked("ROLLBACK;");
+    return -1;
+  }
+  sqlite3_bind_int(select_stmt, 1, logbook_id);
+  sqlite3_bind_text(select_stmt, 2, station_id, -1, SQLITE_TRANSIENT);
+  int rc = sqlite3_step(select_stmt);
+  if (rc != SQLITE_ROW) {
+    sqlite3_finalize(select_stmt);
+    (void)exec_sql_checked("ROLLBACK;");
+    return rc == SQLITE_DONE ? 1 : -1;
+  }
+
+  const unsigned char *reservation = sqlite3_column_text(select_stmt, 0);
+  if (!reservation || !reservation[0] ||
+      strlen((const char *)reservation) >= out_reservation_id_size) {
+    sqlite3_finalize(select_stmt);
+    (void)exec_sql_checked("ROLLBACK;");
+    return -1;
+  }
+  snprintf(out_reservation_id, out_reservation_id_size, "%s",
+           (const char *)reservation);
+  *out_serial = sqlite3_column_int(select_stmt, 1);
+  sqlite3_finalize(select_stmt);
+
+  sqlite3_stmt *update_stmt = NULL;
+  if (prepare_stmt(&update_stmt,
+                   "UPDATE serial_reservations SET status = 'claimed' "
+                   "WHERE reservation_id = ? AND status = 'available';") !=
+      SQLITE_OK) {
+    (void)exec_sql_checked("ROLLBACK;");
+    return -1;
+  }
+  sqlite3_bind_text(update_stmt, 1, out_reservation_id, -1, SQLITE_TRANSIENT);
+  rc = sqlite3_step(update_stmt);
+  sqlite3_finalize(update_stmt);
+  if (rc != SQLITE_DONE || sqlite3_changes(db) != 1 ||
+      exec_sql_checked("COMMIT;") != 0) {
+    (void)exec_sql_checked("ROLLBACK;");
+    out_reservation_id[0] = 0;
+    *out_serial = 0;
+    return -1;
+  }
+  return 0;
+}
+
+int db_sync_claim_available_serial_reservation(
+    int logbook_id, const char *station_id, char *out_reservation_id,
+    size_t out_reservation_id_size, int *out_serial) {
+  db_operation_lock();
+  int rc = db_sync_claim_available_serial_reservation_impl(
+      logbook_id, station_id, out_reservation_id, out_reservation_id_size,
+      out_serial);
+  db_operation_unlock();
+  return rc;
+}
+
+static int db_sync_release_serial_reservation_impl(const char *reservation_id,
+                                       int reusable) {
+  if (!reservation_id || !reservation_id[0] || db_init() != 0)
+    return -1;
+
+  sqlite3_stmt *stmt = NULL;
+  if (prepare_stmt(&stmt,
+                   "UPDATE serial_reservations SET status = CASE "
+                   "WHEN ? != 0 AND datetime(expires_utc) >= CURRENT_TIMESTAMP "
+                   "THEN 'available' ELSE 'expired' END "
+                   "WHERE reservation_id = ? AND status IN ('claimed','reserved');") !=
+      SQLITE_OK)
+    return -1;
+  sqlite3_bind_int(stmt, 1, reusable ? 1 : 0);
+  sqlite3_bind_text(stmt, 2, reservation_id, -1, SQLITE_TRANSIENT);
+  int rc = sqlite3_step(stmt);
+  sqlite3_finalize(stmt);
+  return rc == SQLITE_DONE ? 0 : -1;
+}
+
+int db_sync_release_serial_reservation(const char *reservation_id,
+                                       int reusable) {
+  db_operation_lock();
+  int rc = db_sync_release_serial_reservation_impl(reservation_id, reusable);
+  db_operation_unlock();
+  return rc;
+}
+
+static int db_sync_recover_serial_claims_impl(void) {
+  if (db_init() != 0)
+    return -1;
+  return exec_sql_checked(
+      "UPDATE serial_reservations SET status = CASE "
+      "WHEN datetime(expires_utc) >= CURRENT_TIMESTAMP THEN 'available' "
+      "ELSE 'expired' END WHERE status = 'claimed';");
+}
+
+int db_sync_recover_serial_claims(void) {
+  db_operation_lock();
+  int rc = db_sync_recover_serial_claims_impl();
+  db_operation_unlock();
+  return rc;
+}
+
+static int db_sync_load_pending_serial_commits_impl(SyncSerialCommitEntry *out,
+                                        int max_items, int *out_count) {
+  if (!out || max_items <= 0 || !out_count || db_init() != 0)
+    return -1;
+  *out_count = 0;
+
+  sqlite3_stmt *stmt = NULL;
+  if (prepare_stmt(&stmt,
+                   "SELECT reservation_id,consumed_qso_uid "
+                   "FROM serial_reservations WHERE status = 'commit_pending' "
+                   "ORDER BY reserved_serial ASC LIMIT ?;") != SQLITE_OK)
+    return -1;
+  sqlite3_bind_int(stmt, 1, max_items);
+  int count = 0;
+  int rc = SQLITE_OK;
+  while ((rc = sqlite3_step(stmt)) == SQLITE_ROW && count < max_items) {
+    const unsigned char *reservation = sqlite3_column_text(stmt, 0);
+    const unsigned char *qso_uid = sqlite3_column_text(stmt, 1);
+    snprintf(out[count].reservation_id, sizeof(out[count].reservation_id),
+             "%s", reservation ? (const char *)reservation : "");
+    snprintf(out[count].qso_uid, sizeof(out[count].qso_uid), "%s",
+             qso_uid ? (const char *)qso_uid : "");
+    count++;
+  }
+  sqlite3_finalize(stmt);
+  *out_count = count;
+  return rc == SQLITE_DONE ? 0 : -1;
+}
+
+int db_sync_load_pending_serial_commits(SyncSerialCommitEntry *out,
+                                        int max_items, int *out_count) {
+  db_operation_lock();
+  int rc = db_sync_load_pending_serial_commits_impl(out, max_items, out_count);
+  db_operation_unlock();
+  return rc;
+}
+
+static int db_sync_mark_serial_commit_acked_impl(const char *reservation_id) {
+  if (!reservation_id || !reservation_id[0] || db_init() != 0)
+    return -1;
+  sqlite3_stmt *stmt = NULL;
+  if (prepare_stmt(&stmt,
+                   "UPDATE serial_reservations SET status = 'consumed' "
+                   "WHERE reservation_id = ? AND status = 'commit_pending';") !=
+      SQLITE_OK)
+    return -1;
+  sqlite3_bind_text(stmt, 1, reservation_id, -1, SQLITE_TRANSIENT);
+  int rc = sqlite3_step(stmt);
+  sqlite3_finalize(stmt);
+  return rc == SQLITE_DONE && sqlite3_changes(db) == 1 ? 0 : -1;
+}
+
+int db_sync_mark_serial_commit_acked(const char *reservation_id) {
+  db_operation_lock();
+  int rc = db_sync_mark_serial_commit_acked_impl(reservation_id);
+  db_operation_unlock();
+  return rc;
+}
+
+static int db_sync_mark_serial_commit_failed_impl(const char *reservation_id) {
+  if (!reservation_id || !reservation_id[0] || db_init() != 0)
+    return -1;
+  sqlite3_stmt *stmt = NULL;
+  if (prepare_stmt(&stmt,
+                   "UPDATE serial_reservations SET status = 'commit_failed' "
+                   "WHERE reservation_id = ? AND status = 'commit_pending';") !=
+      SQLITE_OK)
+    return -1;
+  sqlite3_bind_text(stmt, 1, reservation_id, -1, SQLITE_TRANSIENT);
+  int rc = sqlite3_step(stmt);
+  sqlite3_finalize(stmt);
+  return rc == SQLITE_DONE && sqlite3_changes(db) == 1 ? 0 : -1;
+}
+
+int db_sync_mark_serial_commit_failed(const char *reservation_id) {
+  db_operation_lock();
+  int rc = db_sync_mark_serial_commit_failed_impl(reservation_id);
+  db_operation_unlock();
+  return rc;
 }

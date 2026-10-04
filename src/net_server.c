@@ -3,6 +3,7 @@
 #include "config.h"
 #include "db.h"
 #include "net_protocol.h"
+#include "net_sync.h"
 #include "net_tls.h"
 
 #include <arpa/inet.h>
@@ -12,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/types.h>
@@ -31,6 +33,7 @@ typedef struct {
   pthread_t thread;
   pthread_mutex_t write_mutex;
   char station_id[32];
+  char shared_log_id[36];
 } NetServerSession;
 
 static pthread_t net_server_thread;
@@ -141,6 +144,13 @@ static void handle_append_ops(NetServerSession *session, const char *frame) {
   long long last_global_seq = 0;
   long long last_acked_station_seq = 0;
   long long expected_seq = 0;
+  int server_logbook_id = 0;
+  if (db_get_current_logbook_id(&server_logbook_id) != 0 ||
+      server_logbook_id <= 0) {
+    (void)send_session_frame(
+        session, "{\"type\":\"ERROR\",\"code\":\"NO_ACTIVE_LOGBOOK\"}");
+    return;
+  }
   if (db_sync_get_next_expected_station_seq(session->station_id, &expected_seq) !=
       0)
     expected_seq = 1;
@@ -170,7 +180,7 @@ static void handle_append_ops(NetServerSession *session, const char *frame) {
 
     long long applied_seq = 0;
     int rc = db_sync_apply_remote_op(ops[i].op_id, session->station_id,
-                                     ops[i].station_seq, ops[i].logbook_id,
+                     ops[i].station_seq, server_logbook_id,
                                      ops[i].op_type, ops[i].entity_id,
                                      ops[i].payload_json, ops[i].op_utc,
                                      &applied_seq);
@@ -224,7 +234,7 @@ static void handle_append_ops(NetServerSession *session, const char *frame) {
       memset(&bcast, 0, sizeof(bcast));
       bcast.global_seq = applied_seq;
       bcast.station_seq = ops[i].station_seq;
-      bcast.logbook_id = ops[i].logbook_id;
+      bcast.logbook_id = server_logbook_id;
       snprintf(bcast.op_id, sizeof(bcast.op_id), "%s", ops[i].op_id);
       snprintf(bcast.station_id, sizeof(bcast.station_id), "%s",
                session->station_id);
@@ -276,23 +286,30 @@ static void handle_pull_ops(NetServerSession *session, const char *frame,
   if (limit > NET_SERVER_MAX_OPS)
     limit = NET_SERVER_MAX_OPS;
 
-  SyncLogOpEntry ops[NET_SERVER_MAX_OPS];
+  SyncLogOpEntry ops[NET_SERVER_MAX_OPS + 1];
   int count = 0;
   long long last_seq = from_seq;
   memset(ops, 0, sizeof(ops));
 
-  if (db_sync_pull_ops(from_seq, limit, ops, NET_SERVER_MAX_OPS, &count,
+  if (db_sync_pull_ops(from_seq, limit + 1, ops, NET_SERVER_MAX_OPS + 1, &count,
                        &last_seq) != 0) {
     (void)send_session_frame(session,
                              "{\"type\":\"ERROR\",\"code\":\"PULL_FAILED\"}");
     return;
   }
 
+  int has_more = count > limit;
+  if (has_more)
+    count = limit;
+  last_seq = count > 0 ? ops[count - 1].global_seq : from_seq;
+
   char resp[16384] = {0};
   int enc_rc = as_catchup_batch
-                   ? net_protocol_encode_catchup_batch(ops, count, last_seq, 0,
+                   ? net_protocol_encode_catchup_batch(ops, count, last_seq,
+                                                       has_more,
                                                        resp, sizeof(resp))
-                   : net_protocol_encode_pull_ops_resp(ops, count, last_seq, 0,
+                   : net_protocol_encode_pull_ops_resp(ops, count, last_seq,
+                                                       has_more,
                                                        resp, sizeof(resp));
   if (enc_rc != 0) {
     (void)send_session_frame(session,
@@ -312,6 +329,12 @@ static void handle_reserve_serial(NetServerSession *session, const char *frame) 
       logbook_id <= 0) {
     (void)send_session_frame(session,
                              "{\"type\":\"ERROR\",\"code\":\"BAD_RESERVE\"}");
+    return;
+  }
+
+  if (db_get_current_logbook_id(&logbook_id) != 0 || logbook_id <= 0) {
+    (void)send_session_frame(
+        session, "{\"type\":\"ERROR\",\"code\":\"NO_ACTIVE_LOGBOOK\"}");
     return;
   }
 
@@ -376,6 +399,7 @@ static void release_session_slot(NetServerSession *session) {
   pthread_mutex_lock(&net_server_sessions_mutex);
   session->authenticated = 0;
   session->station_id[0] = 0;
+  session->shared_log_id[0] = 0;
   session->client_fd = -1;
   session->last_activity_utc = 0;
   session->in_use = 0;
@@ -425,14 +449,28 @@ static void *net_server_client_worker(void *arg) {
       NetSessionMeta meta;
       memset(&meta, 0, sizeof(meta));
       int accepted = 0;
+      char active_shared_log_id[36] = {0};
+      int shared_id_rc = db_sync_get_shared_log_id(active_shared_log_id,
+                                                   sizeof(active_shared_log_id));
       if (net_protocol_parse_hello_meta(frame, &meta) == 0 &&
-          meta.station_id[0]) {
-        if (!config.net_auth_token[0] ||
-            strcmp(config.net_auth_token, meta.auth_token) == 0) {
+          meta.station_id[0] &&
+          db_sync_validate_shared_log_id(meta.shared_log_id) &&
+          shared_id_rc == 0 &&
+          strcmp(meta.shared_log_id, active_shared_log_id) == 0) {
+        const char *expected_token = config.net_auth_token[0]
+                         ? config.net_auth_token
+                         : config.net_shared_key;
+        if (expected_token[0] &&
+          strcmp(expected_token, meta.auth_token) == 0) {
           accepted = 1;
+          snprintf(config.net_shared_log_id,
+                   sizeof(config.net_shared_log_id), "%s",
+                   active_shared_log_id);
           pthread_mutex_lock(&net_server_sessions_mutex);
           snprintf(session->station_id, sizeof(session->station_id), "%s",
                    meta.station_id);
+          snprintf(session->shared_log_id, sizeof(session->shared_log_id),
+                   "%s", meta.shared_log_id);
           session->authenticated = 1;
           pthread_mutex_unlock(&net_server_sessions_mutex);
         }
@@ -460,6 +498,20 @@ static void *net_server_client_worker(void *arg) {
       (void)send_session_frame(
           session,
           "{\"type\":\"ERROR\",\"code\":\"NOT_AUTHENTICATED\"}");
+      break;
+    }
+
+    NetSessionMeta request_meta;
+    char active_shared_log_id[36] = {0};
+    if (net_protocol_parse_station_meta(frame, &request_meta) != 0 ||
+        !db_sync_validate_shared_log_id(request_meta.shared_log_id) ||
+        strcmp(request_meta.shared_log_id, session->shared_log_id) != 0 ||
+        db_sync_get_shared_log_id(active_shared_log_id,
+                                  sizeof(active_shared_log_id)) != 0 ||
+        strcmp(active_shared_log_id, session->shared_log_id) != 0) {
+      (void)send_session_frame(
+          session,
+          "{\"type\":\"ERROR\",\"code\":\"SHARED_LOG_MISMATCH\"}");
       break;
     }
 
@@ -506,6 +558,7 @@ static int allocate_session_slot(NetServerSession **out_session) {
       net_server_sessions[i].in_use = 1;
       net_server_sessions[i].authenticated = 0;
       net_server_sessions[i].station_id[0] = 0;
+      net_server_sessions[i].shared_log_id[0] = 0;
       net_server_sessions[i].client_fd = -1;
       net_server_sessions[i].last_activity_utc = time(NULL);
       *out_session = &net_server_sessions[i];
@@ -601,6 +654,28 @@ static void *net_server_worker(void *arg) {
 int net_server_start(void) {
   if (net_server_running)
     return 0;
+
+  if (strcasecmp(config.net_role, "server") != 0 ||
+      config.net_server_port < 1 || config.net_server_port > 65535 ||
+      !net_sync_token_is_strong(config.net_auth_token[0]
+                                    ? config.net_auth_token
+                                    : config.net_shared_key))
+    return -1;
+
+  char shared_log_id[36] = {0};
+  if (db_init() != 0)
+    return -1;
+  int shared_id_rc = db_sync_get_shared_log_id(shared_log_id,
+                                               sizeof(shared_log_id));
+  if (shared_id_rc == 1) {
+    if (db_sync_create_shared_log_id(shared_log_id, sizeof(shared_log_id)) !=
+        0)
+      return -1;
+  }
+  if (shared_id_rc < 0)
+    return -1;
+  snprintf(config.net_shared_log_id, sizeof(config.net_shared_log_id), "%s",
+           shared_log_id);
 
   net_server_stop_flag = 0;
   for (int i = 0; i < NET_SERVER_MAX_SESSIONS; i++) {

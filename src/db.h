@@ -6,6 +6,8 @@
 #include "qso.h"
 #include "qtc.h"
 
+#define DB_ERR_LOG_CHANGE_WHILE_NET_ACTIVE (-2)
+
 typedef struct {
 	long long id;
 	char name[64];
@@ -45,7 +47,7 @@ int db_load_qsos(QSO *logbook, int max_qso, long long *ids, int *out_count);
  * @param out_id Optional destination for the inserted row id.
  * @return 0 on success, or -1 on failure.
  */
-int db_insert_qso(const QSO *qso, long long *out_id);
+int db_insert_qso(QSO *qso, long long *out_id);
 
 /*
  * Update the invalid flag for a QSO row.
@@ -67,6 +69,13 @@ int db_update_qso_contest_fields(long long id, const char *exchange_sent,
 								 const char *operator_mode,
 								 const char *contest_id, int radio_nr,
 								 int points);
+int db_update_qso_contest_fields_with_reservation(
+								 long long id, const char *exchange_sent,
+								 const char *exchange_recv,
+								 const char *operator_mode,
+								 const char *contest_id, int radio_nr,
+								 int points, const char *reservation_id,
+								 int commit_remote);
 
 /*
  * Load the current logbook call history into memory.
@@ -232,6 +241,11 @@ typedef struct {
 	char op_utc[32];
 } SyncLogOpEntry;
 
+typedef struct {
+	char reservation_id[64];
+	char qso_uid[40];
+} SyncSerialCommitEntry;
+
 #define DB_SYNC_APPLY_CHANGED 1
 #define DB_SYNC_APPLY_ALREADY_PRESENT 0
 #define DB_SYNC_APPLY_ERR (-1)
@@ -255,6 +269,19 @@ int db_sync_get_or_create_station_id(char *out, size_t out_size);
  * Persist explicit station id for this installation.
  */
 int db_sync_set_station_id(const char *station_id);
+
+/*
+ * Shared-log identity is stored per SQLite database file.
+ * get: 0 when assigned, 1 when unpaired, or -1 on error. The output buffer
+ * must hold at least 36 bytes.
+ * set: assign an unpaired database or confirm the existing ID; a different
+ * existing ID is never overwritten.
+ * create: create an ID for a new server log or return its existing ID.
+ */
+int db_sync_get_shared_log_id(char *out, size_t out_size);
+int db_sync_validate_shared_log_id(const char *shared_log_id);
+int db_sync_set_shared_log_id(const char *shared_log_id);
+int db_sync_create_shared_log_id(char *out, size_t out_size);
 
 /*
  * Allocate next local station sequence number for outbound operations.
@@ -366,6 +393,13 @@ int db_sync_apply_remote_op(const char *op_id, const char *station_id,
 						 const char *payload_json,
 						 const char *op_utc,
 						 long long *out_global_seq);
+/* As above, atomically advance the local pull cursor to global_seq. */
+int db_sync_apply_remote_op_with_cursor(
+						 const char *op_id, const char *station_id,
+						 long long station_seq, int logbook_id,
+						 const char *op_type, const char *entity_id,
+						 const char *payload_json, const char *op_utc,
+						 long long global_seq, long long *out_global_seq);
 
 /*
  * Load a batch of applied operations after a global sequence cursor.
@@ -382,6 +416,32 @@ int db_sync_reserve_serial(int logbook_id, const char *station_id,
 			   char *out_reservation_id, size_t out_reservation_id_size,
 			   int *out_serial, char *out_expires_utc,
 			   size_t out_expires_utc_size);
+int db_sync_get_or_create_serial_request_id(const char *candidate_request_id,
+						       char *out_request_id,
+						       size_t out_request_id_size);
+int db_sync_clear_serial_request_id(const char *request_id);
+int db_sync_peek_next_serial(int logbook_id, int *out_serial);
+int db_sync_cache_serial_reservation(const char *reservation_id,
+						     int logbook_id, const char *station_id,
+						     int serial, const char *expires_utc);
+int db_sync_count_available_serial_reservations(int logbook_id,
+							const char *station_id,
+							int *out_count);
+int db_sync_peek_available_serial_reservation(int logbook_id,
+							      const char *station_id,
+							      int *out_serial);
+int db_sync_claim_available_serial_reservation(
+							 int logbook_id, const char *station_id,
+							 char *out_reservation_id,
+							 size_t out_reservation_id_size,
+							 int *out_serial);
+int db_sync_release_serial_reservation(const char *reservation_id,
+						      int reusable);
+int db_sync_recover_serial_claims(void);
+int db_sync_load_pending_serial_commits(SyncSerialCommitEntry *out,
+							int max_items, int *out_count);
+int db_sync_mark_serial_commit_acked(const char *reservation_id);
+int db_sync_mark_serial_commit_failed(const char *reservation_id);
 
 /*
  * Commit reservation after QSO write on the client side.

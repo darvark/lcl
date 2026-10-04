@@ -39,8 +39,53 @@ static int resolve_runtime_support_path(const char *path, char *resolved,
 }
 
 static void render_sync_status(void) {
-  snprintf(status_text, sizeof(status_text), "SYNC disabled");
-  snprintf(info_text, sizeof(info_text), "shared log removed from build");
+  NetSyncStatus sync;
+  memset(&sync, 0, sizeof(sync));
+  net_sync_get_status(&sync);
+
+  int failed_outbox = 0;
+  (void)db_sync_get_failed_outbox_count(&failed_outbox);
+  if (!config.net_enabled) {
+    snprintf(status_text, sizeof(status_text),
+             "SYNC pending=%d failed=%d connected=0 | NET disabled",
+             sync.pending_outbox, failed_outbox);
+  } else if (sync.connected) {
+    snprintf(status_text, sizeof(status_text),
+             "SYNC pending=%d failed=%d connected=1 | ONLINE",
+             sync.pending_outbox, failed_outbox);
+  } else {
+    snprintf(status_text, sizeof(status_text),
+             "SYNC pending=%d failed=%d connected=0 | NET OFFLINE - local queue: %d pending, %d failed",
+             sync.pending_outbox, failed_outbox,
+             sync.pending_outbox, failed_outbox);
+  }
+
+  snprintf(info_text, sizeof(info_text),
+           "role=%s shared=%s station=%s seq=%lld%s%s",
+           config.net_role[0] ? config.net_role : "client",
+           sync.station_id[0] ? config.net_shared_log_id : "unpaired",
+           sync.station_id[0] ? sync.station_id : "unassigned",
+           sync.last_pulled_global_seq, sync.last_error[0] ? " error=" : "",
+           sync.last_error);
+}
+
+static int start_network_service(void) {
+  if (!config.net_role[0])
+    snprintf(config.net_role, sizeof(config.net_role), "%s", "client");
+  config.net_enabled = 1;
+  if (net_sync_start() != 0) {
+    config.net_enabled = 0;
+    (void)config_save_active();
+    return -1;
+  }
+  (void)config_save_active();
+  return 0;
+}
+
+static void stop_network_service(void) {
+  net_sync_stop();
+  config.net_enabled = 0;
+  (void)config_save_active();
 }
 
 static int process_command(const char *cmd) {
@@ -70,11 +115,6 @@ static int process_command(const char *cmd) {
   trim_whitespace_in_place(arg);
   snprintf(normalized_command, sizeof(normalized_command), "%s", command);
   snprintf(normalized_arg, sizeof(normalized_arg), "%s", arg);
-
-  if (strcmp(command, "netsync") == 0 || strcmp(command, "netserver") == 0) {
-    snprintf(status_text, sizeof(status_text), "Network sync removed");
-    return 1;
-  }
 
   if (strcmp(normalized_command, "export") == 0) {
     if (export_with_optional_adif(cmd) != 0)
@@ -106,15 +146,103 @@ static int process_command(const char *cmd) {
   }
 
   if (strcmp(normalized_command, "sync") == 0 ||
-      strcmp(normalized_command, "syncstatus") == 0) {
-    snprintf(status_text, sizeof(status_text), "SYNC disabled");
-    return 1;
-  }
+      strcmp(normalized_command, "syncstatus") == 0 ||
+      strcmp(normalized_command, "net") == 0 ||
+      strcmp(normalized_command, "netsync") == 0 ||
+      strcmp(normalized_command, "netserver") == 0) {
+    char *argument = normalized_arg;
+    if (strcmp(normalized_command, "netsync") == 0 &&
+        strncmp(argument, "pair ", 5) == 0) {
+      if (config.net_enabled) {
+        snprintf(status_text, sizeof(status_text),
+                 "Stop network service before pairing this log");
+        return 1;
+      }
+      const char *shared_log_id = argument + 5;
+      if (db_sync_set_shared_log_id(shared_log_id) != 0) {
+        snprintf(status_text, sizeof(status_text),
+                 "Shared log ID invalid or already paired differently");
+        return 1;
+      }
+      snprintf(config.net_shared_log_id,
+               sizeof(config.net_shared_log_id), "%s", shared_log_id);
+      (void)config_save_active();
+      snprintf(status_text, sizeof(status_text), "NET shared log paired");
+      return 1;
+    }
 
-  if (strcmp(normalized_command, "net") == 0 ||
-      strcmp(command, "netsync") == 0 ||
-      strcmp(command, "netserver") == 0) {
-    snprintf(status_text, sizeof(status_text), "Network sync removed");
+    if (strcmp(normalized_command, "syncstatus") == 0 ||
+        (strcmp(normalized_command, "sync") == 0 &&
+         (!argument[0] || strcmp(argument, "status") == 0)) ||
+        ((strcmp(normalized_command, "net") == 0 ||
+          strcmp(normalized_command, "netsync") == 0 ||
+          strcmp(normalized_command, "netserver") == 0) &&
+         strcmp(argument, "status") == 0)) {
+      render_sync_status();
+      return 1;
+    }
+
+    if (strcmp(normalized_command, "net") == 0 &&
+        strncmp(argument, "role ", 5) == 0) {
+      const char *role = argument + 5;
+      if (strcmp(role, "client") != 0 && strcmp(role, "server") != 0) {
+        snprintf(status_text, sizeof(status_text),
+                 "Usage: net role <client|server>");
+        return 1;
+      }
+      int was_enabled = config.net_enabled;
+      if (was_enabled)
+        net_sync_stop();
+      snprintf(config.net_role, sizeof(config.net_role), "%s", role);
+      if (was_enabled && start_network_service() != 0) {
+        snprintf(status_text, sizeof(status_text), "NET start failed");
+        return 1;
+      }
+      (void)config_save_active();
+      snprintf(status_text, sizeof(status_text), "NET role=%s", role);
+      return 1;
+    }
+
+    if ((strcmp(normalized_command, "netserver") == 0 &&
+         strcmp(argument, "start") == 0) ||
+        (strcmp(normalized_command, "netsync") == 0 &&
+         strcmp(argument, "start") == 0) ||
+        strcmp(argument, "on") == 0) {
+      if (strcmp(normalized_command, "netserver") == 0)
+        snprintf(config.net_role, sizeof(config.net_role), "%s", "server");
+      if (start_network_service() != 0) {
+        snprintf(status_text, sizeof(status_text), "NET start failed");
+        return 1;
+      }
+      snprintf(status_text, sizeof(status_text), "NET enabled");
+      return 1;
+    }
+
+    if ((strcmp(normalized_command, "netserver") == 0 &&
+         strcmp(argument, "stop") == 0) ||
+        (strcmp(normalized_command, "netsync") == 0 &&
+         strcmp(argument, "stop") == 0) ||
+        strcmp(argument, "off") == 0) {
+      stop_network_service();
+      snprintf(status_text, sizeof(status_text), "NET disabled");
+      return 1;
+    }
+
+    if ((strcmp(normalized_command, "netsync") == 0 ||
+         strcmp(normalized_command, "sync") == 0) &&
+        (strcmp(argument, "catchup") == 0 || strcmp(argument, "poll") == 0)) {
+      if (strcasecmp(config.net_role, "server") == 0) {
+        render_sync_status();
+      } else if (net_sync_request_poll() != 0) {
+        snprintf(status_text, sizeof(status_text), "NET worker is not running");
+      } else {
+        snprintf(status_text, sizeof(status_text), "SYNC poll scheduled");
+      }
+      return 1;
+    }
+
+    snprintf(status_text, sizeof(status_text),
+             "Usage: net [on|off|status|role client|role server]; netsync pair <shared_log_id>");
     return 1;
   }
 
@@ -231,6 +359,8 @@ static int process_command(const char *cmd) {
       else
         load_contest_definition_file(arg);
     }
+    net_sync_set_serial_prefetch_enabled(
+        contest_exchange_uses_serial_counter());
     return 1;
   }
 
@@ -497,21 +627,19 @@ int app_controller_init(void) {
   qso_init();
   qtc_init();
   call_history_load_file("call_history.txt");
+  net_sync_set_serial_prefetch_enabled(
+      contest_exchange_uses_serial_counter());
 
   if (app_debug_enabled) {
     fprintf(stderr,
-            "[debug] app_controller_init: cluster_view=%d, starting DXCluster\n",
+            "[debug] app_controller_init: cluster_view=%d, DXCluster disconnected until requested\n",
             cluster_view ? 1 : 0);
   }
 
-  if (dxcluster_start() != 0) {
-    snprintf(status_text, sizeof(status_text), "DXCluster start failed");
-    update_display_info();
-    return -1;
-  }
+  dxcluster_set_status("Disconnected");
 
-  config.net_enabled = 0;
-  config.net_role[0] = 0;
+  if (config.net_enabled && net_sync_start() != 0)
+    snprintf(status_text, sizeof(status_text), "NET start failed");
 
   update_display_info();
 
@@ -525,6 +653,7 @@ int app_controller_init(void) {
  */
 void app_controller_shutdown(void) {
   dxcluster_stop();
+  net_sync_stop();
   db_shutdown();
 }
 
@@ -987,7 +1116,24 @@ AppControllerEvent app_controller_handle_key(int key) {
 
           char exchange_sent[32] = {0};
           char exchange_recv_storage[32] = {0};
-          build_exchange_sent(exchange_sent, sizeof(exchange_sent));
+          char reservation_id[64] = {0};
+          int commit_reservation_remote = 0;
+          if (config.net_enabled && contest_exchange_uses_serial_counter()) {
+            int reserved_serial = 0;
+            if (net_sync_reserve_serial_for_qso(
+                    &reserved_serial, reservation_id, sizeof(reservation_id),
+                    &commit_reservation_remote) != 0) {
+              (void)net_sync_request_poll();
+              snprintf(status_text, sizeof(status_text),
+                       "NET serial unavailable; QSO not saved");
+              return APP_CTRL_EVENT_NONE;
+            }
+            build_exchange_sent_with_serial(exchange_sent,
+                                            sizeof(exchange_sent),
+                                            reserved_serial);
+          } else {
+            build_exchange_sent(exchange_sent, sizeof(exchange_sent));
+          }
 
           const int qso_points = resolve_contest_points(
             mode, qso_band, country, entry_call,
@@ -1003,14 +1149,15 @@ AppControllerEvent app_controller_handle_key(int key) {
                      entered_exchange);
           }
 
-          int idx = qso_add_contest_fields(
+          int idx = qso_add_contest_fields_with_reservation(
               entry_call, qso_freq_khz, qso_rst, mode, qso_comments,
               exchange_sent,
               exchange_recv_storage[0] ? exchange_recv_storage : entered_exchange,
               active_operator_mode_text(),
             active_contest_def.cabrillo_name, active_radio_nr, qso_points,
               contest_definition_loaded ? active_contest_def.duplicate_qso : 0,
-              status_text, sizeof(status_text));
+              reservation_id[0] ? reservation_id : NULL,
+              commit_reservation_remote, status_text, sizeof(status_text));
           if (apply_saved_qso_state(idx)) {
             call_history_record_from_input(entry_call);
           }

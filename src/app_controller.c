@@ -10,6 +10,7 @@
 #include "globals.h"
 #include "maidenhead.h"
 #include "live_upload.h"
+#include "net_sync.h"
 #include "qso.h"
 #include "qtc.h"
 #include "suggestion.h"
@@ -46,7 +47,7 @@ static int active_entry_field_by_radio[2] = {ENTRY_FIELD_CALL, ENTRY_FIELD_CALL}
 
 static char status_text[256] = "Ready";
 static char dxcc_text[128] = "";
-static char info_text[128] = "";
+static char info_text[256] = "";
 static char display_info[128] = "";
 
 int app_debug_enabled = 0;

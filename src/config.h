@@ -47,6 +47,7 @@ typedef struct {
   int net_enabled;
   char net_role[16];
   char net_station_id[32];
+  char net_shared_log_id[36];
   char net_server_host[128];
   int net_server_port;
   char net_auth_token[128];
@@ -70,7 +71,6 @@ typedef struct {
 
   int ui_theme_palette;  /* 0=Classic Light, 1=Monokai, 2=Legacy Contest */
   int ui_monokai_theme;
-
 } Config;
 
 extern Config config;

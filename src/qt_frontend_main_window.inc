@@ -180,13 +180,17 @@ public:
     status_layout->setContentsMargins(8, 2, 8, 2);
     status_label_ = new QLabel(status_panel_);
     dupe_status_label_ = new QLabel(status_panel_);
+    network_status_label_ = new QLabel(status_panel_);
     info_label_ = new QLabel(status_panel_);
     status_label_->setWordWrap(false);
     dupe_status_label_->setWordWrap(false);
     dupe_status_label_->hide();
+    network_status_label_->setMinimumWidth(150);
+    network_status_label_->setAlignment(Qt::AlignCenter);
     info_label_->setWordWrap(false);
     status_layout->addWidget(status_label_, 1);
     status_layout->addWidget(dupe_status_label_, 0, Qt::AlignVCenter);
+    status_layout->addWidget(network_status_label_, 0, Qt::AlignVCenter);
     status_layout->addWidget(info_label_, 1, Qt::AlignRight);
     left_layout->addWidget(status_panel_);
 
@@ -1452,9 +1456,48 @@ private:
           new QLineEdit(QString::fromLatin1(def.operators), &dialog);
       form->addRow("Operators:", operators_edit);
 
+      const ContestFieldDef *received_field =
+          def.field_count > 0 ? &def.fields[0] : nullptr;
+      auto *exchange_received_type_edit = new QLineEdit(
+          received_field ? QString::fromLatin1(received_field->name)
+                         : QString(),
+          &dialog);
+      form->addRow("Wymiana odebrana (typ):", exchange_received_type_edit);
+
+      auto *exchange_received_label_edit = new QLineEdit(
+          received_field ? QString::fromLatin1(received_field->label)
+                         : QString::fromLatin1("Rcv Exch"),
+          &dialog);
+      form->addRow("Etykieta odebranej:", exchange_received_label_edit);
+
       auto *exchange_template_edit =
           new QLineEdit(QString::fromLatin1(def.exchange_sent_template), &dialog);
-      form->addRow("EXCHANGE_SENT:", exchange_template_edit);
+      form->addRow("Wymiana nadawana (szablon):", exchange_template_edit);
+
+      connect(preset_combo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+              &dialog, [&](int /*idx*/) {
+                const QString selected_path =
+                    preset_combo->currentData().toString();
+                if (selected_path.isEmpty())
+                  return;
+
+                ContestDefinition loaded;
+                contest_definition_init_defaults(&loaded);
+                char load_err[64] = {0};
+                const QByteArray path_bytes = selected_path.toLocal8Bit();
+                if (contest_definition_load(path_bytes.constData(), &loaded,
+                                            load_err, sizeof(load_err)) == 0) {
+                  const ContestFieldDef *field =
+                      loaded.field_count > 0 ? &loaded.fields[0] : nullptr;
+                  exchange_received_type_edit->setText(
+                      field ? QString::fromLatin1(field->name) : QString());
+                  exchange_received_label_edit->setText(
+                      field ? QString::fromLatin1(field->label)
+                            : QString::fromLatin1("Rcv Exch"));
+                  exchange_template_edit->setText(
+                      QString::fromLatin1(loaded.exchange_sent_template));
+                }
+              });
 
       layout->addLayout(form);
 
@@ -1498,6 +1541,29 @@ private:
       copy_field(def.station_location, sizeof(def.station_location),
                  station_location_edit->text(), true);
       copy_field(def.operators, sizeof(def.operators), operators_edit->text(), true);
+      const QString received_type = exchange_received_type_edit->text().trimmed();
+      if (received_type.isEmpty()) {
+        if (def.field_count > 0) {
+          for (int i = 1; i < def.field_count; i++)
+            def.fields[i - 1] = def.fields[i];
+          def.field_count--;
+          std::memset(&def.fields[def.field_count], 0,
+                      sizeof(def.fields[def.field_count]));
+        }
+      } else {
+        if (def.field_count == 0) {
+          std::memset(&def.fields[0], 0, sizeof(def.fields[0]));
+          def.field_count = 1;
+          def.fields[0].required = 1;
+        }
+        copy_field(def.fields[0].name, sizeof(def.fields[0].name),
+                   received_type, true);
+        copy_field(def.fields[0].label, sizeof(def.fields[0].label),
+                   exchange_received_label_edit->text(), false);
+        if (!def.fields[0].label[0])
+          std::snprintf(def.fields[0].label, sizeof(def.fields[0].label), "%s",
+                        def.fields[0].name);
+      }
       copy_field(def.exchange_sent_template, sizeof(def.exchange_sent_template),
                  exchange_template_edit->text(), false);
 
@@ -3934,6 +4000,31 @@ private:
         ? "QLabel { background: #b71c1c; color: #ffffff; border: 1px solid #7f1212; border-radius: 6px; padding: 2px 8px; font-weight: bold; }"
         : "");
 
+    NetSyncStatus network_status{};
+    net_sync_get_status(&network_status);
+    QString network_text;
+    QString network_style;
+    if (!config.net_enabled) {
+      network_text = "NET OFF";
+      network_style = "QLabel { color: #777777; padding: 2px 4px; }";
+    } else if (network_status.connected) {
+      network_text = QString("NET ONLINE  P:%1 F:%2")
+                         .arg(network_status.pending_outbox)
+                         .arg(network_status.failed_outbox);
+      network_style = "QLabel { color: #1b6e3b; padding: 2px 4px; font-weight: bold; }";
+    } else {
+      network_text = QString("NET OFFLINE  P:%1 F:%2")
+                         .arg(network_status.pending_outbox)
+                         .arg(network_status.failed_outbox);
+      network_style = "QLabel { color: #9a5a00; padding: 2px 4px; font-weight: bold; }";
+    }
+    if (network_status.last_error[0])
+      network_text += " !";
+    set_text_if_changed(network_status_label_, network_text);
+    set_stylesheet_if_changed(network_status_label_, network_style);
+    network_status_label_->setToolTip(
+        QString::fromLatin1(network_status.last_error));
+
     QString info_text = QString("Info: %1").arg(state.info ? state.info : "");
     const QString operator_text = QString("OP: %1").arg(
         QString::fromLatin1(config_effective_operator_call()));
@@ -4142,6 +4233,7 @@ private:
   QFrame *status_panel_ = nullptr;
   QLabel *status_label_ = nullptr;
   QLabel *dupe_status_label_ = nullptr;
+  QLabel *network_status_label_ = nullptr;
   ClickableStatusLabel *cat_conn_badge_label_ = nullptr;
   ClickableStatusLabel *cat_conn_badge_r2_label_ = nullptr;
   ClickableStatusLabel *cw_conn_badge_label_ = nullptr;

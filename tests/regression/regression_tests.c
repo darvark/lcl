@@ -1182,8 +1182,21 @@ static void test_new_contest_defs_load(const char *tmp_dir) {
   /* WAG */
   check_conf_loads(tmp_dir, "wag.conf",
     "NAME=WAG\nCABRILLO_NAME=WAG\nMODE=MIXED\nEXCHANGE_SENT=#\n"
-    "MULTIPLIER=DXCC_PER_BAND\nFIELD=SERIAL,Rcv Exch,required\n",
+    "MULTIPLIER=DXCC_PER_BAND\nFIELD=EXCHANGE,Rcv Exch,required\n",
     "WAG", (int)CONTEST_MULT_DXCC_PER_BAND);
+  char wag_conf_path[512];
+  snprintf(wag_conf_path, sizeof(wag_conf_path), "%s/wag.conf", tmp_dir);
+  ContestDefinition wag_def = {0};
+  char wag_error[128] = {0};
+  expect_int_eq(contest_definition_load(wag_conf_path, &wag_def, wag_error,
+                                        sizeof(wag_error)),
+                0, "load WAG definition for received exchange check");
+  expect_str_eq(wag_def.exchange_sent_template, "#",
+                "WAG should send an incremental serial number");
+  expect_int_eq(wag_def.field_count, 1, "WAG should define one received field");
+  if (wag_def.field_count > 0)
+    expect_str_eq(wag_def.fields[0].name, "EXCHANGE",
+                  "WAG received field should accept textual exchanges");
 
   /* Oceania DX CW - PREFIX_PER_BAND */
   check_conf_loads(tmp_dir, "oceania_dx_cw.conf",

@@ -244,6 +244,7 @@ static void set_defaults(void) {
   config.net_enabled = 0;
   strcpy(config.net_role, "client");
   strcpy(config.net_station_id, "");
+  strcpy(config.net_shared_log_id, "");
   strcpy(config.net_server_host, "127.0.0.1");
   config.net_server_port = 9230;
   strcpy(config.net_auth_token, "");
@@ -419,6 +420,10 @@ int config_load(const char *filename) {
     } else if (strcmp(key, "NET_STATION_ID") == 0) {
       strncpy(config.net_station_id, value, sizeof(config.net_station_id));
       config.net_station_id[sizeof(config.net_station_id) - 1] = 0;
+    } else if (strcmp(key, "NET_SHARED_LOG_ID") == 0) {
+      strncpy(config.net_shared_log_id, value,
+              sizeof(config.net_shared_log_id));
+      config.net_shared_log_id[sizeof(config.net_shared_log_id) - 1] = 0;
     } else if (strcmp(key, "NET_SERVER_HOST") == 0) {
       strncpy(config.net_server_host, value, sizeof(config.net_server_host));
       config.net_server_host[sizeof(config.net_server_host) - 1] = 0;
@@ -575,6 +580,27 @@ int config_save(const char *filename) {
   fprintf(f, "CW_AUTO_CONNECT=%d\n", config.cw_auto_connect ? 1 : 0);
   fprintf(f, "CW_ESM=%d\n", config.cw_esm_enabled ? 1 : 0);
   fprintf(f, "\n");
+  fprintf(f, "NET_ENABLED=%d\n", config.net_enabled ? 1 : 0);
+  fprintf(f, "NET_ROLE=%s\n", config.net_role);
+  fprintf(f, "NET_STATION_ID=%s\n", config.net_station_id);
+  fprintf(f, "NET_SHARED_LOG_ID=%s\n", config.net_shared_log_id);
+  fprintf(f, "NET_SERVER_HOST=%s\n", config.net_server_host);
+  fprintf(f, "NET_SERVER_PORT=%d\n", config.net_server_port);
+  fprintf(f, "NET_AUTH_TOKEN=%s\n", config.net_auth_token);
+  fprintf(f, "NET_SHARED_KEY=%s\n", config.net_shared_key);
+  fprintf(f, "NET_TLS_CERT_FILE=%s\n", config.net_tls_cert_file);
+  fprintf(f, "NET_TLS_KEY_FILE=%s\n", config.net_tls_key_file);
+  fprintf(f, "NET_TLS_PEER_FINGERPRINT=%s\n",
+          config.net_tls_peer_fingerprint);
+  fprintf(f, "NET_SYNC_INTERVAL_MS=%d\n", config.net_sync_interval_ms);
+  fprintf(f, "NET_HEARTBEAT_SEC=%d\n", config.net_heartbeat_sec);
+  fprintf(f, "NET_RETRY_MIN_MS=%d\n", config.net_retry_min_ms);
+  fprintf(f, "NET_RETRY_MAX_MS=%d\n", config.net_retry_max_ms);
+  fprintf(f, "NET_TLS=%d\n", config.net_tls ? 1 : 0);
+  fprintf(f, "NET_RATE_LIMIT_WINDOW_SEC=%d\n",
+          config.net_rate_limit_window_sec);
+  fprintf(f, "NET_RATE_LIMIT_BURST=%d\n", config.net_rate_limit_burst);
+  fprintf(f, "NET_MAX_FRAME_BYTES=%d\n", config.net_max_frame_bytes);
   fprintf(f, "\n");
   fprintf(f, "# Live Upload\n");
   fprintf(f, "LIVE_UPLOAD_ENABLED=%d\n", config.live_upload_enabled ? 1 : 0);

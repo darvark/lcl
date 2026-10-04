@@ -124,8 +124,17 @@ static void sanitize_text(char *dst, size_t dst_size, const char *src) {
 }
 
 static void append_sync_pending_status(char *status, size_t status_size) {
-  (void)status;
-  (void)status_size;
+  if (!status || status_size < 2 || !config.net_enabled)
+    return;
+
+  int pending = 0;
+  if (db_sync_get_pending_outbox_count(&pending) != 0 || pending <= 0)
+    return;
+
+  size_t used = strlen(status);
+  if (used >= status_size - 1)
+    return;
+  snprintf(status + used, status_size - used, " [SYNC:PENDING:%d]", pending);
 }
 
 static int qso_is_duplicate_call_band_mode(const char *call,
@@ -179,16 +188,6 @@ static void fill_sync_defaults(QSO *q) {
                                        sizeof(q->origin_station_id)) != 0)
     q->origin_station_id[0] = 0;
 
-  if (db_sync_next_station_seq(&q->origin_station_seq) != 0)
-    q->origin_station_seq = 0;
-
-  if (q->origin_station_id[0] && q->origin_station_seq > 0) {
-    const char *sid = q->origin_station_id;
-    size_t sid_len = strlen(sid);
-    const char *tail = sid_len > 8 ? sid + sid_len - 8 : sid;
-    snprintf(q->qso_uid, sizeof(q->qso_uid), "q-%s-%lld", tail,
-             q->origin_station_seq);
-  }
 }
 
 static void touch_sync_metadata(QSO *q) {
@@ -297,7 +296,6 @@ void qso_init(void) {
   memset(logbook, 0, sizeof(logbook));
   qso_count = 0;
 
-  db_shutdown();
   if (db_init() != 0)
     return;
 
@@ -400,8 +398,11 @@ int qso_add(const char *line, char *status, size_t status_size) {
   }
 
   long long db_id = 0;
-  if (db_insert_qso(&q, &db_id) == 0)
-    q.db_id = db_id;
+  if (db_insert_qso(&q, &db_id) != 0) {
+    snprintf(status, status_size, "Database save failed");
+    return -1;
+  }
+  q.db_id = db_id;
 
   logbook[qso_count] = q;
   qso_count++;
@@ -493,8 +494,11 @@ int qso_add_fields(const char *call, int freq_khz, const char *rst,
   }
 
   long long db_id = 0;
-  if (db_insert_qso(&q, &db_id) == 0)
-    q.db_id = db_id;
+  if (db_insert_qso(&q, &db_id) != 0) {
+    snprintf(status, status_size, "Database save failed");
+    return -1;
+  }
+  q.db_id = db_id;
 
   logbook[qso_count] = q;
   qso_count++;
@@ -504,26 +508,22 @@ int qso_add_fields(const char *call, int freq_khz, const char *rst,
   return qso_count - 1;
 }
 
-int qso_add_contest_fields(const char *call, int freq_khz, const char *rst,
-                           const char *mode, const char *comments,
-                           const char *exchange_sent,
-                           const char *exchange_recv,
-                           const char *operator_mode,
-                           const char *contest_id, int radio_nr, int points,
-                           int allow_duplicate_qso,
-                           char *status, size_t status_size) {
-  char serial_reservation_id[64] = {0};
+int qso_add_contest_fields_with_reservation(
+    const char *call, int freq_khz, const char *rst, const char *mode,
+    const char *comments, const char *exchange_sent, const char *exchange_recv,
+    const char *operator_mode, const char *contest_id, int radio_nr,
+    int points, int allow_duplicate_qso, const char *reservation_id,
+    int commit_remote, char *status, size_t status_size) {
   char final_exchange_sent[32] = {0};
   sanitize_text(final_exchange_sent, sizeof(final_exchange_sent), exchange_sent);
 
-  const int needs_remote_serial = 0;
-  (void)serial_reservation_id;
-  (void)needs_remote_serial;
-
   int idx = qso_add_fields(call, freq_khz, rst, mode, comments, status,
                            status_size);
-  if (idx < 0)
+  if (idx < 0) {
+    if (reservation_id && reservation_id[0])
+      (void)db_sync_release_serial_reservation(reservation_id, commit_remote);
     return idx;
+  }
 
   QSO *q = &logbook[idx];
   sanitize_text(q->exchange_sent, sizeof(q->exchange_sent), final_exchange_sent);
@@ -553,10 +553,27 @@ int qso_add_contest_fields(const char *call, int freq_khz, const char *rst,
       qso_is_duplicate_call_band_mode(q->call, q->band, q->mode, idx)) {
     q->points = 0;
     q->invalid = true;
-    db_update_qso_invalid(q->db_id, 1);
-    int updated = db_update_qso_contest_fields(
+    if (db_update_qso_invalid(q->db_id, 1) != 0) {
+      if (reservation_id && reservation_id[0])
+        (void)db_sync_release_serial_reservation(reservation_id, commit_remote);
+      qso_init();
+      snprintf(status, status_size,
+               "QSO saved; duplicate status update failed");
+      return idx;
+    }
+    int updated = db_update_qso_contest_fields_with_reservation(
         q->db_id, q->exchange_sent, q->exchange_recv, q->operator_mode,
-        q->contest_id, q->radio_nr, q->points);
+        q->contest_id, q->radio_nr, q->points, reservation_id,
+        commit_remote);
+    if (updated != 0) {
+      if (reservation_id && reservation_id[0])
+        (void)db_sync_release_serial_reservation(reservation_id,
+                                                 commit_remote);
+      qso_init();
+      snprintf(status, status_size,
+               "QSO marked duplicate; contest data update failed");
+      return idx;
+    }
     touch_sync_metadata(q);
 
     snprintf(status, status_size, "QSO DUPE");
@@ -564,9 +581,17 @@ int qso_add_contest_fields(const char *call, int freq_khz, const char *rst,
     return idx;
   }
 
-  int updated = db_update_qso_contest_fields(
+  int updated = db_update_qso_contest_fields_with_reservation(
       q->db_id, q->exchange_sent, q->exchange_recv, q->operator_mode,
-      q->contest_id, q->radio_nr, q->points);
+      q->contest_id, q->radio_nr, q->points, reservation_id, commit_remote);
+  if (updated != 0) {
+    if (reservation_id && reservation_id[0])
+      (void)db_sync_release_serial_reservation(reservation_id, commit_remote);
+    qso_init();
+    snprintf(status, status_size,
+             "QSO saved; contest data update failed");
+    return idx;
+  }
   touch_sync_metadata(q);
 
   snprintf(status, status_size, "QSO OK TX:%s RX:%s",
@@ -574,6 +599,20 @@ int qso_add_contest_fields(const char *call, int freq_khz, const char *rst,
            q->exchange_recv[0] ? q->exchange_recv : "-");
   append_sync_pending_status(status, status_size);
   return idx;
+}
+
+int qso_add_contest_fields(const char *call, int freq_khz, const char *rst,
+                           const char *mode, const char *comments,
+                           const char *exchange_sent,
+                           const char *exchange_recv,
+                           const char *operator_mode,
+                           const char *contest_id, int radio_nr, int points,
+                           int allow_duplicate_qso,
+                           char *status, size_t status_size) {
+  return qso_add_contest_fields_with_reservation(
+      call, freq_khz, rst, mode, comments, exchange_sent, exchange_recv,
+      operator_mode, contest_id, radio_nr, points, allow_duplicate_qso, NULL,
+      0, status, status_size);
 }
 
 /* ------------------------------------------------ */
@@ -591,7 +630,11 @@ void qso_mark_invalid(int index) {
   if (index >= qso_count)
     return;
 
-  logbook[index].invalid = !logbook[index].invalid;
-  db_update_qso_invalid(logbook[index].db_id, logbook[index].invalid);
+  int invalid = !logbook[index].invalid;
+  if (db_update_qso_invalid(logbook[index].db_id, invalid) != 0) {
+    qso_init();
+    return;
+  }
+  logbook[index].invalid = invalid;
   touch_sync_metadata(&logbook[index]);
 }

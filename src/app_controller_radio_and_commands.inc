@@ -275,6 +275,12 @@ static void trim_whitespace_in_place(char *s) {
  * @return Nothing.
  */
 static void create_new_clean_log(void) {
+  if (config.net_enabled) {
+    snprintf(status_text, sizeof(status_text),
+             "NET active: stop sync before changing log");
+    return;
+  }
+
   if (db_archive_current_logbook() != 0 || db_clear_logbook() != 0) {
     snprintf(status_text, sizeof(status_text), "New log failed");
     return;
@@ -291,6 +297,12 @@ static void create_new_clean_log(void) {
  * @return Nothing.
  */
 static void create_new_named_log(const char *name) {
+  if (config.net_enabled) {
+    snprintf(status_text, sizeof(status_text),
+             "NET active: stop sync before changing log");
+    return;
+  }
+
   if (!name || !name[0]) {
     create_new_clean_log();
     return;
@@ -316,6 +328,12 @@ static void create_new_named_log(const char *name) {
  * @return Nothing.
  */
 static void open_previous_log(void) {
+  if (config.net_enabled) {
+    snprintf(status_text, sizeof(status_text),
+             "NET active: stop sync before changing log");
+    return;
+  }
+
   if (db_open_previous_logbook() != 0) {
     snprintf(status_text, sizeof(status_text), "No previous log available");
     return;
@@ -376,6 +394,12 @@ static void list_named_logs(void) {
  * @return Nothing.
  */
 static void open_named_log_selector(const char *selector) {
+  if (config.net_enabled) {
+    snprintf(status_text, sizeof(status_text),
+             "NET active: stop sync before changing log");
+    return;
+  }
+
   if (!selector || !selector[0]) {
     snprintf(status_text, sizeof(status_text), "Usage: openlog <id|name>");
     return;
@@ -406,6 +430,12 @@ static void open_named_log_selector(const char *selector) {
  * @return Nothing.
  */
 static void open_log_file_path(const char *path) {
+  if (config.net_enabled) {
+    snprintf(status_text, sizeof(status_text),
+             "NET active: stop sync before changing log");
+    return;
+  }
+
   if (!path || !path[0]) {
     snprintf(status_text, sizeof(status_text), "Usage: openlogfile <path>");
     return;

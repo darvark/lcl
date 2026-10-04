@@ -146,7 +146,8 @@ Definicje zawodów są w `contest_defs/`.
 - obsługa `EXCHANGE_SENT=#` jako numeracji inkrementacyjnej,
 - zapisywanie `exchange_recv` w QSO,
 - przywracanie kolejnego numeru z logu, a nie z interfejsu,
-- etykieta pola wymiany ustawiona na `EXCH`,
+- etykieta i walidacja odbieranej wymiany wynikają z definicji `FIELD`,
+- szablon nadawanej wymiany wynika z `EXCHANGE_SENT`,
 - walidacja pól wymiany zgodnie z definicją `FIELD` i nazwami pól typu `SERIAL`, `NR`, `ZONE`.
 
 ### Super Check Partial (SCP)

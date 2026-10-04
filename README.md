@@ -9,25 +9,34 @@ Dodatkowa dokumentacja:
 - [docs/klawiszologia.md](docs/klawiszologia.md)
 - [docs/przykladowe-konfiguracje.md](docs/przykladowe-konfiguracje.md)
 - [docs/sciaga-operatora.md](docs/sciaga-operatora.md)
-- [docs/siec-centralny-log.md](docs/siec-centralny-log.md) (archiwalna dokumentacja historyczna)
+- [docs/siec-centralny-log.md](docs/siec-centralny-log.md)
 - [docs/siec-centralny-log-projekt.md](docs/siec-centralny-log-projekt.md) (archiwalna dokumentacja historyczna)
+- [docs/self-signed-tls-operacja.md](docs/self-signed-tls-operacja.md) (token, pin TLS i backup)
 
 ## Status prac i stabilizacji
 
-Aktualny stan repozytorium jest etapem stabilizacji po wprowadzeniu nowych funkcji VHF i aktualizacji synchronizacji. Nie jest to jeszcze stan produkcyjnie stabilny:
+Aktualny stan repozytorium jest etapem stabilizacji po wprowadzeniu nowych funkcji VHF i runtime synchronizacji. Nie jest to jeszcze stan produkcyjnie stabilny:
 
 - wprowadzono obsługę VHF/UHF/SHF z lokalizacją i punktacją odległościową,
 - dodano nowe typy exchange i multiplierów dla `SERIAL_GRID` / `GRID_PER_BAND`,
 - wprowadzono testy regresyjne dla VHF,
-- nadal trwają prace nad porządkowaniem logbooku, stanu synchronizacji i bezpieczeństwa buforów.
+- pełny historyczny `unit_tests` ma znane błędy w obszarach F3/#LOCATOR, sugestii i logbooków.
 
-Na poziomie projektu przyjęto zasadę, że najpierw trzeba zamknąć problematyczne obszary krytyczne (buffer overflow, qso state, sync/outbox, remote apply), a dopiero potem finalizować VHF i doprecyzować dokumentację użytkową.
+Sieciowe bramki CTest obejmują migracje, protokół, routing `shared_log_id` oraz test wieloprocesowy serwera i dwóch klientów. Pozostałe testy aplikacyjne należy uporządkować przed deklaracją pełnej stabilności.
 
 ## Status pracy sieciowej
 
-Funkcjonalność pracy w sieci z wspólnym logiem została usunięta z aktywnej wersji aplikacji. Aktualnie program działa jako lokalny logger konkursowy bez synchronizacji klient-serwer, centralnego logu i funkcji sieciowych.
+Runtime klient-serwer jest aktywny: klient ma okresowego workera poza UI,
+trwały outbox i catch-up, a serwer obsługuje centralne operacje oraz rezerwacje
+seriali. Start serwera wymaga silnego wspólnego tokenu. Przy TLS klient wymaga
+wcześniej skonfigurowanego fingerprintu SHA-256; nie ma automatycznego TOFU.
+Serwer generuje `shared_log_id`; klienta jawnie paruje się z ID widocznym w
+`net status` przez `netsync pair <shared_log_id>` przy wyłączonej synchronizacji.
 
-Poniższe dokumenty sieciowe są zachowane jako archiwum historyczne i nie opisują obecnej konfiguracji runtime ani aktywnego kodu produktu.
+Ograniczenie v1: jedna instancja serwera obsługuje aktywny plik SQLite i jego
+`shared_log_id`; używaj osobnej instancji/bazy dla każdego wspólnego logu. Pełny historyczny
+`unit_tests` ma znane błędy F3/#LOCATOR i logbooków; sieciowe bramki CTest są
+osobnymi testami.
 
 ## Testowanie i konfiguracja runtime
 
@@ -120,7 +129,7 @@ Qt pozostaje cienką warstwą: tłumaczy wejście klawiatury na akcje kontrolera
 
 `app_controller.c` to warstwa orkiestracji. Zarządza trybem contestowym, stanem dual-radio, integracją CAT, cyklem życia DXCluster, komendami eksportu, odświeżaniem CTY i operacjami na logach (każdy jako osobny plik SQLite), delegując przechowywanie danych i reguły domenowe do modułów głównych.
 
-Obsługa zawodów jest podzielona czysto: `contest.c` wczytuje definicje w stylu DXLog, `app_controller.c` przekształca je w aktywne zachowanie wpisywania i generowanie nadawanej wymiany, `qso.c` zapisuje wynikowe pola, a `export.c` produkuje Cabrillo oraz ADIF z tych samych danych definicji.
+Definicje zawodów rozdzielają wymianę odbieraną (`FIELD`) i nadawaną (`EXCHANGE_SENT`). `contest.c` je wczytuje, `app_controller.c` stosuje podczas wpisywania QSO, `qso.c` zapisuje obie wartości, a `export.c` wykorzystuje je w eksporcie.
 
 
 ![lnx_logger](./src/lnx_logger.png "LNX Logger")
@@ -201,6 +210,10 @@ Na systemach Debian/Ubuntu zainstaluj wymagane pakiety:
 sudo apt-get update
 sudo apt-get install -y build-essential cmake
 ```
+
+Transport TLS wymaga OpenSSL podczas budowania. Na Debian/Ubuntu doinstaluj
+`libssl-dev`; bez niego aplikacja nadal się buduje, ale `NET_TLS=1` nie będzie
+dostępne. Fedora używa `openssl-devel`, a Arch pakietu `openssl`.
 
 ### Skrypty instalacyjne (Ubuntu/Debian, Fedora, Arch Linux)
 
@@ -349,6 +362,7 @@ Gotowe przykłady dla `SO1R`, `SO2V` i `SO2R`: [docs/przykladowe-konfiguracje.md
 Najważniejsze zasady:
 
 - `CONTEST_DEF_FILE` może wskazywać lokalny plik lub preset z `contest_defs/`
+- `FIELD` określa typ i etykietę wymiany odbieranej; `EXCHANGE_SENT` określa wymianę nadawaną
 - `EXCHANGE_SENT=#` zawsze oznacza numerację inkrementalną `1`, `2`, `3`...
 - nadawana wymiana jest wyłącznie generowana z definicji zawodów; nie ma już przeładowania z `logger.conf`
 
