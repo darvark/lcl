@@ -3507,6 +3507,82 @@ int db_sync_outbox_load_pending(SyncOutboxEntry *out, int max_items,
   return rc;
 }
 
+static int db_sync_load_failed_outbox_impl(SyncOutboxEntry *out,
+                                           int max_items, int *out_count) {
+  if (!out || max_items <= 0 || !out_count || db_init() != 0)
+    return -1;
+  *out_count = 0;
+
+  sqlite3_stmt *stmt = NULL;
+  if (prepare_stmt(&stmt,
+                   "SELECT op_id, station_seq, logbook_id, op_type, entity_id, "
+                   "payload_json, op_utc, retry_count FROM log_outbox "
+                   "WHERE status = 'failed' ORDER BY station_seq ASC LIMIT ?;") !=
+      SQLITE_OK)
+    return -1;
+  sqlite3_bind_int(stmt, 1, max_items);
+
+  int count = 0;
+  int rc = SQLITE_OK;
+  while ((rc = sqlite3_step(stmt)) == SQLITE_ROW && count < max_items) {
+    SyncOutboxEntry *entry = &out[count];
+    memset(entry, 0, sizeof(*entry));
+    const unsigned char *op_id = sqlite3_column_text(stmt, 0);
+    const unsigned char *op_type = sqlite3_column_text(stmt, 3);
+    const unsigned char *entity_id = sqlite3_column_text(stmt, 4);
+    const unsigned char *payload = sqlite3_column_text(stmt, 5);
+    const unsigned char *op_utc = sqlite3_column_text(stmt, 6);
+    snprintf(entry->op_id, sizeof(entry->op_id), "%s",
+             op_id ? (const char *)op_id : "");
+    entry->station_seq = sqlite3_column_int64(stmt, 1);
+    entry->logbook_id = sqlite3_column_int(stmt, 2);
+    snprintf(entry->op_type, sizeof(entry->op_type), "%s",
+             op_type ? (const char *)op_type : "");
+    snprintf(entry->entity_id, sizeof(entry->entity_id), "%s",
+             entity_id ? (const char *)entity_id : "");
+    snprintf(entry->payload_json, sizeof(entry->payload_json), "%s",
+             payload ? (const char *)payload : "");
+    snprintf(entry->op_utc, sizeof(entry->op_utc), "%s",
+             op_utc ? (const char *)op_utc : "");
+    entry->retry_count = sqlite3_column_int(stmt, 7);
+    count++;
+  }
+  sqlite3_finalize(stmt);
+  *out_count = count;
+  return rc == SQLITE_DONE ? 0 : -1;
+}
+
+int db_sync_load_failed_outbox(SyncOutboxEntry *out, int max_items,
+                               int *out_count) {
+  db_operation_lock();
+  int rc = db_sync_load_failed_outbox_impl(out, max_items, out_count);
+  db_operation_unlock();
+  return rc;
+}
+
+static int db_sync_retry_failed_outbox_impl(const char *op_id) {
+  if (!op_id || !op_id[0] || db_init() != 0)
+    return -1;
+  sqlite3_stmt *stmt = NULL;
+  if (prepare_stmt(&stmt,
+                   "UPDATE log_outbox SET status = 'pending', retry_count = 0, "
+                   "next_retry_utc = CURRENT_TIMESTAMP "
+                   "WHERE op_id = ? AND status = 'failed';") != SQLITE_OK)
+    return -1;
+  sqlite3_bind_text(stmt, 1, op_id, -1, SQLITE_TRANSIENT);
+  int rc = sqlite3_step(stmt);
+  int changed = sqlite3_changes(db);
+  sqlite3_finalize(stmt);
+  return rc == SQLITE_DONE && changed == 1 ? 0 : -1;
+}
+
+int db_sync_retry_failed_outbox(const char *op_id) {
+  db_operation_lock();
+  int rc = db_sync_retry_failed_outbox_impl(op_id);
+  db_operation_unlock();
+  return rc;
+}
+
 static int db_sync_outbox_mark_sent_impl(const char *op_id) {
   if (!op_id || !op_id[0])
     return -1;
@@ -4788,6 +4864,69 @@ int db_sync_load_pending_serial_commits(SyncSerialCommitEntry *out,
                                         int max_items, int *out_count) {
   db_operation_lock();
   int rc = db_sync_load_pending_serial_commits_impl(out, max_items, out_count);
+  db_operation_unlock();
+  return rc;
+}
+
+static int db_sync_load_failed_serial_commits_impl(
+    SyncFailedSerialCommitEntry *out, int max_items, int *out_count) {
+  if (!out || max_items <= 0 || !out_count || db_init() != 0)
+    return -1;
+  *out_count = 0;
+  sqlite3_stmt *stmt = NULL;
+  if (prepare_stmt(&stmt,
+                   "SELECT reservation_id, consumed_qso_uid, reserved_serial "
+                   "FROM serial_reservations WHERE status = 'commit_failed' "
+                   "ORDER BY reserved_serial ASC LIMIT ?;") != SQLITE_OK)
+    return -1;
+  sqlite3_bind_int(stmt, 1, max_items);
+
+  int count = 0;
+  int rc = SQLITE_OK;
+  while ((rc = sqlite3_step(stmt)) == SQLITE_ROW && count < max_items) {
+    SyncFailedSerialCommitEntry *entry = &out[count];
+    memset(entry, 0, sizeof(*entry));
+    const unsigned char *reservation_id = sqlite3_column_text(stmt, 0);
+    const unsigned char *qso_uid = sqlite3_column_text(stmt, 1);
+    snprintf(entry->reservation_id, sizeof(entry->reservation_id), "%s",
+             reservation_id ? (const char *)reservation_id : "");
+    snprintf(entry->qso_uid, sizeof(entry->qso_uid), "%s",
+             qso_uid ? (const char *)qso_uid : "");
+    entry->reserved_serial = sqlite3_column_int(stmt, 2);
+    count++;
+  }
+  sqlite3_finalize(stmt);
+  *out_count = count;
+  return rc == SQLITE_DONE ? 0 : -1;
+}
+
+int db_sync_load_failed_serial_commits(SyncFailedSerialCommitEntry *out,
+                                       int max_items, int *out_count) {
+  db_operation_lock();
+  int rc = db_sync_load_failed_serial_commits_impl(out, max_items, out_count);
+  db_operation_unlock();
+  return rc;
+}
+
+static int db_sync_retry_failed_serial_commit_impl(const char *reservation_id) {
+  if (!reservation_id || !reservation_id[0] || db_init() != 0)
+    return -1;
+  sqlite3_stmt *stmt = NULL;
+  if (prepare_stmt(&stmt,
+                   "UPDATE serial_reservations SET status = 'commit_pending' "
+                   "WHERE reservation_id = ? AND status = 'commit_failed' "
+                   "AND consumed_qso_uid != '';") != SQLITE_OK)
+    return -1;
+  sqlite3_bind_text(stmt, 1, reservation_id, -1, SQLITE_TRANSIENT);
+  int rc = sqlite3_step(stmt);
+  int changed = sqlite3_changes(db);
+  sqlite3_finalize(stmt);
+  return rc == SQLITE_DONE && changed == 1 ? 0 : -1;
+}
+
+int db_sync_retry_failed_serial_commit(const char *reservation_id) {
+  db_operation_lock();
+  int rc = db_sync_retry_failed_serial_commit_impl(reservation_id);
   db_operation_unlock();
   return rc;
 }

@@ -246,6 +246,12 @@ typedef struct {
 	char qso_uid[40];
 } SyncSerialCommitEntry;
 
+typedef struct {
+	char reservation_id[64];
+	char qso_uid[40];
+	int reserved_serial;
+} SyncFailedSerialCommitEntry;
+
 #define DB_SYNC_APPLY_CHANGED 1
 #define DB_SYNC_APPLY_ALREADY_PRESENT 0
 #define DB_SYNC_APPLY_ERR (-1)
@@ -359,6 +365,9 @@ int db_sync_get_pending_outbox_count(int *out_count);
  * @return 0 on success, or -1 on failure.
  */
 int db_sync_get_failed_outbox_count(int *out_count);
+int db_sync_load_failed_outbox(SyncOutboxEntry *out, int max_items,
+								int *out_count);
+int db_sync_retry_failed_outbox(const char *op_id);
 
 /*
  * Read and persist last pulled global sequence cursor.
@@ -442,6 +451,9 @@ int db_sync_load_pending_serial_commits(SyncSerialCommitEntry *out,
 							int max_items, int *out_count);
 int db_sync_mark_serial_commit_acked(const char *reservation_id);
 int db_sync_mark_serial_commit_failed(const char *reservation_id);
+int db_sync_load_failed_serial_commits(SyncFailedSerialCommitEntry *out,
+									   int max_items, int *out_count);
+int db_sync_retry_failed_serial_commit(const char *reservation_id);
 
 /*
  * Commit reservation after QSO write on the client side.

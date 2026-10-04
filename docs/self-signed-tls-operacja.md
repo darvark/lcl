@@ -3,8 +3,8 @@
 ## Cel
 
 Dokument opisuje aktywny model uwierzytelniania i TLS. Synchronizacja zawsze
-wymaga silnego tokenu aplikacyjnego; przy `NET_TLS=1` klient dodatkowo wymaga
-ręcznie skonfigurowanego fingerprintu serwera SHA-256.
+wymaga silnego tokenu aplikacyjnego oraz TLS. Plain TCP jest zablokowany, chyba
+że operator jawnie zezwoli na niego dla zaufanej, odizolowanej sieci.
 
 - serwer utrzymuje lokalny self-signed certyfikat i klucz,
 - klient porównuje certyfikat z jawnym pinem; brak pinu blokuje połączenie,
@@ -16,6 +16,7 @@ ręcznie skonfigurowanego fingerprintu serwera SHA-256.
 W `logger.conf` obsluzone sa pola:
 
 - `NET_TLS=1`
+- `NET_ALLOW_INSECURE_LAN=0`
 - `NET_TLS_CERT_FILE=logger_net_cert.pem`
 - `NET_TLS_KEY_FILE=logger_net_key.pem`
 - `NET_TLS_PEER_FINGERPRINT=`
@@ -29,6 +30,20 @@ Znaczenie:
 - `NET_TLS_CERT_FILE`: sciezka PEM certyfikatu serwera.
 - `NET_TLS_KEY_FILE`: sciezka PEM klucza prywatnego serwera.
 - `NET_TLS_PEER_FINGERPRINT`: pin SHA-256 certyfikatu serwera po stronie klienta.
+- `NET_ALLOW_INSECURE_LAN=1`: jawny wyjątek dla zaufanej, odizolowanej sieci;
+	nigdy nie ustawiaj go dla Internetu, Wi-Fi gościnnego ani sieci współdzielonej.
+
+Plik konfiguracji jest prywatny dla konta uruchamiającego aplikację:
+`~/.config/contest-logger/logger.conf`, z prawami `0600`. Aplikacja naprawi
+szersze prawa pliku należącego do bieżącego użytkownika; odmówi odczytu pliku
+innego właściciela lub dowiązania symbolicznego. `config_save` tworzy plik z
+prawami `0600`. Pakiety nie zawierają wspólnego `logger.conf`, który mógłby
+ujawnić token wszystkim użytkownikom hosta. Generator konfiguracji również
+ustawia `umask 077`.
+
+Uruchomienie sieci wymaga `NET_TLS=1` i pinu fingerprintu po stronie klienta.
+Jeżeli TLS jest niedostępny, ustaw `NET_ALLOW_INSECURE_LAN=1` wyłącznie po
+świadomej ocenie, że cała sieć i hosty są zaufane.
 
 ## Parowanie wspólnego logu
 
@@ -94,13 +109,38 @@ Przy nastepnych polaczeniach:
 
 ## Rotacja certyfikatu
 
-Jesli certyfikat serwera musi zostac zrotowany:
+Certyfikat self-signed wygasa po roku; zaplanuj rotację przed wygaśnięciem, a
+także po podejrzeniu ujawnienia klucza. Klucz prywatny serwera ma prawa `0600`;
+aplikacja je egzekwuje i nie uruchomi serwera z kluczem obcego właściciela,
+dowiązaniem symbolicznym ani niepoprawnym/niekompletnym zestawem plików.
 
-1. zatrzymac serwer,
-2. podmienic lub usunac `NET_TLS_CERT_FILE` i `NET_TLS_KEY_FILE`,
-3. uruchomic serwer,
-4. odczytac nowy fingerprint,
-5. zaktualizowac `NET_TLS_PEER_FINGERPRINT` na klientach.
+Procedura rotacji:
+
+1. Uzgodnij okno serwisowe i zatrzymaj serwer.
+2. Zrób chronioną kopię starego certyfikatu i klucza. Usuń oba pliki z aktywnych
+	ścieżek albo przygotuj nową parę PEM; nie zostawiaj tylko jednego starego pliku.
+3. Uruchom serwer. Jeśli oba pliki nie istnieją, aplikacja utworzy nową parę.
+4. Odczytaj nowy fingerprint i przekaż go klientom zaufanym kanałem.
+5. Zaktualizuj `NET_TLS_PEER_FINGERPRINT` na wszystkich klientach i uruchom sync.
+	Klienci ze starym pinem nie połączą się z nowym certyfikatem.
+
+Nie kasuj jedynej kopii starego klucza przed zakończeniem aktualizacji pinów i
+sprawdzeniem połączeń.
+
+## Rotacja tokenu
+
+Rotuj token co 180 dni oraz natychmiast po podejrzeniu jego ujawnienia. Protokół
+nie obsługuje nakładających się tokenów, więc zmiana wymaga skoordynowanej
+przerwy:
+
+1. Zatrzymaj synchronizację na serwerze i wszystkich klientach.
+2. Wygeneruj nowy token, np. `openssl rand -base64 48 | tr -d '\n'`.
+3. Zaktualizuj `NET_AUTH_TOKEN` (i zgodny alias `NET_SHARED_KEY`, jeśli jest
+	używany) na serwerze i wszystkich klientach. Nie przesyłaj go w e-mailu,
+	zgłoszeniu ani logach.
+4. Sprawdź prawa `0600` wszystkich plików `logger.conf`, uruchom serwer, a potem
+	klientów. Nie wznawiaj klientów, zanim serwer nie używa nowego tokenu.
+5. Zweryfikuj połączenie każdej stacji i bezpiecznie usuń stare kopie tokenu.
 
 ## Token i ograniczenia
 
@@ -108,7 +148,8 @@ Jesli certyfikat serwera musi zostac zrotowany:
 - brak CRL/OCSP,
 - brak zewnetrznego CA,
 - fingerprint pinning wymaga bezpiecznego kanału dystrybucji pinu,
-- bez TLS token jest przesyłany jawnie; plain TCP stosuj wyłącznie w zaufanej, izolowanej sieci.
+- bez TLS token jest przesyłany jawnie; wyjątek plain TCP jest możliwy wyłącznie
+	przez `NET_ALLOW_INSECURE_LAN=1` w zaufanej, izolowanej sieci.
 
 Wygeneruj token bez spacji i nowej linii, np.:
 
@@ -117,8 +158,8 @@ openssl rand -base64 48 | tr -d '\n'
 ```
 
 Zapisz identyczną wartość w `NET_AUTH_TOKEN` na serwerze i klientach. Pliki
-konfiguracyjne z tokenem oraz prywatny klucz serwera chroń uprawnieniami
-ograniczonymi do operatora usługi (np. `chmod 600`).
+konfiguracyjne i prywatny klucz serwera chroń uprawnieniami ograniczonymi do
+operatora usługi (`chmod 600`).
 
 ## Rekomendacja operacyjna
 
@@ -128,7 +169,7 @@ Dla deploymentu klubowego/LAN:
 - zbackupowac PEM-y razem z konfiguracja serwera,
 - zweryfikować fingerprint poza połączeniem aplikacji i skonfigurować go na klientach przed startem,
 - utrzymywać ten sam silny token po obu stronach i rotować go koordynując serwer oraz klientów,
-- nie udostępniać portu serwera do niezaufanej sieci bez TLS.
+- pozostawić `NET_ALLOW_INSECURE_LAN=0`; TLS jest wymagany domyślnie.
 
 ## Backup i odtworzenie
 

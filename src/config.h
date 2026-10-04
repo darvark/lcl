@@ -60,6 +60,7 @@ typedef struct {
   int net_retry_min_ms;
   int net_retry_max_ms;
   int net_tls;
+  int net_allow_insecure_lan;
   int net_rate_limit_window_sec;
   int net_rate_limit_burst;
   int net_max_frame_bytes;

@@ -96,7 +96,20 @@ Ważne:
 
 ## Aktualny status sieci
 
-Funkcjonalność sieci z centralnym logiem została usunięta z aktywnej aplikacji. Nie ma już aktywnej konfiguracji `NET_*`, synchronizacji klient-serwer ani UI sieciowego.
+Synchronizacja klient-serwer z centralnym logiem jest aktywna. Podstawowe
+sterowanie jest dostępne w polu komend aplikacji:
+
+- `net on`, `net off`, `net status`
+- `net role client` lub `net role server`
+- `netsync pair <shared_log_id>` przy wyłączonej sieci
+- `netsync catchup`
+
+Pełna konfiguracja, w tym host, port, token i TLS, jest w
+`~/.config/contest-logger/logger.conf` (prawa `0600`); UI nie ma formularza do
+edycji tych ustawień. Szczegóły pól opisuje
+[konfiguracja i definicje zawodów](konfiguracja-i-zawody.md#centralny-log-i-synchronizacja).
+TLS jest wymagany domyślnie. Wyjątek `NET_ALLOW_INSECURE_LAN=1` wolno stosować
+wyłącznie w zaufanej, odizolowanej sieci.
 
 ## Co sprawdzić, gdy coś nie działa
 

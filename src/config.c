@@ -2,7 +2,9 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <pwd.h>
+#include <stdio.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -20,6 +22,19 @@ static char runtime_config_root[512] = {0};
 static char runtime_config_dir[512] = {0};
 static char runtime_contest_defs_dir[640] = {0};
 static int runtime_paths_ready = 0;
+
+static int restrict_file_to_owner(int fd) {
+  struct stat st;
+  if (fd < 0 || fstat(fd, &st) != 0 || !S_ISREG(st.st_mode))
+    return -1;
+  if (st.st_uid != geteuid())
+    return -1;
+  if ((st.st_mode & 0777) == (S_IRUSR | S_IWUSR))
+    return 0;
+  if (fchmod(fd, S_IRUSR | S_IWUSR) != 0)
+    return -1;
+  return 0;
+}
 
 static int has_suffix(const char *name, const char *suffix) {
   if (!name || !suffix)
@@ -257,6 +272,7 @@ static void set_defaults(void) {
   config.net_retry_min_ms = 1000;
   config.net_retry_max_ms = 30000;
   config.net_tls = 0;
+  config.net_allow_insecure_lan = 0;
   config.net_rate_limit_window_sec = 1;
   config.net_rate_limit_burst = 32;
   config.net_max_frame_bytes = 65536;
@@ -281,10 +297,25 @@ int config_load(const char *filename) {
 
   config_last_loaded_path[0] = 0;
 
-  FILE *f = fopen(filename, "r");
-
-  if (!f)
+  int load_flags = O_RDONLY;
+#ifdef O_NOFOLLOW
+  load_flags |= O_NOFOLLOW;
+#endif
+  int fd = open(filename, load_flags);
+  if (fd < 0)
     return -1;
+  if (restrict_file_to_owner(fd) != 0) {
+    close(fd);
+    fprintf(stderr,
+            "logger.conf must be owned by this user and have mode 0600\n");
+    return -1;
+  }
+  FILE *f = fdopen(fd, "r");
+
+  if (!f) {
+    close(fd);
+    return -1;
+  }
 
   if (filename && filename[0]) {
     strncpy(config_last_loaded_path, filename, sizeof(config_last_loaded_path));
@@ -474,6 +505,8 @@ int config_load(const char *filename) {
       if (config.net_retry_max_ms > 600000) config.net_retry_max_ms = 600000;
     } else if (strcmp(key, "NET_TLS") == 0) {
       config.net_tls = atoi(value) ? 1 : 0;
+    } else if (strcmp(key, "NET_ALLOW_INSECURE_LAN") == 0) {
+      config.net_allow_insecure_lan = atoi(value) ? 1 : 0;
     } else if (strcmp(key, "NET_RATE_LIMIT_WINDOW_SEC") == 0) {
       config.net_rate_limit_window_sec = atoi(value);
       if (config.net_rate_limit_window_sec < 1) config.net_rate_limit_window_sec = 1;
@@ -538,9 +571,22 @@ int config_save(const char *filename) {
   if (!filename || !filename[0])
     return -1;
 
-  FILE *f = fopen(filename, "w");
-  if (!f)
+  int save_flags = O_WRONLY | O_CREAT;
+#ifdef O_NOFOLLOW
+  save_flags |= O_NOFOLLOW;
+#endif
+  int fd = open(filename, save_flags, S_IRUSR | S_IWUSR);
+  if (fd < 0)
     return -1;
+  if (restrict_file_to_owner(fd) != 0 || ftruncate(fd, 0) != 0) {
+    close(fd);
+    return -1;
+  }
+  FILE *f = fdopen(fd, "w");
+  if (!f) {
+    close(fd);
+    return -1;
+  }
 
   fprintf(f, "LAT=%.6f\n", config.lat);
   fprintf(f, "LON=%.6f\n", config.lon);
@@ -597,6 +643,8 @@ int config_save(const char *filename) {
   fprintf(f, "NET_RETRY_MIN_MS=%d\n", config.net_retry_min_ms);
   fprintf(f, "NET_RETRY_MAX_MS=%d\n", config.net_retry_max_ms);
   fprintf(f, "NET_TLS=%d\n", config.net_tls ? 1 : 0);
+    fprintf(f, "NET_ALLOW_INSECURE_LAN=%d\n",
+      config.net_allow_insecure_lan ? 1 : 0);
   fprintf(f, "NET_RATE_LIMIT_WINDOW_SEC=%d\n",
           config.net_rate_limit_window_sec);
   fprintf(f, "NET_RATE_LIMIT_BURST=%d\n", config.net_rate_limit_burst);
@@ -612,8 +660,7 @@ int config_save(const char *filename) {
   fprintf(f, "UI_THEME_MONOKAI=%d\n", config.ui_monokai_theme ? 1 : 0);
   fprintf(f, "\n");
 
-  fclose(f);
-  return 0;
+  return fclose(f) == 0 ? 0 : -1;
 }
 
 int config_ensure_runtime_layout(void) {

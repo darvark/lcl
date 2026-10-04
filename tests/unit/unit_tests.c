@@ -152,6 +152,8 @@ static void set_test_db_path(const char *dir_path) {
            TEST_NET_AUTH_TOKEN);
   snprintf(config.net_shared_log_id, sizeof(config.net_shared_log_id), "%s",
            TEST_SHARED_LOG_ID);
+  config.net_allow_insecure_lan = 1;
+  config.net_allow_insecure_lan = 1;
 }
 
 static int make_temp_dir(char *out, size_t out_size) {
@@ -195,8 +197,15 @@ static void test_config_load(const char *tmp_dir) {
 
   expect_int_eq(write_text_file(conf_path, conf_text), 0,
                 "write unit logger.conf");
+  expect_int_eq(chmod(conf_path, 0644), 0,
+                "make test config permissive before load");
 
   expect_int_eq(config_load(conf_path), 0, "config_load should succeed");
+  struct stat config_stat;
+  expect_int_eq(stat(conf_path, &config_stat), 0,
+                "stat config after secure load");
+  expect_int_eq(config_stat.st_mode & 0777, 0600,
+                "config load should restrict permissions to owner");
   expect_double_close(config.lat, 52.2297, 0.0001, "config LAT parsed");
   expect_double_close(config.lon, 21.0122, 0.0001, "config LON parsed");
   expect_str_eq(config.locator, "JO92AA", "config locator parsed");
@@ -219,6 +228,14 @@ static void test_config_load(const char *tmp_dir) {
                 "live upload port parsed");
   expect_str_eq(config.live_upload_token, "secret-token",
                 "live upload token parsed");
+
+  char config_link[512];
+  snprintf(config_link, sizeof(config_link), "%s/logger-link.conf", tmp_dir);
+  expect_int_eq(symlink(conf_path, config_link), 0,
+                "create config symlink rejection fixture");
+  expect_int_eq(config_load(config_link), -1,
+                "config loader should reject symlink paths");
+  unlink(config_link);
 
   expect_int_eq(config_load("/definitely/missing/logger.conf"), -1,
                 "missing config should return -1");
@@ -261,6 +278,7 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
   config.cw_esm_enabled = 1;
   snprintf(config.net_shared_log_id, sizeof(config.net_shared_log_id), "%s",
            TEST_SHARED_LOG_ID);
+  config.net_allow_insecure_lan = 1;
   config.live_upload_enabled = 1;
   snprintf(config.live_upload_host, sizeof(config.live_upload_host), "%s",
            "persist-upload.local");
@@ -269,6 +287,11 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
            "persist-token");
 
   expect_int_eq(config_save(conf_path), 0, "config_save should succeed");
+  struct stat saved_config_stat;
+  expect_int_eq(stat(conf_path, &saved_config_stat), 0,
+                "stat saved config file");
+  expect_int_eq(saved_config_stat.st_mode & 0777, 0600,
+                "saved config should be owner-only");
 
   config.cat_model = 0;
   config.cat_device[0] = 0;
@@ -280,6 +303,7 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
   config.cat_mode_from_rig = 0;
   config.cw_esm_enabled = 0;
   config.net_shared_log_id[0] = 0;
+  config.net_allow_insecure_lan = 0;
   config.live_upload_enabled = 0;
   config.live_upload_host[0] = 0;
   config.live_upload_port = 0;
@@ -301,6 +325,8 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
                 "saved CW ESM restored");
   expect_str_eq(config.net_shared_log_id, TEST_SHARED_LOG_ID,
                 "saved shared log pairing restored");
+  expect_int_eq(config.net_allow_insecure_lan, 1,
+                "saved trusted-LAN opt-in restored");
   expect_int_eq(config.live_upload_enabled, 1,
                 "saved live upload enabled restored");
   expect_str_eq(config.live_upload_host, "persist-upload.local",
@@ -1013,6 +1039,26 @@ static void test_db_sync_outbox_retry_limit_marks_failed(const char *tmp_dir) {
   expect_int_eq(ops_count, 0,
                 "failed operation should not be returned as pending");
 
+  SyncOutboxEntry failed_ops[2];
+  int failed_ops_count = 0;
+  memset(failed_ops, 0, sizeof(failed_ops));
+  expect_int_eq(db_sync_load_failed_outbox(failed_ops, 2, &failed_ops_count),
+                0, "failed outbox loader should succeed");
+  expect_int_eq(failed_ops_count, 1,
+                "failed outbox loader should return failed operation");
+  expect_str_eq(failed_ops[0].op_id, "op-retry-limit",
+                "failed outbox should retain stable operation ID");
+  expect_int_eq(db_sync_retry_failed_outbox("op-retry-limit"), 0,
+                "failed operation should be retryable");
+  expect_int_eq(db_sync_retry_failed_outbox("op-retry-limit"), -1,
+                "retry should reject an operation no longer failed");
+  expect_int_eq(db_sync_outbox_load_pending(ops, 4, &ops_count), 0,
+                "pending loader should succeed after failed retry");
+  expect_int_eq(ops_count, 1,
+                "retried failed operation should return to pending");
+  expect_str_eq(ops[0].op_id, "op-retry-limit",
+                "retry should preserve stable operation ID");
+
   set_test_db_path(tmp_dir);
   qso_init();
 }
@@ -1449,6 +1495,7 @@ static void test_net_protocol_frames(void) {
     int saved_port = config.net_server_port;
     int saved_enabled = config.net_enabled;
     int saved_tls = config.net_tls;
+    int saved_allow_insecure_lan = config.net_allow_insecure_lan;
     char saved_role[sizeof(config.net_role)];
     char saved_host[sizeof(config.net_server_host)];
     char saved_token[sizeof(config.net_auth_token)];
@@ -1477,6 +1524,8 @@ static void test_net_protocol_frames(void) {
                   "invalid server ports should be rejected");
 
     snprintf(config.net_role, sizeof(config.net_role), "%s", "client");
+    config.net_tls = 0;
+    config.net_allow_insecure_lan = 0;
     config.net_server_port = 9230;
     config.net_server_host[0] = 0;
     expect_int_eq(net_sync_validate_config(error, sizeof(error)), -1,
@@ -1489,8 +1538,14 @@ static void test_net_protocol_frames(void) {
             "client without explicit shared log pairing should be rejected");
     snprintf(config.net_shared_log_id, sizeof(config.net_shared_log_id), "%s",
          TEST_SHARED_LOG_ID);
+    config.net_enabled = 1;
+    expect_int_eq(net_sync_validate_config(error, sizeof(error)), -1,
+            "enabled sync without TLS should require explicit LAN opt-in");
+    expect_true(strstr(error, "NET_TLS=1") != NULL,
+          "plaintext sync rejection should explain TLS requirement");
+    config.net_allow_insecure_lan = 1;
     expect_int_eq(net_sync_validate_config(error, sizeof(error)), 0,
-                  "valid client configuration should pass validation");
+            "explicit trusted LAN opt-in should allow plaintext tests");
 
     snprintf(config.net_shared_key, sizeof(config.net_shared_key), "%s",
              "Different-Strong-Secret-2026-Value!");
@@ -1500,6 +1555,7 @@ static void test_net_protocol_frames(void) {
              config.net_auth_token);
 
     config.net_tls = 1;
+    config.net_allow_insecure_lan = 0;
     expect_int_eq(net_sync_validate_config(error, sizeof(error)), -1,
                   "TLS clients without a configured pin should be rejected");
     snprintf(config.net_tls_peer_fingerprint,
@@ -1510,6 +1566,7 @@ static void test_net_protocol_frames(void) {
 
     snprintf(config.net_role, sizeof(config.net_role), "%s", "server");
     config.net_tls = 0;
+    config.net_allow_insecure_lan = 1;
     config.net_server_port = 9230;
     config.net_auth_token[0] = 0;
     config.net_shared_key[0] = 0;
@@ -1525,6 +1582,7 @@ static void test_net_protocol_frames(void) {
     config.net_server_port = saved_port;
     config.net_enabled = saved_enabled;
     config.net_tls = saved_tls;
+    config.net_allow_insecure_lan = saved_allow_insecure_lan;
     snprintf(config.net_role, sizeof(config.net_role), "%s", saved_role);
     snprintf(config.net_server_host, sizeof(config.net_server_host), "%s",
              saved_host);
@@ -2766,12 +2824,19 @@ static void test_tls_transport_fingerprint_pinning(const char *tmp_dir) {
                                           NULL, error_text,
                                           sizeof(error_text)),
                 0, "first TLS fingerprint handshake succeeds");
+  struct stat key_stat;
+  expect_int_eq(stat(key_path, &key_stat), 0,
+                "stat generated TLS private key");
+  expect_int_eq(key_stat.st_mode & 0777, 0600,
+                "generated TLS private key should be owner-only");
   const char *fp = net_transport_peer_fingerprint(&transport1);
   expect_true(fp != NULL && fp[0] != 0,
               "first TLS handshake should expose peer fingerprint");
   net_transport_close(&transport1);
 
   int cli2 = socket(AF_INET, SOCK_STREAM, 0);
+  expect_int_eq(chmod(key_path, 0644), 0,
+                "make existing private key permissive for repair test");
   expect_true(cli2 >= 0, "second TLS fingerprint client socket created");
   expect_int_eq(connect(cli2, (struct sockaddr *)&addr, sizeof(addr)), 0,
                 "second TLS fingerprint client connected");
@@ -2782,6 +2847,10 @@ static void test_tls_transport_fingerprint_pinning(const char *tmp_dir) {
                                           "00:11:22", error_text,
                                           sizeof(error_text)),
                 -1, "TLS handshake should fail on fingerprint mismatch");
+  expect_int_eq(stat(key_path, &key_stat), 0,
+                "stat TLS private key after secure load");
+  expect_int_eq(key_stat.st_mode & 0777, 0600,
+                "TLS load should repair permissive private-key mode");
   close(cli2);
 
   int cli3 = socket(AF_INET, SOCK_STREAM, 0);
@@ -3722,6 +3791,53 @@ static void test_db_sync_serial_reservation_and_commit(const char *tmp_dir) {
     expect_int_eq(db_sync_commit_serial(reservation_id, "q-serial-1"), 0,
           "repeated serial commit should be idempotent");
 
+  char serial_db_path[512];
+  join_path(serial_db_path, sizeof(serial_db_path), case_dir, "unit.sqlite3");
+  sqlite3 *serial_db = NULL;
+  expect_int_eq(sqlite3_open(serial_db_path, &serial_db), SQLITE_OK,
+                "open serial database to seed pending remote commit");
+  sqlite3_stmt *serial_stmt = NULL;
+  expect_int_eq(sqlite3_prepare_v2(
+                    serial_db,
+                    "UPDATE serial_reservations SET status = 'commit_pending', "
+                    "consumed_qso_uid = 'q-serial-2' WHERE reservation_id = ?;",
+                    -1, &serial_stmt, NULL),
+                SQLITE_OK, "prepare pending serial commit fixture");
+  sqlite3_bind_text(serial_stmt, 1, second_reservation_id, -1,
+                    SQLITE_TRANSIENT);
+  expect_int_eq(sqlite3_step(serial_stmt), SQLITE_DONE,
+                "seed pending serial commit fixture");
+  sqlite3_finalize(serial_stmt);
+  sqlite3_close(serial_db);
+  expect_int_eq(db_sync_mark_serial_commit_failed(second_reservation_id), 0,
+                "pending serial commit should be markable as failed");
+  SyncFailedSerialCommitEntry failed_commits[2];
+  int failed_commit_count = 0;
+  memset(failed_commits, 0, sizeof(failed_commits));
+  expect_int_eq(db_sync_load_failed_serial_commits(
+                    failed_commits, 2, &failed_commit_count),
+                0, "failed serial commit loader should succeed");
+  expect_int_eq(failed_commit_count, 1,
+                "failed serial commit loader should return failed entry");
+  expect_str_eq(failed_commits[0].reservation_id, second_reservation_id,
+                "failed serial commit should retain reservation ID");
+  expect_str_eq(failed_commits[0].qso_uid, "q-serial-2",
+                "failed serial commit should retain QSO ID");
+  expect_int_eq(db_sync_retry_failed_serial_commit(second_reservation_id), 0,
+                "failed serial commit should be retryable");
+  expect_int_eq(db_sync_retry_failed_serial_commit(second_reservation_id), -1,
+                "serial retry should reject an entry no longer failed");
+  SyncSerialCommitEntry pending_commits[2];
+  int pending_commit_count = 0;
+  memset(pending_commits, 0, sizeof(pending_commits));
+  expect_int_eq(db_sync_load_pending_serial_commits(
+                    pending_commits, 2, &pending_commit_count),
+                0, "pending serial commit loader should succeed after retry");
+  expect_true(pending_commit_count > 0,
+              "retried serial commit should return to pending");
+  expect_int_eq(db_sync_mark_serial_commit_acked(second_reservation_id), 0,
+                "clear retried serial fixture after assertions");
+
     expect_int_eq(db_sync_cache_serial_reservation(
             "rsv-client-cache-80", 1, "st-client", 80,
             "2099-01-01T00:00:00Z"),
@@ -3852,7 +3968,8 @@ static void test_net_command_on_off_role_status(const char *tmp_dir) {
   set_test_db_path(case_dir);
   expect_int_eq(write_text_file(
                     "logger.conf",
-                    "CONTEST_DEF_FILE=\nNET_AUTH_TOKEN=" TEST_NET_AUTH_TOKEN "\n"),
+                    "CONTEST_DEF_FILE=\nNET_AUTH_TOKEN=" TEST_NET_AUTH_TOKEN
+                    "\nNET_ALLOW_INSECURE_LAN=1\n"),
                 0, "write authenticated logger.conf for net command test");
 
   app_controller_init();
@@ -3932,7 +4049,8 @@ static void test_netsync_offline_queue_status(const char *tmp_dir) {
   set_test_db_path(case_dir);
   expect_int_eq(write_text_file(
                     "logger.conf",
-                    "CONTEST_DEF_FILE=\nNET_SHARED_LOG_ID=" TEST_SHARED_LOG_ID "\n"),
+                    "CONTEST_DEF_FILE=\nNET_SHARED_LOG_ID=" TEST_SHARED_LOG_ID
+                    "\nNET_ALLOW_INSECURE_LAN=1\n"),
                 0,
                 "write empty logger.conf for netsync offline test");
 

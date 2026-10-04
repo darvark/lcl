@@ -258,6 +258,7 @@ static void run_client_process(int client_id, const char *db_path, int server_po
   snprintf(config.net_shared_key, sizeof(config.net_shared_key), "%s",
            MP_AUTH_TOKEN);
   config.net_tls = 0;
+  config.net_allow_insecure_lan = 1;
   config.net_sync_interval_ms = 250;
   config.net_heartbeat_sec = 1;
   config.net_retry_min_ms = 100;
@@ -503,6 +504,7 @@ static void test_multiprocess_server_two_clients(void) {
            "127.0.0.1");
   config.net_server_port = 20000 + ((int)getpid() % 20000);
   config.net_tls = 0;
+  config.net_allow_insecure_lan = 1;
   config.net_rate_limit_burst = 64;
   config.net_rate_limit_window_sec = 1;
   config.net_sync_interval_ms = 250;

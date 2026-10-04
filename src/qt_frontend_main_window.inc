@@ -670,6 +670,13 @@ public:
 
       QMenu *operations_menu = menuBar()->addMenu("Operations");
 
+        QAction *sync_failures_action =
+          new QAction("Failed Sync Operations...", this);
+        connect(sync_failures_action, &QAction::triggered, this,
+            [this]() { prompt_sync_failed_operations(); });
+        operations_menu->addAction(sync_failures_action);
+        operations_menu->addSeparator();
+
       QAction *reset_cat_cw_action = new QAction("Reset CAT/CW keyer", this);
       reset_cat_cw_action->setShortcutContext(Qt::ApplicationShortcut);
       connect(reset_cat_cw_action, &QAction::triggered, this, [this]() {
@@ -998,6 +1005,148 @@ private:
         app_controller_submit_command_text(bytes.constData());
     if (ctrl_event == APP_CTRL_EVENT_EXIT)
       close();
+  }
+
+  void prompt_sync_failed_operations() {
+    QDialog dialog(this);
+    dialog.setWindowTitle("Failed Sync Operations");
+    dialog.resize(820, 360);
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *description = new QLabel(
+        "Retry resends the original operation ID. There is no manual ACK; "
+        "the server must confirm the operation.",
+        &dialog);
+    description->setWordWrap(true);
+    layout->addWidget(description);
+
+    auto *table = new QTableWidget(0, 4, &dialog);
+    table->setHorizontalHeaderLabels(
+        {"Kind", "Operation ID", "Details", "Retries"});
+    table->verticalHeader()->setVisible(false);
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    table->setSelectionMode(QAbstractItemView::SingleSelection);
+    table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    layout->addWidget(table, 1);
+
+    auto *summary = new QLabel(&dialog);
+    layout->addWidget(summary);
+
+    auto *buttons = new QHBoxLayout();
+    auto *retry_button = new QPushButton("Retry selected", &dialog);
+    auto *refresh_button = new QPushButton("Refresh", &dialog);
+    auto *close_button = new QPushButton("Close", &dialog);
+    buttons->addWidget(retry_button);
+    buttons->addWidget(refresh_button);
+    buttons->addStretch(1);
+    buttons->addWidget(close_button);
+    layout->addLayout(buttons);
+
+    auto refresh = [this, table, summary, retry_button]() {
+      table->setRowCount(0);
+      SyncOutboxEntry outbox[64]{};
+      SyncFailedSerialCommitEntry serial_commits[64]{};
+      int outbox_count = 0;
+      int serial_count = 0;
+      if (db_sync_load_failed_outbox(outbox, 64, &outbox_count) != 0 ||
+          db_sync_load_failed_serial_commits(serial_commits, 64,
+                                             &serial_count) != 0) {
+        summary->setText("Could not read failed operations from the database.");
+        retry_button->setEnabled(false);
+        return;
+      }
+
+      for (int index = 0; index < outbox_count; index++) {
+        const int row = table->rowCount();
+        table->insertRow(row);
+        auto *kind = new QTableWidgetItem("Outbox");
+        kind->setData(Qt::UserRole, 0);
+        table->setItem(row, 0, kind);
+        table->setItem(row, 1, new QTableWidgetItem(outbox[index].op_id));
+        table->setItem(
+            row, 2,
+            new QTableWidgetItem(QString("%1 / %2")
+                                     .arg(outbox[index].op_type)
+                                     .arg(outbox[index].entity_id)));
+        table->setItem(row, 3,
+                       new QTableWidgetItem(QString::number(outbox[index].retry_count)));
+      }
+
+      for (int index = 0; index < serial_count; index++) {
+        const int row = table->rowCount();
+        table->insertRow(row);
+        auto *kind = new QTableWidgetItem("Serial commit");
+        kind->setData(Qt::UserRole, 1);
+        table->setItem(row, 0, kind);
+        table->setItem(row, 1,
+                       new QTableWidgetItem(serial_commits[index].reservation_id));
+        table->setItem(
+            row, 2,
+            new QTableWidgetItem(QString("Serial %1 / QSO %2")
+                                     .arg(serial_commits[index].reserved_serial)
+                                     .arg(serial_commits[index].qso_uid)));
+        table->setItem(row, 3, new QTableWidgetItem("n/a"));
+      }
+
+      const bool can_retry = strcasecmp(config.net_role, "client") == 0;
+      retry_button->setEnabled(can_retry && table->rowCount() > 0);
+      QString text = QString("Loaded %1 failed outbox operation(s), %2 failed serial commit(s).")
+                         .arg(outbox_count)
+                         .arg(serial_count);
+      if (outbox_count == 64 || serial_count == 64)
+        text += " List is capped at 64 entries per type.";
+      if (!can_retry && table->rowCount() > 0)
+        text += " Retry is available only in client mode.";
+      else if (table->rowCount() > 0 && !config.net_enabled)
+        text += " Retry will wait in the local queue until NET is enabled.";
+      summary->setText(text);
+    };
+
+    connect(refresh_button, &QPushButton::clicked, &dialog, refresh);
+    connect(close_button, &QPushButton::clicked, &dialog, &QDialog::accept);
+    connect(retry_button, &QPushButton::clicked, &dialog,
+            [this, &dialog, table, refresh]() {
+              const int row = table->currentRow();
+              if (row < 0 || !table->item(row, 0) || !table->item(row, 1)) {
+                QMessageBox::information(&dialog, "Failed Sync Operations",
+                                         "Select a failed operation first.");
+                return;
+              }
+
+              const int kind = table->item(row, 0)->data(Qt::UserRole).toInt();
+              const QString operation_id = table->item(row, 1)->text();
+              const auto answer = QMessageBox::question(
+                  &dialog, "Retry Failed Operation",
+                  QString("Retry %1 using its existing identifier?\n\n"
+                          "This does not create a replacement QSO.")
+                      .arg(operation_id),
+                  QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+              if (answer != QMessageBox::Yes)
+                return;
+
+              const QByteArray id = operation_id.toLatin1();
+              const int rc = kind == 0
+                                 ? db_sync_retry_failed_outbox(id.constData())
+                                 : db_sync_retry_failed_serial_commit(id.constData());
+              if (rc != 0) {
+                QMessageBox::warning(
+                    &dialog, "Retry Failed Operation",
+                    "The operation changed or could not be queued. Refresh the list and try again.");
+                refresh();
+                return;
+              }
+
+              if (config.net_enabled &&
+                  strcasecmp(config.net_role, "client") == 0)
+                (void)net_sync_request_poll();
+              refresh();
+            });
+
+    refresh();
+    dialog.exec();
   }
 
   void on_dxcluster_connect() {

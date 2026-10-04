@@ -87,6 +87,15 @@ int net_sync_validate_config(char *error, size_t error_size) {
   if (error && error_size > 0)
     error[0] = 0;
 
+  if (config.net_enabled && !config.net_tls &&
+      !config.net_allow_insecure_lan) {
+    if (error && error_size > 1)
+      snprintf(error, error_size,
+               "NET_TLS=1 is required; plain TCP requires explicit "
+               "NET_ALLOW_INSECURE_LAN=1 on a trusted isolated LAN");
+    return -1;
+  }
+
   if (strcasecmp(config.net_role, "client") != 0 &&
       strcasecmp(config.net_role, "server") != 0) {
     if (error && error_size > 1)

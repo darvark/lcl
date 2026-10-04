@@ -100,7 +100,8 @@ Pola `CAT2_*` działają tak samo jak `CAT_*`, ale dotyczą drugiego radia.
 | `NET_SERVER_HOST` | nazwa lub adres IP | `127.0.0.1` | Adres serwera dla klienta. |
 | `NET_SERVER_PORT` | `1..65535` | `9230` | Port TCP serwera. |
 | `NET_AUTH_TOKEN` | sekret 32+ znaków | pusty | Wymagany sekret serwera i klienta; serwer nie wystartuje bez silnego tokenu. `NET_SHARED_KEY` jest aliasem zgodności. |
-| `NET_TLS` | `0` lub `1` | `0` | Włącza TLS. Dla klienta wymagany jest wcześniej skonfigurowany fingerprint. |
+| `NET_TLS` | `0` lub `1` | `0` (sieć domyślnie wyłączona) | Ustaw `1` przed uruchomieniem synchronizacji. Klient wymaga wcześniej skonfigurowanego fingerprintu. |
+| `NET_ALLOW_INSECURE_LAN` | `0` lub `1` | `0` | Jawny wyjątek dla zaufanej, odizolowanej sieci przy wyłączonym TLS. Token jest wtedy przesyłany jawnie; nie używaj w Internecie ani sieci współdzielonej. |
 | `NET_TLS_CERT_FILE` | ścieżka PEM | `logger_net_cert.pem` | Certyfikat serwera; przy pierwszym starcie może zostać wygenerowany self-signed. |
 | `NET_TLS_KEY_FILE` | ścieżka PEM | `logger_net_key.pem` | Prywatny klucz serwera; ogranicz prawa pliku do operatora. |
 | `NET_TLS_PEER_FINGERPRINT` | SHA-256 z dwukropkami | pusty | Obowiązkowy pin klienta przy `NET_TLS=1`; nie jest akceptowany automatycznie przy pierwszym połączeniu. |
@@ -115,6 +116,13 @@ identyczny na serwerze oraz klientach. Wygeneruj go bez spacji/nowej linii, np.:
 ```bash
 openssl rand -base64 48 | tr -d '\n'
 ```
+
+Pełne ustawienia sieciowe edytuje się w `logger.conf`; plik bieżącego
+użytkownika znajduje się w `~/.config/contest-logger/logger.conf` i ma prawa
+`0600`. UI nie ma formularza edycji hosta, portu, tokenu ani TLS. W polu komend
+aplikacji dostępne jest sterowanie `net on|off|status`, `net role client|server`,
+`netsync pair <shared_log_id>` i `netsync catchup`. Po zmianie konfiguracji
+zatrzymaj i uruchom sieć ponownie.
 
 Przykład serwera:
 
@@ -166,8 +174,8 @@ Przy `NET_TLS=1` kompilacja wymaga OpenSSL (`libssl-dev` na Debian/Ubuntu,
 poza połączeniem aplikacji poleceniem `openssl x509 -in server-cert.pem
 -noout -fingerprint -sha256` i skonfiguruj go na klientach przed startem.
 
-Sterowanie runtime: `net on|off|status`, `net role client|server`,
-`netsync catchup`, `netserver start|stop`. Pasek statusu pokazuje online/offline,
+Sterowanie runtime w polu komend aplikacji: `net on|off|status`,
+`net role client|server`, `netsync catchup`, `netserver start|stop`. Pasek statusu pokazuje online/offline,
 zaległe i błędne operacje. Dla spójnego backupu zatrzymaj aplikacje i zachowaj
 serwerową bazę SQLite, bazy klientów (outbox/cursor), `logger.conf` oraz
 serwerowy certyfikat i klucz. Szczegóły pinowania i odtwarzania opisuje

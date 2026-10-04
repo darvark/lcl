@@ -28,10 +28,16 @@ Sieciowe bramki CTest obejmują migracje, protokół, routing `shared_log_id` or
 
 Runtime klient-serwer jest aktywny: klient ma okresowego workera poza UI,
 trwały outbox i catch-up, a serwer obsługuje centralne operacje oraz rezerwacje
-seriali. Start serwera wymaga silnego wspólnego tokenu. Przy TLS klient wymaga
-wcześniej skonfigurowanego fingerprintu SHA-256; nie ma automatycznego TOFU.
-Serwer generuje `shared_log_id`; klienta jawnie paruje się z ID widocznym w
-`net status` przez `netsync pair <shared_log_id>` przy wyłączonej synchronizacji.
+seriali. TLS jest wymagany domyślnie; klient musi mieć wcześniej skonfigurowany
+fingerprint SHA-256 i nie ma automatycznego TOFU. Serwer generuje
+`shared_log_id`; klienta jawnie paruje się z ID widocznym w `net status` przez
+`netsync pair <shared_log_id>` przy wyłączonej synchronizacji.
+Pełne ustawienia sieciowe (`NET_*`) są w `logger.conf` bieżącego użytkownika
+(`~/.config/contest-logger/logger.conf`, prawa `0600`). UI udostępnia komendy
+sterujące, ale nie formularz edycji hosta, tokenu ani TLS. Plain TCP wymaga
+jawnego `NET_ALLOW_INSECURE_LAN=1` i może być użyty wyłącznie w zaufanej,
+odizolowanej sieci. Zobacz [konfigurację synchronizacji](docs/konfiguracja-i-zawody.md#centralny-log-i-synchronizacja)
+i [procedurę TLS](docs/self-signed-tls-operacja.md).
 
 Ograniczenie v1: jedna instancja serwera obsługuje aktywny plik SQLite i jego
 `shared_log_id`; używaj osobnej instancji/bazy dla każdego wspólnego logu. Pełny historyczny

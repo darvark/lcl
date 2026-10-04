@@ -657,6 +657,7 @@ int net_server_start(void) {
 
   if (strcasecmp(config.net_role, "server") != 0 ||
       config.net_server_port < 1 || config.net_server_port > 65535 ||
+      (!config.net_tls && !config.net_allow_insecure_lan) ||
       !net_sync_token_is_strong(config.net_auth_token[0]
                                     ? config.net_auth_token
                                     : config.net_shared_key))

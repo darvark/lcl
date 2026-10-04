@@ -89,10 +89,6 @@ prepare_payload_dir() {
 
     install -Dm755 "$BUILD_DIR/logger" "$payload_dir/usr/bin/$BIN_NAME"
 
-    if [ -f "$ROOT_DIR/logger.conf" ]; then
-        install -Dm644 "$ROOT_DIR/logger.conf" "$payload_dir/etc/lcl-logger/logger.conf"
-    fi
-
     if [ -d "$ROOT_DIR/contest_defs" ]; then
         mkdir -p "$payload_dir/usr/share/lcl-logger"
         cp -a "$ROOT_DIR/contest_defs" "$payload_dir/usr/share/lcl-logger/"
@@ -186,7 +182,6 @@ cp -a * %{buildroot}/
 
 %files
 /usr/bin/$BIN_NAME
-/etc/lcl-logger/logger.conf
 /usr/share/lcl-logger/contest_defs
 /usr/share/lcl-logger/$ICON_NAME
 /usr/share/pixmaps/$PKG_NAME.jpg

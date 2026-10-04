@@ -16,6 +16,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 fi
 
 OUTPUT="${1:-logger.conf}"
+umask 077
 
 ask() {
   local prompt="$1"

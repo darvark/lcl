@@ -44,6 +44,16 @@ Dodatkowo klient ma okresowego workera poza UI, lokalną pulę rezerwacji numer�
 trwały commit seriali i czytelny status kolejki. CTest obejmuje test migracji,
 integrację sieciową oraz osobny test wieloprocesowy z serwerem i dwoma klientami.
 
+### Odzyskiwanie failed operacji
+
+W menu `Operations > Failed Sync Operations...` operator może przejrzeć failed
+outbox i commity seriali oraz ponowić pojedynczy wpis po potwierdzeniu. Retry
+zachowuje pierwotny `op_id` lub `reservation_id` i QSO UID, więc wykorzystuje
+idempotencję serwera; aplikacja nie oferuje ręcznego ACK ani tworzenia kopii QSO.
+W trybie offline wpis wraca do lokalnej kolejki i czeka na włączenie sieci.
+Funkcja retry działa w trybie klienta. Outbox lokalnych QSO na serwerze nadal
+wymaga osobnego publishera i backfillu opisanego w backlogu.
+
 ## 1. Propozycja zmian schematu SQLite
 
 ## 1.1 Rozszerzenia tabeli `qso`
@@ -391,13 +401,17 @@ Pobranie zmian z serwera.
 - Token ma co najmniej 32 znaki i co najmniej trzy klasy znaków. Używaj
   identycznego sekretu na serwerze i klientach; pliki `logger.conf` chroń
   uprawnieniami operatora usługi.
-- TLS jest opcjonalny. Po jego włączeniu klient wymaga jawnego
-  `NET_TLS_PEER_FINGERPRINT` SHA-256; brak pinu blokuje połączenie. Fingerprint
-  należy przekazać klientom poza kanałem, który jest dopiero weryfikowany.
+- TLS jest wymagany domyślnie. Po włączeniu klient wymaga jawnego
+  `NET_TLS_PEER_FINGERPRINT` SHA-256; brak pinu blokuje połączenie. Plain TCP
+  wymaga jawnego `NET_ALLOW_INSECURE_LAN=1` i jest dopuszczalny wyłącznie w
+  zaufanej, odizolowanej sieci.
 - Pierwsze połączenie nie używa TOFU. mTLS i zewnętrzne CA nie są obecnie
   obsługiwane.
-- Bez TLS token jest przesyłany jawnie; plain TCP ogranicz do zaufanej,
-  izolowanej sieci.
+- `logger.conf` i klucz prywatny serwera mają prawa `0600`; token rotuj co
+  180 dni i po podejrzeniu ujawnienia. Certyfikat rotuj przed rocznym
+  wygaśnięciem. Rotacja tokenu wymaga skoordynowanej przerwy, ponieważ protokół
+  nie obsługuje nakładających się sekretów. Procedury opisuje
+  [instrukcja TLS i rotacji](self-signed-tls-operacja.md).
 
 ## 3. Lista zmian funkcji w plikach source
 

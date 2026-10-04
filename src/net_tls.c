@@ -1,11 +1,13 @@
 #include "net_tls.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <signal.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 static void ignore_sigpipe_once(void) {
@@ -62,6 +64,27 @@ static int compute_fingerprint_from_cert(X509 *cert, char *out,
   return 0;
 }
 
+static int secure_existing_private_key(const char *key_file) {
+  if (!key_file || !key_file[0])
+    return -1;
+  int flags = O_RDONLY;
+#ifdef O_NOFOLLOW
+  flags |= O_NOFOLLOW;
+#endif
+  int fd = open(key_file, flags);
+  if (fd < 0)
+    return -1;
+  struct stat st;
+  int rc = -1;
+  if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode) &&
+      st.st_uid == geteuid() &&
+      ((st.st_mode & 0777) == (S_IRUSR | S_IWUSR) ||
+       fchmod(fd, S_IRUSR | S_IWUSR) == 0))
+    rc = 0;
+  close(fd);
+  return rc;
+}
+
 static int save_cert_and_key(const char *cert_file, const char *key_file,
                              X509 *cert, EVP_PKEY *pkey) {
   if (!cert_file || !cert_file[0] || !key_file || !key_file[0] || !cert ||
@@ -78,15 +101,37 @@ static int save_cert_and_key(const char *cert_file, const char *key_file,
   }
   fclose(cert_fp);
 
-  FILE *key_fp = fopen(key_file, "w");
-  if (!key_fp)
+  int key_flags = O_WRONLY | O_CREAT | O_EXCL;
+#ifdef O_NOFOLLOW
+  key_flags |= O_NOFOLLOW;
+#endif
+  int key_fd = open(key_file, key_flags, S_IRUSR | S_IWUSR);
+  if (key_fd < 0)
     return -1;
+  struct stat key_stat;
+  if (fstat(key_fd, &key_stat) != 0 || !S_ISREG(key_stat.st_mode) ||
+      key_stat.st_uid != geteuid() ||
+      fchmod(key_fd, S_IRUSR | S_IWUSR) != 0) {
+    close(key_fd);
+    unlink(key_file);
+    return -1;
+  }
+  FILE *key_fp = fdopen(key_fd, "w");
+  if (!key_fp) {
+    close(key_fd);
+    unlink(key_file);
+    return -1;
+  }
 
   if (PEM_write_PrivateKey(key_fp, pkey, NULL, NULL, 0, NULL, NULL) != 1) {
     fclose(key_fp);
+    unlink(key_file);
     return -1;
   }
-  fclose(key_fp);
+  if (fclose(key_fp) != 0) {
+    unlink(key_file);
+    return -1;
+  }
   return 0;
 }
 
@@ -96,7 +141,8 @@ static int load_cert_and_key(SSL_CTX *ctx, const char *cert_file,
   if (!ctx || !cert_file || !cert_file[0] || !key_file || !key_file[0])
     return -1;
 
-  if (access(cert_file, R_OK) != 0 || access(key_file, R_OK) != 0)
+  if (access(cert_file, R_OK) != 0 ||
+      secure_existing_private_key(key_file) != 0)
     return -1;
 
   if (SSL_CTX_use_certificate_file(ctx, cert_file, SSL_FILETYPE_PEM) != 1)
@@ -306,15 +352,21 @@ int net_transport_init_server(NetTransport *transport, int fd, int use_tls,
       return -1;
     }
     SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
-    if (load_cert_and_key(ctx, cert_file, key_file, transport->local_fingerprint,
-                          sizeof(transport->local_fingerprint)) != 0) {
-      if (add_self_signed_certificate(ctx, cert_file, key_file,
-                                      transport->local_fingerprint,
-                                      sizeof(transport->local_fingerprint)) != 0) {
-        set_ssl_error(error_text, error_size, "tls certificate");
-        SSL_CTX_free(ctx);
-        return -1;
-      }
+    int cert_missing = access(cert_file, F_OK) != 0 && errno == ENOENT;
+    int key_missing = access(key_file, F_OK) != 0 && errno == ENOENT;
+    int cert_rc = -1;
+    if (cert_missing && key_missing)
+      cert_rc = add_self_signed_certificate(
+          ctx, cert_file, key_file, transport->local_fingerprint,
+          sizeof(transport->local_fingerprint));
+    else
+      cert_rc = load_cert_and_key(ctx, cert_file, key_file,
+                                  transport->local_fingerprint,
+                                  sizeof(transport->local_fingerprint));
+    if (cert_rc != 0) {
+      set_ssl_error(error_text, error_size, "tls certificate or private key");
+      SSL_CTX_free(ctx);
+      return -1;
     }
 
     ssl = SSL_new(ctx);
