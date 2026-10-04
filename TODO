@@ -1,0 +1,30 @@
+Aktualizacja: 2026-10-04
+Status: runtime, trwałość, hardening tokenu/TLS i test wieloprocesowy zaimplementowane.
+
+## Zakończone
+
+- QSO, outbox i rezerwacja numeru zapisują się transakcyjnie; remote apply wiąże QSO, `log_ops` i cursor.
+- Catch-up zaczyna się od lokalnego cursoru, obsługuje `has_more`, replay i restart. Broadcast nie przesuwa cursoru.
+- Klient działa w workerze poza UI; krótkie sesje TCP są okresowo otwierane i zamykane. Stop przerywa aktywne połączenie.
+- Serwer odrzuca start bez silnego `NET_AUTH_TOKEN`/`NET_SHARED_KEY` (min. 32 znaki, różnorodne klasy znaków); pusty token nie uwierzytelnia HELLO.
+- Przy TLS klient wymaga jawnego fingerprintu SHA-256. Pierwsze połączenie nie zapisuje pinu automatycznie; wybrany model to ręczne pinning, nie TOFU ani mTLS.
+- Rezerwacje seriali są lokalnie buforowane; `request_id` jest unikalny per stacja, ponowienie zwraca tę samą rezerwację, a klient trwale zachowuje ID żądania do zapisu ACK. Commit pozostaje idempotentny.
+- `shared_log_id` jest wymagany w protocol v2 envelope i HELLO_ACK; klient musi jawnie sparować bazę, a serwer odrzuca mismatch przed APPEND, PULL/CATCHUP, rezerwacją i commitem.
+- Liczbowe `logbook_id` pozostaje lokalne: serwer mapuje APPEND/rezerwacje na swój aktywny logbook, a klient mapuje catch-up na swój aktywny logbook.
+- Zmiana i czyszczenie aktywnego logu są blokowane przy włączonej sieci; workflow to `net off`, zmiana logu, pairing klienta i ponowny start.
+- `multiprocess_sync_tests` uruchamia serwer i dwóch klientów z osobnymi bazami; sprawdza równoległe QSO, numerację, catch-up ponad stronę, powtórzony APPEND, outage/reconnect i restart procesów.
+
+## Ograniczenia pozostałe
+
+- Jedna instancja serwera routuje do jednego aktywnego pliku SQLite. Dla różnych wspólnych logów używaj osobnych instancji/baz serwera; `shared_log_id` zapobiega ich przypadkowemu połączeniu.
+- Lokalne QSO zapisane na serwerze nadal trafia do outboxu, ale nie jest automatycznie publikowane do `log_ops`; potrzebny jest publisher serwerowego outboxu oraz backfill istniejących QSO. Test wieloprocesowy seeduje ten wpis jawnie.
+- Pełny `./build/unit_tests` ma nadal błędy w istniejących testach F3/#LOCATOR, sugestii, konfiguracji zawodów i logbooków. Zarejestrowane CTest oraz testy sieciowe przechodzą.
+- TLS jest opcjonalny. Bez TLS token podróżuje jawnie, dlatego sieć bez TLS jest dopuszczalna wyłącznie w zaufanej, izolowanej sieci.
+- mTLS/PKI, metryki i blacklist dla rate limitu oraz chaos-testy WAN pozostają poza zakresem.
+
+## Następne prace
+
+3. Dodać odzyskiwanie błędnych operacji. UI pokazuje liczbę failed, ale brakuje bezpiecznej funkcji operatora do ponowienia lub rozstrzygnięcia failed outbox/commitów seriali.
+4. Domknąć operacje wdrożeniowe. Sekrety są w logger.conf; trzeba egzekwować restrykcyjne prawa pliku i określić rotację tokenu/certyfikatu. Dla sieci niezaufanej należy wymagać TLS; bez TLS token jest przesyłany jawnie.
+5. Rozszerzyć testy awarii. `multiprocess_sync_tests` pokrywa dwa klienty z osobnymi bazami, równoległe QSO, wspólną numerację, catch-up ponad stronę, outage/reconnect, powtórzony APPEND i restart klientów. Brakuje m.in. twardego restartu procesu serwera podczas pracy.
+6. Dodać publisher i backfill QSO zapisanych lokalnie na serwerze do `log_ops`, aby catch-up klientów obejmował także wpisy utworzone na stacji centralnej.
