@@ -14,12 +14,46 @@ static int contest_exchange_is_serial_locator(const ContestFieldDef *field);
 static int contest_exchange_uses_serial_counter(void);
 static int contest_name_contains(const char *needle);
 
+static int station_exchange_is_sp_province(void) {
+  static const char provinces[] = "BCDFGJKLMOPRSUWZ";
+  return strlen(config.station_exchange) == 1 &&
+         strchr(provinces,
+                (int)toupper((unsigned char)config.station_exchange[0])) != NULL;
+}
+
+static int contest_station_is_sp(void) {
+  if (station_exchange_is_sp_province())
+    return 1;
+  const CtyEntry *station_cty = cty_lookup(config.station_call);
+  return station_cty && strcmp(station_cty->country, "Poland") == 0;
+}
+
 static int contest_station_is_dl(void) {
   if (config.station_exchange[0])
     return 1;
 
   const CtyEntry *station_cty = cty_lookup(config.station_call);
   return station_cty && strcmp(station_cty->prefix, "DL") == 0;
+}
+
+static int sp_dx_exchange_is_active(void) {
+  return contest_name_contains("SP DX") &&
+         strcmp(active_contest_def.exchange_sent_template, "SPDX_EXCHANGE") == 0;
+}
+
+static int iaru_exchange_is_active(void) {
+  return contest_name_contains("IARU") &&
+         strcmp(active_contest_def.exchange_sent_template, "IARU_EXCHANGE") == 0;
+}
+
+static int configured_station_itu_zone(void) {
+  if (is_digits_only(config.station_exchange)) {
+    const int zone = atoi(config.station_exchange);
+    if (zone >= 1 && zone <= 90)
+      return zone;
+  }
+  const CtyEntry *station_cty = cty_lookup(config.station_call);
+  return station_cty ? station_cty->itu_zone : 0;
 }
 
 static int contest_uses_wag_exchange_template(void) {
@@ -233,6 +267,54 @@ static int validate_contest_exchange(const char *exchange, char *status,
   if (!exchange || !exchange[0]) {
     snprintf(status, status_size, "Need: CALL %s", label);
     return 0;
+  }
+
+  if (sp_dx_exchange_is_active()) {
+    if (contest_station_is_sp()) {
+      if (!is_digits_only(exchange) || atoi(exchange) < 1) {
+        snprintf(status, status_size, "%s must be a QSO serial number", label);
+        return 0;
+      }
+    } else {
+      static const char provinces[] = "BCDFGJKLMOPRSUWZ";
+      if (strlen(exchange) != 1 ||
+          !strchr(provinces, (int)toupper((unsigned char)exchange[0]))) {
+        snprintf(status, status_size, "%s must be a Polish province letter", label);
+        return 0;
+      }
+    }
+    return 1;
+  }
+
+  if (iaru_exchange_is_active()) {
+    if (is_digits_only(exchange)) {
+      const int itu_zone = atoi(exchange);
+      if (itu_zone >= 1 && itu_zone <= 90)
+        return 1;
+    } else {
+      size_t length = strlen(exchange);
+      int alphabetic = length >= 2 && length <= 8;
+      for (size_t i = 0; i < length && alphabetic; i++)
+        alphabetic = isalpha((unsigned char)exchange[i]);
+      const int official = strcmp(exchange, "AC") == 0 ||
+                           strcmp(exchange, "R1") == 0 ||
+                           strcmp(exchange, "R2") == 0 ||
+                           strcmp(exchange, "R3") == 0;
+      if (alphabetic || official)
+        return 1;
+    }
+    snprintf(status, status_size, "%s must be an ITU zone or HQ/official abbreviation",
+             label);
+    return 0;
+  }
+
+  if (contest_name_contains("CQ WW") ||
+      contest_name_contains("CQ WORLD WIDE")) {
+    if (!is_digits_only(exchange) || atoi(exchange) < 1 || atoi(exchange) > 40) {
+      snprintf(status, status_size, "%s must be a CQ Zone from 1 to 40", label);
+      return 0;
+    }
+    return 1;
   }
 
   if (field && contest_exchange_is_numeric(field) && !is_digits_only(exchange)) {
@@ -820,6 +902,43 @@ static void build_exchange_sent_with_serial(char *out, size_t out_size,
 
   out[0] = 0;
   const char *tpl = active_contest_def.exchange_sent_template;
+  if (sp_dx_exchange_is_active()) {
+    if (contest_station_is_sp()) {
+      snprintf(out, out_size, "%s",
+               config.station_exchange[0] ? config.station_exchange : "SET EXCH");
+      return;
+    }
+    const int largest_serial = highest_numeric_exchange_sent();
+    const int next_serial = reserved_serial > 0
+                                ? reserved_serial
+                                : (qso_count > largest_serial ? qso_count
+                                                              : largest_serial) +
+                                      1;
+    snprintf(out, out_size, "%03d", next_serial);
+    return;
+  } else if (iaru_exchange_is_active()) {
+    if (config.station_exchange[0]) {
+      snprintf(out, out_size, "%s", config.station_exchange);
+      return;
+    }
+    const CtyEntry *station_cty = cty_lookup(config.station_call);
+    if (station_cty && station_cty->itu_zone > 0) {
+      snprintf(out, out_size, "%d", station_cty->itu_zone);
+      return;
+    }
+    snprintf(out, out_size, "%s", "SET ZONE");
+    return;
+  } else if ((contest_name_contains("CQ WW") ||
+              contest_name_contains("CQ WORLD WIDE")) &&
+             strcmp(tpl, "CQZONE") == 0) {
+    const CtyEntry *station_cty = cty_lookup(config.station_call);
+    if (station_cty && station_cty->cq_zone > 0) {
+      snprintf(out, out_size, "%d", station_cty->cq_zone);
+      return;
+    }
+    snprintf(out, out_size, "%s", "SET ZONE");
+    return;
+  }
   if (contest_uses_wag_exchange_template()) {
     if (contest_station_is_dl()) {
       snprintf(out, out_size, "%s",
@@ -835,7 +954,10 @@ static void build_exchange_sent_with_serial(char *out, size_t out_size,
                                 : (qso_count > largest_serial ? qso_count
                                                               : largest_serial) +
                                       1;
-    snprintf(out, out_size, "%d", next_serial);
+    if (contest_name_contains("CQ WPX"))
+      snprintf(out, out_size, "%03d", next_serial);
+    else
+      snprintf(out, out_size, "%d", next_serial);
     return;
   }
 
@@ -870,6 +992,8 @@ static void build_exchange_sent_with_serial(char *out, size_t out_size,
         snprintf(out, out_size, "%d%s", next_serial, config.locator);
       else
         snprintf(out, out_size, "%d", next_serial);
+    } else if (contest_name_contains("CQ WPX")) {
+      snprintf(out, out_size, "%03d", next_serial);
     } else {
       snprintf(out, out_size, "%d", next_serial);
     }
@@ -918,6 +1042,8 @@ static int contest_uses_locator_exchange(void) {
 
 static int contest_exchange_uses_serial_counter(void) {
   const char *tpl = active_contest_def.exchange_sent_template;
+  if (sp_dx_exchange_is_active())
+    return !contest_station_is_sp();
   if (contest_uses_wag_exchange_template())
     return !contest_station_is_dl();
   return !tpl || !tpl[0] || strcmp(tpl, "#") == 0 ||
@@ -1003,7 +1129,8 @@ static int was_band_dxcc_worked(const char *band, const char *country,
 
 static int is_low_band(const char *band) {
   return band && (strcmp(band, "160") == 0 || strcmp(band, "80") == 0 ||
-                  strcmp(band, "40") == 0);
+                  strcmp(band, "40") == 0 || strcmp(band, "160M") == 0 ||
+                  strcmp(band, "80M") == 0 || strcmp(band, "40M") == 0);
 }
 
 static int call_is_maritime_mobile(const char *call) {
@@ -1014,24 +1141,46 @@ static int call_is_maritime_mobile(const char *call) {
          (len >= 3 && strcmp(call + len - 3, "/AM") == 0);
 }
 
+static void normalize_contest_name(const char *input, char *out,
+                                   size_t out_size) {
+  if (!out || out_size == 0)
+    return;
+  out[0] = 0;
+  if (!input)
+    return;
+
+  size_t used = 0;
+  int pending_space = 0;
+  for (size_t i = 0; input[i] && used + 1 < out_size; i++) {
+    const unsigned char ch = (unsigned char)input[i];
+    if (isalnum(ch)) {
+      if (pending_space && used + 1 < out_size)
+        out[used++] = ' ';
+      out[used++] = (char)toupper(ch);
+      pending_space = 0;
+    } else if (used > 0) {
+      pending_space = 1;
+    }
+  }
+  out[used] = 0;
+}
+
 static int contest_name_contains(const char *needle) {
   if (!needle || !needle[0])
     return 0;
 
-  char up_name[96] = {0};
-  char up_cab[96] = {0};
-  char up_needle[48] = {0};
-  snprintf(up_name, sizeof(up_name), "%s", active_contest_def.name);
-  snprintf(up_cab, sizeof(up_cab), "%s", active_contest_def.cabrillo_name);
-  snprintf(up_needle, sizeof(up_needle), "%s", needle);
-  for (size_t i = 0; up_name[i]; i++)
-    up_name[i] = (char)toupper((unsigned char)up_name[i]);
-  for (size_t i = 0; up_cab[i]; i++)
-    up_cab[i] = (char)toupper((unsigned char)up_cab[i]);
-  for (size_t i = 0; up_needle[i]; i++)
-    up_needle[i] = (char)toupper((unsigned char)up_needle[i]);
+  char normalized_name[96] = {0};
+  char normalized_cabrillo[96] = {0};
+  char normalized_needle[48] = {0};
+  normalize_contest_name(active_contest_def.name, normalized_name,
+                         sizeof(normalized_name));
+  normalize_contest_name(active_contest_def.cabrillo_name,
+                         normalized_cabrillo, sizeof(normalized_cabrillo));
+  normalize_contest_name(needle, normalized_needle,
+                         sizeof(normalized_needle));
 
-  return strstr(up_name, up_needle) != NULL || strstr(up_cab, up_needle) != NULL;
+  return strstr(normalized_name, normalized_needle) != NULL ||
+         strstr(normalized_cabrillo, normalized_needle) != NULL;
 }
 
 static int text_contains_token_ci(const char *text, const char *token) {
@@ -1111,7 +1260,11 @@ static int resolve_contest_points(const char *mode, const char *band,
 
   if (!prefer_definition_points &&
       (contest_name_contains("CQ WW") || contest_name_contains("CQ WORLD WIDE"))) {
-    if (same_country)
+    const int worked_special_entity =
+      strncasecmp(call, "IG9", 3) == 0 || strncasecmp(call, "IH9", 3) == 0 ||
+      (dst_cty && (strcmp(dst_cty->prefix, "IG9") == 0 ||
+             strcmp(dst_cty->prefix, "IH9") == 0));
+    if (same_country && !worked_special_entity)
       return 0;
     if (call_is_maritime_mobile(call))
       return 0;
@@ -1124,7 +1277,8 @@ static int resolve_contest_points(const char *mode, const char *band,
   }
 
   if (!prefer_definition_points && contest_name_contains("SP DX")) {
-    const int src_is_sp = src_country[0] && strcmp(src_country, "Poland") == 0;
+    const int src_is_sp = contest_station_is_sp() ||
+                          (src_country[0] && strcmp(src_country, "Poland") == 0);
     const int dst_is_sp = dst_country && strcmp(dst_country, "Poland") == 0;
     if (src_is_sp && dst_is_sp)
       return 0;
@@ -1132,7 +1286,7 @@ static int resolve_contest_points(const char *mode, const char *band,
       return 0;
     if (!src_is_sp && dst_is_sp)
       return 3;
-    return same_cont ? 1 : 3;
+    return dst_cont[0] && strcmp(dst_cont, "EU") == 0 ? 1 : 3;
   }
 
   /*
@@ -1156,7 +1310,17 @@ static int resolve_contest_points(const char *mode, const char *band,
    * HQ station bonus (1 pt) requires a lookup table and is not implemented.
    */
   if (!prefer_definition_points && contest_name_contains("IARU")) {
-    if (same_country)
+    if ((config.station_exchange[0] &&
+         !is_digits_only(config.station_exchange)) ||
+        (exchange_recv && exchange_recv[0] &&
+         !is_digits_only(exchange_recv)))
+      return 1;
+
+    const int own_itu_zone = configured_station_itu_zone();
+    const int worked_itu_zone = exchange_recv && is_digits_only(exchange_recv)
+                                    ? atoi(exchange_recv)
+                                    : (dst_cty ? dst_cty->itu_zone : 0);
+    if (own_itu_zone > 0 && own_itu_zone == worked_itu_zone)
       return 1;
     return same_cont ? 3 : 5;
   }

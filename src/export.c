@@ -1,7 +1,11 @@
 #include "export.h"
+#include "config.h"
+#include "cty.h"
 #include "db.h"
 #include "qso.h"
 #include "qtc.h"
+
+#include <ctype.h>
 
 static void adif_format_freq_mhz(int freq_khz, char *out, size_t out_size) {
   if (!out || out_size == 0)
@@ -80,7 +84,50 @@ static const char *cabrillo_sent_exchange_for_qso(
     return q->exchange_sent;
 
   if (strcmp(definition->exchange_sent_template, "#") == 0) {
-    snprintf(fallback, fallback_size, "%d", qso_index + 1);
+    if (text_contains_token_ci(definition->name, "CQ WPX") ||
+        text_contains_token_ci(definition->name, "CQ-WPX") ||
+        text_contains_token_ci(definition->cabrillo_name, "CQ-WPX"))
+      snprintf(fallback, fallback_size, "%03d", qso_index + 1);
+    else
+      snprintf(fallback, fallback_size, "%d", qso_index + 1);
+    return fallback;
+  }
+
+  if (strcmp(definition->exchange_sent_template, "CQZONE") == 0 &&
+      (text_contains_token_ci(definition->name, "CQ WW") ||
+       text_contains_token_ci(definition->name, "CQ-WW") ||
+       text_contains_token_ci(definition->name, "CQWW") ||
+       text_contains_token_ci(definition->cabrillo_name, "CQ-WW"))) {
+    const CtyEntry *station_cty = cty_lookup(config.station_call);
+    if (station_cty && station_cty->cq_zone > 0) {
+      snprintf(fallback, fallback_size, "%d", station_cty->cq_zone);
+      return fallback;
+    }
+  }
+
+  if (strcmp(definition->exchange_sent_template, "IARU_EXCHANGE") == 0) {
+    if (config.station_exchange[0])
+      return config.station_exchange;
+    const CtyEntry *station_cty = cty_lookup(config.station_call);
+    if (station_cty && station_cty->itu_zone > 0) {
+      snprintf(fallback, fallback_size, "%d", station_cty->itu_zone);
+      return fallback;
+    }
+  }
+
+  if (strcmp(definition->exchange_sent_template, "SPDX_EXCHANGE") == 0) {
+    static const char provinces[] = "BCDFGJKLMOPRSUWZ";
+    if (strlen(config.station_exchange) == 1 &&
+      strchr(provinces,
+           toupper((unsigned char)config.station_exchange[0])))
+      return config.station_exchange;
+    const CtyEntry *station_cty = cty_lookup(config.station_call);
+    if (station_cty && strcmp(station_cty->country, "Poland") == 0) {
+      if (config.station_exchange[0])
+        return config.station_exchange;
+      return "SET EXCH";
+    }
+    snprintf(fallback, fallback_size, "%03d", qso_index + 1);
     return fallback;
   }
 

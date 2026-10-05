@@ -24,6 +24,7 @@ certyfikatu.
 - dodano nowe typy exchange i multiplierów dla `SERIAL_GRID` / `GRID_PER_BAND`,
 - wprowadzono testy regresyjne dla VHF,
 - poprawiono archiwizację i przełączanie named logs, wejście wymiany z lokatorem oraz testy sugestii.
+- presety SP DX, CQ WPX, CQ WW i IARU HF mają dedykowane wymiany, punktację i mnożniki; przy zapisie kontrolowany jest też okres, pasmo HF, emisja, pasmo kategorii i zadeklarowana moc.
 
 Sieciowe bramki CTest obejmują migracje, protokół, routing `shared_log_id`,
 testy fault injection i test wieloprocesowy serwera z dwoma klientami.
@@ -53,6 +54,14 @@ jego `shared_log_id`; używaj osobnej instancji/portu dla każdego wspólnego lo
 Blacklist jest tymczasowy, tylko IPv4 i przechowywany w pamięci procesu. mTLS
 opiera się na ręcznie dostarczonych certyfikatach; enrollment i revocation list
 nie są obsługiwane.
+
+Walidacja zawodów nie mierzy mocy ani nie blokuje PTT. Reguły assisted,
+off-time, 10-minutowe ograniczenia Multi-Single, liczba nadajników, lokalizacja
+stacji, segmenty ITU Region 1, sekwencje seriali per pasmo Multi-Two oraz klasy
+overlay wymagają kontroli operatora. Dla SP DX stację z Polski należy rozpoznać
+przez `STATION_EXCHANGE` (literę województwa); wymiany HQ IARU są walidowane
+składniowo, bez katalogu stacji. Zobacz
+[konfigurację zawodów](docs/konfiguracja-i-zawody.md#zawody).
 
 ## Testowanie i konfiguracja runtime
 

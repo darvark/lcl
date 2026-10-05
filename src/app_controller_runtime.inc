@@ -1135,10 +1135,30 @@ AppControllerEvent app_controller_handle_key(int key) {
             clear_callsign_suggestion();
             return APP_CTRL_EVENT_NONE;
           }
+          if (sp_dx_exchange_is_active() && contest_station_is_sp() &&
+              !station_exchange_is_sp_province()) {
+            snprintf(status_text, sizeof(status_text),
+                     "Set STATION_EXCHANGE to your SP province letter");
+            clear_active_entry_fields();
+            clear_callsign_suggestion();
+            return APP_CTRL_EVENT_NONE;
+          }
 
           const int qso_freq_khz = resolve_qso_frequency_khz();
           char qso_mode[16] = {0};
           const char *mode = resolve_qso_mode(qso_mode, sizeof(qso_mode));
+          char contest_rule_error[128] = {0};
+          if (!contest_rules_validate_target_qso(
+                  &active_contest_def, active_contest_def.name,
+                  contest_rules_now_utc(), qso_freq_khz, mode,
+                  config.station_tx_power_watts, contest_rule_error,
+                  sizeof(contest_rule_error))) {
+            snprintf(status_text, sizeof(status_text), "%s",
+                     contest_rule_error);
+            clear_active_entry_fields();
+            clear_callsign_suggestion();
+            return APP_CTRL_EVENT_NONE;
+          }
           if (contest_name_contains("WAG")) {
             char wag_error[128] = {0};
             if (!wag_rules_validate_qso(wag_rules_now_utc(), qso_freq_khz,
@@ -1177,6 +1197,16 @@ AppControllerEvent app_controller_handle_key(int key) {
           } else {
             build_exchange_sent(exchange_sent, sizeof(exchange_sent));
           }
+          if ((contest_name_contains("CQ WW") ||
+               contest_name_contains("CQ WORLD WIDE") ||
+               contest_name_contains("IARU")) &&
+              strncmp(exchange_sent, "SET ", 4) == 0) {
+            snprintf(status_text, sizeof(status_text),
+                     "Set STATION_CALL or STATION_EXCHANGE for your contest zone");
+            clear_active_entry_fields();
+            clear_callsign_suggestion();
+            return APP_CTRL_EVENT_NONE;
+          }
 
           const int qso_points = resolve_contest_points(
             mode, qso_band, country, entry_call,
@@ -1192,13 +1222,16 @@ AppControllerEvent app_controller_handle_key(int key) {
                      entered_exchange);
           }
 
-          int idx = qso_add_contest_fields_with_reservation(
+            const int duplicate_mode_sensitive =
+              !contest_name_contains("IARU");
+            int idx = qso_add_contest_fields_with_reservation_scope(
               entry_call, qso_freq_khz, qso_rst, mode, qso_comments,
               exchange_sent,
               exchange_recv_storage[0] ? exchange_recv_storage : entered_exchange,
               active_operator_mode_text(),
             active_contest_def.cabrillo_name, active_radio_nr, qso_points,
               contest_definition_loaded ? active_contest_def.duplicate_qso : 0,
+              duplicate_mode_sensitive,
               reservation_id[0] ? reservation_id : NULL,
               commit_reservation_remote, status_text, sizeof(status_text));
           if (apply_saved_qso_state(idx)) {

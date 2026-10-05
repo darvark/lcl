@@ -158,6 +158,13 @@ static int is_sp_callsign(const char *call) {
   return strcmp(cty->country, "Poland") == 0;
 }
 
+static int station_exchange_is_sp_province(void) {
+  static const char provinces[] = "BCDFGJKLMOPRSUWZ";
+  return strlen(config.station_exchange) == 1 &&
+         strchr(provinces,
+                toupper((unsigned char)config.station_exchange[0])) != NULL;
+}
+
 static int wag_station_is_german(void) {
   if (config.station_exchange[0])
     return 1;
@@ -201,33 +208,133 @@ static int build_callsign_prefix(const char *call, char *out,
   if (!call || !call[0])
     return 0;
 
-  char clean[32] = {0};
-  size_t clean_len = 0;
-  for (size_t i = 0; call[i] && clean_len < sizeof(clean) - 1; i++) {
-    unsigned char ch = (unsigned char)call[i];
-    if (isalnum(ch))
-      clean[clean_len++] = (char)toupper(ch);
+  char parts[4][32] = {{0}};
+  int part_count = 0;
+  size_t part_len = 0;
+  for (size_t i = 0;; i++) {
+    const unsigned char ch = (unsigned char)call[i];
+    if (ch == '/' || ch == 0) {
+      if (part_len > 0 && part_count < 4) {
+        parts[part_count][part_len] = 0;
+        part_count++;
+      }
+      part_len = 0;
+      if (ch == 0)
+        break;
+      continue;
+    }
+    if (isalnum(ch) && part_len + 1 < sizeof(parts[0]))
+      parts[part_count < 4 ? part_count : 3][part_len++] =
+          (char)toupper(ch);
   }
-
-  if (clean_len == 0)
+  if (part_count == 0)
     return 0;
 
-  size_t end = 0;
-  for (size_t i = 0; i < clean_len; i++) {
-    end = i + 1;
-    if (isdigit((unsigned char)clean[i]))
-      break;
+  static const char *ignored_suffixes[] = {
+      "A", "E", "J", "M", "MM", "AM", "P", "QRP", NULL};
+  int base_part = -1;
+  for (int i = 0; i < part_count && base_part < 0; i++) {
+    for (size_t j = 0; parts[i][j]; j++) {
+      if (isdigit((unsigned char)parts[i][j])) {
+        base_part = i;
+        break;
+      }
+    }
+  }
+  if (base_part < 0)
+    base_part = 0;
+
+  int prefix_part = base_part;
+  if (base_part > 0) {
+    prefix_part = 0;
+    for (int i = 0; i < base_part; i++) {
+      int ignored = 0;
+      for (size_t j = 0; ignored_suffixes[j]; j++)
+        if (strcmp(parts[i], ignored_suffixes[j]) == 0)
+          ignored = 1;
+      if (!ignored && parts[i][0])
+        prefix_part = i;
+    }
+  } else {
+    size_t shortest_portable_len = strlen(parts[base_part]);
+    for (int i = base_part + 1; i < part_count; i++) {
+      int ignored = 0;
+      for (size_t j = 0; ignored_suffixes[j]; j++)
+        if (strcmp(parts[i], ignored_suffixes[j]) == 0)
+          ignored = 1;
+      const size_t candidate_len = strlen(parts[i]);
+      if (!ignored && parts[i][0] && candidate_len < shortest_portable_len) {
+        prefix_part = i;
+        shortest_portable_len = candidate_len;
+      }
+    }
   }
 
-  if (end == 0)
+  char prefix[32] = {0};
+  size_t prefix_len = 0;
+  size_t i = 0;
+  if (isdigit((unsigned char)parts[prefix_part][0])) {
+    while (isdigit((unsigned char)parts[prefix_part][i]))
+      prefix[prefix_len++] = parts[prefix_part][i++];
+    while (isalpha((unsigned char)parts[prefix_part][i]))
+      prefix[prefix_len++] = parts[prefix_part][i++];
+    while (isdigit((unsigned char)parts[prefix_part][i]))
+      prefix[prefix_len++] = parts[prefix_part][i++];
+  } else {
+    while (isalpha((unsigned char)parts[prefix_part][i]))
+      prefix[prefix_len++] = parts[prefix_part][i++];
+    while (isdigit((unsigned char)parts[prefix_part][i]))
+      prefix[prefix_len++] = parts[prefix_part][i++];
+  }
+  if (prefix_len == 0)
     return 0;
 
-  if (end >= out_size)
-    end = out_size - 1;
+  int has_digit = 0;
+  for (size_t i = 0; i < prefix_len; i++)
+    has_digit |= isdigit((unsigned char)prefix[i]) != 0;
+  if (!has_digit) {
+    size_t letters = 0;
+    while (letters < prefix_len && isalpha((unsigned char)prefix[letters]))
+      letters++;
+    prefix_len = letters < 2 ? letters : 2;
+    prefix[prefix_len++] = '0';
+  }
 
-  memcpy(out, clean, end);
-  out[end] = 0;
+  if (prefix_len >= out_size)
+    prefix_len = out_size - 1;
+  memcpy(out, prefix, prefix_len);
+  out[prefix_len] = 0;
   return out[0] != 0;
+}
+
+static int spdx_province_letter(const char *exchange, char *out,
+                                size_t out_size) {
+  static const char provinces[] = "BCDFGJKLMOPRSUWZ";
+  if (!exchange || !exchange[0] || !out || out_size < 2)
+    return 0;
+  for (size_t i = 0; exchange[i]; i++) {
+    const char ch = (char)toupper((unsigned char)exchange[i]);
+    if (strchr(provinces, ch)) {
+      out[0] = ch;
+      out[1] = 0;
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static const char *cqww_special_entity(const char *call) {
+  if (!call)
+    return NULL;
+  if (strncasecmp(call, "IG9", 3) == 0)
+    return "IG9";
+  if (strncasecmp(call, "IH9", 3) == 0)
+    return "IH9";
+  const CtyEntry *worked = cty_lookup(call);
+  if (worked && (strcmp(worked->prefix, "IG9") == 0 ||
+                 strcmp(worked->prefix, "IH9") == 0))
+    return worked->prefix;
+  return NULL;
 }
 
 /*
@@ -276,6 +383,53 @@ static void maybe_add_multiplier(const QSO *q, int own_is_sp) {
       return;
     snprintf(key, sizeof(key), "%s|%s", q->mode, q->country);
     break;
+  case CONTEST_MULT_CQWW: {
+    char call_upper[sizeof(q->call)] = {0};
+    snprintf(call_upper, sizeof(call_upper), "%s", q->call);
+    for (size_t i = 0; call_upper[i]; i++)
+      call_upper[i] = (char)toupper((unsigned char)call_upper[i]);
+    const size_t call_len = strlen(call_upper);
+    const int maritime_mobile =
+        (call_len >= 3 && strcmp(call_upper + call_len - 3, "/MM") == 0) ||
+        (call_len >= 3 && strcmp(call_upper + call_len - 3, "/AM") == 0);
+    const char *special_entity = cqww_special_entity(q->call);
+    if (!maritime_mobile && q->country[0] &&
+        strcmp(q->country, "UNKNOWN") != 0) {
+      snprintf(key, sizeof(key), "C|%s|%s", q->band,
+               special_entity ? special_entity : q->country);
+      mult_add(key);
+    }
+    char *zone_end = NULL;
+    const long received_zone = strtol(q->exchange_recv, &zone_end, 10);
+    const int zone = q->exchange_recv[0] && zone_end != q->exchange_recv &&
+                             *zone_end == 0 && received_zone >= 1 &&
+                             received_zone <= 40
+                         ? (int)received_zone
+                         : q->cq_zone;
+    if (zone > 0) {
+      snprintf(key, sizeof(key), "Z|%s|%d", q->band, zone);
+      mult_add(key);
+    }
+    return;
+  }
+  case CONTEST_MULT_IARU: {
+    char exchange[sizeof(q->exchange_recv)] = {0};
+    snprintf(exchange, sizeof(exchange), "%s", q->exchange_recv);
+    for (size_t i = 0; exchange[i]; i++)
+      exchange[i] = (char)toupper((unsigned char)exchange[i]);
+    char *end = NULL;
+    const long zone = strtol(exchange, &end, 10);
+    if (exchange[0] && end != exchange && *end == 0 && zone >= 1 && zone <= 90) {
+      snprintf(key, sizeof(key), "Z|%s|%ld", q->band, zone);
+    } else if (!exchange[0] && q->itu_zone > 0) {
+      snprintf(key, sizeof(key), "Z|%s|%d", q->band, q->itu_zone);
+    } else if (exchange[0] && isalpha((unsigned char)exchange[0])) {
+      snprintf(key, sizeof(key), "H|%s|%s", q->band, exchange);
+    } else {
+      return;
+    }
+    break;
+  }
   case CONTEST_MULT_WAG:
     if (wag_station_is_german()) {
       if (!q->country[0] || strcmp(q->country, "UNKNOWN") == 0)
@@ -318,13 +472,11 @@ static void maybe_add_multiplier(const QSO *q, int own_is_sp) {
     } else {
       if (!qso_is_sp || !q->exchange_recv[0])
         return;
-
-      char exch[32] = {0};
-      snprintf(exch, sizeof(exch), "%s", q->exchange_recv);
-      for (size_t i = 0; exch[i]; i++)
-        exch[i] = (char)toupper((unsigned char)exch[i]);
-
-      snprintf(key, sizeof(key), "V|%s|%s", q->band, exch);
+      char province[4] = {0};
+      if (!spdx_province_letter(q->exchange_recv, province,
+                                sizeof(province)))
+        return;
+      snprintf(key, sizeof(key), "V|%s|%s", q->band, province);
     }
     break;
   }
@@ -420,7 +572,8 @@ void stats_set_contest_definition(const ContestDefinition *definition) {
 void stats_update(void) {
   reset_stats();
   const int own_is_sp = (scoring_def.multiplier_type == CONTEST_MULT_SPDX)
-                            ? is_sp_callsign(config.station_call)
+                     ? (station_exchange_is_sp_province() ||
+                       is_sp_callsign(config.station_call))
                             : 0;
 
   for (int i = 0; i < qso_count; i++) {
@@ -447,10 +600,7 @@ void stats_update(void) {
     else if (strcmp(q->mode, "PSK31") == 0)
       stats.psk31++;
 
-    if (q->points > 0)
-      stats.contest_qso_points += q->points;
-    else
-      stats.contest_qso_points += scoring_def.points_per_qso;
+    stats.contest_qso_points += q->points;
 
     maybe_add_multiplier(q, own_is_sp);
   }

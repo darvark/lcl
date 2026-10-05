@@ -18,6 +18,11 @@ Status: runtime, trwałość, hardening tokenu/TLS, test wieloprocesowy, odzyski
 - Serwer publikuje operacje lokalnego aktywnego logbooka do `log_ops` przed PULL/CATCHUP; starsze QSO bez operacji są idempotentnie backfillowane.
 - Naprawiono pełny `unit_tests`: F3 i named logs zachowują stan przełączenia baz, archiwum jest kopią SQLite z QSO, listing uwzględnia najnowsze logi, a testy runtime działają pod izolowanym `HOME`.
 - Wymiana contestowa może zawierać literalną spację, więc wejście `SERIAL + LOCATOR` działa z klawiatury.
+- SP DX, CQ WPX, CQ WW i IARU HF: dedykowane wymiany, punktacja, mnożniki, serial WPX `001...`, harmonogram, pasma HF, emisje CW/SSB, power/band-category gate; testy kontrolera i mnożników.
+- Presety SP DX 2026, CQ WPX, CQ WW i IARU HF obsługują wymiany nadawane/odbierane, kontestową punktację oraz mnożniki; kontroler sprawdza harmonogram UTC, pasma HF, tryby, kategorię pasma i zadeklarowaną moc.
+- Wymiany dynamiczne: CQ WW nadaje strefę CQ, IARU strefę ITU lub skonfigurowany skrót HQ, SP DX nadaje numer albo literę województwa zależnie od roli stacji; WPX serial jest zerowany do trzech cyfr.
+- Dla WPX obsługiwane są prefiksy portable i bez numeru; CQ WW uwzględnia osobne IG9/IH9, stacje /MM tylko jako mnożnik strefowy; IARU oddziela mnożniki HQ/official od ITU zones.
+- IARU duplikat działa raz na pasmo niezależnie od emisji; pozostałe z tych contestów obowiązuje obecny dupe check (pasmo+tryb).
 - Opcjonalne mTLS: serwer weryfikuje certyfikat klienta względem CA, klient może przedstawić certyfikat i klucz; pin serwera i token nadal są wymagane.
 - `net status` pokazuje aktywne sesje oraz liczniki żądań, błędów TLS/auth, rate limitu i blokad IP. Trzy przekroczenia limitu z IPv4 w skonfigurowanym oknie blokują adres na 60 s.
 - Test fault injection obejmuje utratę ACK, opóźnienie i uciętą ramkę odpowiedzi; niepotwierdzone QSO pozostaje w outboxie.
@@ -29,3 +34,5 @@ Status: runtime, trwałość, hardening tokenu/TLS, test wieloprocesowy, odzyski
 - mTLS korzysta z ręcznie dostarczonych certyfikatów i CA; brak automatycznego enrollment, rotacji CA i revocation list.
 - Blokada IP jest tymczasowa, tylko dla IPv4 i tylko w pamięci; restart czyści stan. Brak trwałej blacklisty administracyjnej oraz eksportu metryk do Prometheus.
 - Jawny wyjątek `NET_ALLOW_INSECURE_LAN=1` nadal przesyła token jawnie; używaj go wyłącznie w zaufanej, odizolowanej sieci.
+- Nie są automatycznie egzekwowane: assisted/unassisted, off-time WPX, limity zmian pasma/nadajników w kategoriach multi, self-spotting, lokalizacja sprzętu 500 m i overlay/kwalifikacje dodatkowe. Skróty HQ IARU są walidowane składniowo, bez pełnego katalogu aktualnych stacji.
+- Dodatkowe segmenty częstotliwości ITU Region 1 i band-plan IARU nie są walidowane. WPX Multi-Two/Multi-Unlimited nie ma osobnych sekwencji seriali per pasmo. Dla SP DX operator pod znakiem gościnnym musi jawnie ustawić `STATION_EXCHANGE` na literę województwa.

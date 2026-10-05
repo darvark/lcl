@@ -445,6 +445,10 @@ ContestMultiplierType contest_multiplier_from_text(const char *text) {
     return CONTEST_MULT_SPDX;
   if (strcmp(upper, "WAG") == 0)
     return CONTEST_MULT_WAG;
+  if (strcmp(upper, "IARU") == 0)
+    return CONTEST_MULT_IARU;
+  if (strcmp(upper, "CQWW") == 0)
+    return CONTEST_MULT_CQWW;
   if (strcmp(upper, "GRID_PER_BAND") == 0 ||
       strcmp(upper, "GRID-PER-BAND") == 0 ||
       strcmp(upper, "WWL_PER_BAND") == 0 ||
@@ -491,6 +495,10 @@ static const char *contest_multiplier_to_text(ContestMultiplierType type) {
     return "CUSTOM_LIST";
   case CONTEST_MULT_WAG:
     return "WAG";
+  case CONTEST_MULT_IARU:
+    return "IARU";
+  case CONTEST_MULT_CQWW:
+    return "CQWW";
   default:
     return "DXCC";
   }
@@ -535,14 +543,16 @@ int contest_definition_import_dxlog(const char *source_path,
   fprintf(f, "CATEGORY_BAND=%s\n", def.category_band[0] ? def.category_band : "ALL");
   fprintf(f, "CATEGORY_POWER=%s\n", def.category_power[0] ? def.category_power : "LOW");
   fprintf(f, "EXCHANGE_SENT=%s\n", def.exchange_sent_template[0] ? def.exchange_sent_template : "#");
-  fprintf(f, "POINTS_PER_QSO=%d\n", def.points_per_qso > 0 ? def.points_per_qso : 1);
-  fprintf(f, "POINTS_CW=%d\n", def.points_cw);
-  fprintf(f, "POINTS_PHONE=%d\n", def.points_phone);
-  fprintf(f, "POINTS_DIGI=%d\n", def.points_digi);
-  fprintf(f, "POINTS_NEW_DXCC=%d\n", def.points_new_dxcc);
-  fprintf(f, "POINTS_SAME_DXCC=%d\n", def.points_same_dxcc);
-  fprintf(f, "POINTS_NEW_BAND_DXCC=%d\n", def.points_new_band_dxcc);
-  fprintf(f, "POINTS_SAME_BAND_DXCC=%d\n", def.points_same_band_dxcc);
+  if (def.points_configured) {
+    fprintf(f, "POINTS_PER_QSO=%d\n", def.points_per_qso > 0 ? def.points_per_qso : 1);
+    fprintf(f, "POINTS_CW=%d\n", def.points_cw);
+    fprintf(f, "POINTS_PHONE=%d\n", def.points_phone);
+    fprintf(f, "POINTS_DIGI=%d\n", def.points_digi);
+    fprintf(f, "POINTS_NEW_DXCC=%d\n", def.points_new_dxcc);
+    fprintf(f, "POINTS_SAME_DXCC=%d\n", def.points_same_dxcc);
+    fprintf(f, "POINTS_NEW_BAND_DXCC=%d\n", def.points_new_band_dxcc);
+    fprintf(f, "POINTS_SAME_BAND_DXCC=%d\n", def.points_same_band_dxcc);
+  }
   fprintf(f, "MULTIPLIER=%s\n", contest_multiplier_to_text(def.multiplier_type));
   if (def.custom_mult_list[0])
     fprintf(f, "CUSTOM_MULT_LIST=%s\n", def.custom_mult_list);

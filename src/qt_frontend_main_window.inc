@@ -2575,6 +2575,39 @@ private:
     case CONTEST_MULT_MODE_DXCC:
       add_country();
       return;
+    case CONTEST_MULT_CQWW: {
+      const CtyEntry *worked_cty = cty_lookup(q.call);
+      const QString worked_call = call.toUpper();
+      QString entity = country;
+      if (worked_call.startsWith("IG9") ||
+          (worked_cty && std::strcmp(worked_cty->prefix, "IG9") == 0))
+        entity = "IG9";
+      else if (worked_call.startsWith("IH9") ||
+               (worked_cty && std::strcmp(worked_cty->prefix, "IH9") == 0))
+        entity = "IH9";
+      const bool maritime_mobile = worked_call.endsWith("/MM") ||
+                                   worked_call.endsWith("/AM");
+      if (!maritime_mobile && !entity.isEmpty() && entity != "UNKNOWN")
+        out_keys.insert(QString("C|%1|%2").arg(q.band, entity));
+      bool zone_ok = false;
+      int zone = exch.toInt(&zone_ok);
+      if (!zone_ok || zone < 1 || zone > 40)
+        zone = q.cq_zone;
+      if (zone > 0)
+        out_keys.insert(QString("Z|%1|%2").arg(q.band).arg(zone));
+      return;
+    }
+    case CONTEST_MULT_IARU: {
+      bool zone_ok = false;
+      const int itu_zone = exch.toInt(&zone_ok);
+      if (zone_ok && itu_zone >= 1 && itu_zone <= 90)
+        out_keys.insert(QString("Z|%1|%2").arg(q.band).arg(itu_zone));
+      else if (exch.isEmpty() && q.itu_zone > 0)
+        out_keys.insert(QString("Z|%1|%2").arg(q.band).arg(q.itu_zone));
+      else if (!exch.isEmpty())
+        out_keys.insert(QString("H|%1|%2").arg(q.band, exch));
+      return;
+    }
     case CONTEST_MULT_WAG: {
       const CtyEntry *own_cty = cty_lookup(config.station_call);
       const bool own_is_dl = config.station_exchange[0] ||
@@ -2613,10 +2646,17 @@ private:
       return;
     case CONTEST_MULT_SPDX:
       if (country == "POLAND") {
-        if (!exch.isEmpty())
-          out_keys.insert(QString("V%1").arg(exch));
+        static const QString provinces = "BCDFGJKLMOPRSUWZ";
+        for (int i = exch.size() - 1; i >= 0; i--) {
+          const QString letter = exch.mid(i, 1);
+          if (provinces.contains(letter)) {
+            out_keys.insert(QString("V%1|%2").arg(q.band, letter));
+            break;
+          }
+        }
       } else {
-        add_country();
+        if (!country.isEmpty() && country != "UNKNOWN")
+          out_keys.insert(QString("D|%1|%2").arg(q.band, country));
       }
       return;
     case CONTEST_MULT_GRID_PER_BAND: {

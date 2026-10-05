@@ -140,6 +140,7 @@ static void append_sync_pending_status(char *status, size_t status_size) {
 static int qso_is_duplicate_call_band_mode(const char *call,
                                            const char *band,
                                            const char *mode,
+                                           int mode_sensitive,
                                            int exclude_index) {
   if (!call || !call[0] || !band || !band[0] || !mode || !mode[0])
     return 0;
@@ -157,12 +158,14 @@ static int qso_is_duplicate_call_band_mode(const char *call,
       continue;
     if (strcmp(existing->band, band) != 0)
       continue;
-    char existing_mode[sizeof(existing->mode)] = {0};
-    char candidate_mode[16] = {0};
-    snprintf(existing_mode, sizeof(existing_mode), "%s", existing->mode);
-    snprintf(candidate_mode, sizeof(candidate_mode), "%s", mode);
-    if (strcasecmp(existing_mode, candidate_mode) != 0)
-      continue;
+    if (mode_sensitive) {
+      char existing_mode[sizeof(existing->mode)] = {0};
+      char candidate_mode[16] = {0};
+      snprintf(existing_mode, sizeof(existing_mode), "%s", existing->mode);
+      snprintf(candidate_mode, sizeof(candidate_mode), "%s", mode);
+      if (strcasecmp(existing_mode, candidate_mode) != 0)
+        continue;
+    }
     return 1;
   }
 
@@ -508,12 +511,13 @@ int qso_add_fields(const char *call, int freq_khz, const char *rst,
   return qso_count - 1;
 }
 
-int qso_add_contest_fields_with_reservation(
+int qso_add_contest_fields_with_reservation_scope(
     const char *call, int freq_khz, const char *rst, const char *mode,
     const char *comments, const char *exchange_sent, const char *exchange_recv,
     const char *operator_mode, const char *contest_id, int radio_nr,
-    int points, int allow_duplicate_qso, const char *reservation_id,
-    int commit_remote, char *status, size_t status_size) {
+  int points, int allow_duplicate_qso, int duplicate_mode_sensitive,
+  const char *reservation_id, int commit_remote, char *status,
+  size_t status_size) {
   char final_exchange_sent[32] = {0};
   sanitize_text(final_exchange_sent, sizeof(final_exchange_sent), exchange_sent);
 
@@ -550,7 +554,8 @@ int qso_add_contest_fields_with_reservation(
   q->points = points;
 
   if (!allow_duplicate_qso &&
-      qso_is_duplicate_call_band_mode(q->call, q->band, q->mode, idx)) {
+      qso_is_duplicate_call_band_mode(q->call, q->band, q->mode,
+                      duplicate_mode_sensitive, idx)) {
     q->points = 0;
     q->invalid = true;
     if (db_update_qso_invalid(q->db_id, 1) != 0) {
@@ -599,6 +604,18 @@ int qso_add_contest_fields_with_reservation(
            q->exchange_recv[0] ? q->exchange_recv : "-");
   append_sync_pending_status(status, status_size);
   return idx;
+}
+
+int qso_add_contest_fields_with_reservation(
+    const char *call, int freq_khz, const char *rst, const char *mode,
+    const char *comments, const char *exchange_sent, const char *exchange_recv,
+    const char *operator_mode, const char *contest_id, int radio_nr,
+    int points, int allow_duplicate_qso, const char *reservation_id,
+    int commit_remote, char *status, size_t status_size) {
+  return qso_add_contest_fields_with_reservation_scope(
+      call, freq_khz, rst, mode, comments, exchange_sent, exchange_recv,
+      operator_mode, contest_id, radio_nr, points, allow_duplicate_qso, 1,
+      reservation_id, commit_remote, status, status_size);
 }
 
 int qso_add_contest_fields(const char *call, int freq_khz, const char *rst,

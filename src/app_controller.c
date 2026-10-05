@@ -2,6 +2,7 @@
 
 #include "cat.h"
 #include "contest.h"
+#include "contest_rules.h"
 #include "config.h"
 #include "db.h"
 #include "cty.h"

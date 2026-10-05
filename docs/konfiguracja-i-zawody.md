@@ -29,7 +29,7 @@ Ten dokument opisuje pola obsługiwane w `logger.conf` oraz klucze dozwolone w p
 | `LOCATOR` | tekst | pusty | Lokator Maidenhead stacji. |
 | `STATION_CALL` | tekst | `N0CALL` | Znak stacji używany m.in. w eksporcie Cabrillo. |
 | `STATION_EXCHANGE` | tekst | pusty | Własna wymiana stacji w zawodach, które jej wymagają; w WAG ustaw DOK albo `NM`, jeśli stacja pracuje z Niemiec. |
-| `STATION_TX_POWER_WATTS` | liczba całkowita | `0` (nieustawiona) | Zadeklarowana moc wyjściowa używana do sprawdzenia kategorii mocy WAG. Ustaw moc, z którą faktycznie pracujesz; logger nie odczytuje jej z radia. |
+| `STATION_TX_POWER_WATTS` | liczba całkowita | `0` (nieustawiona) | Zadeklarowana moc wyjściowa używana do sprawdzenia kategorii mocy WAG, SP DX, CQ WPX, CQ WW i IARU HF. Ustaw moc, z którą faktycznie pracujesz; logger nie odczytuje jej z radia. |
 | `OPERATOR_CALL` | tekst | taki sam jak `STATION_CALL` | Znak operatora logującego łączność; jeśli nie ustawiony, domyślnie przyjmuje wartość znaku stacji. |
 | `OPERATOR_NAME` | tekst | pusty | Nazwa operatora do metadanych. |
 
@@ -39,6 +39,13 @@ Uwaga praktyczna:
 - W profilu WAG stacja wysyła `STATION_EXCHANGE` jako DOK/`NM`; gdy pole jest puste, niemiecki znak jest wykrywany z CTY i logger zablokuje zapis QSO, prosząc o konfigurację wymiany. Stacje poza Niemcami nadają kolejny numer seryjny. Wpisywana wymiana odebrana jest tekstowa, więc obsługuje zarówno numery, jak i alfanumeryczne DOK.
 - Dla WAG logger blokuje zapis QSO poza oknem 15:00 UTC w sobotę–14:59 UTC w niedzielę trzeciego pełnego weekendu października, na pasmach innych niż 80/40/20/15/10 m, w segmentach contest-free podanych w regulaminie oraz w trybach innych niż CW/SSB. Wymaga też dodatniego `STATION_TX_POWER_WATTS` zgodnego z `CATEGORY_POWER` (`QRP` do 5 W, `LOW` do 100 W, `HIGH` powyżej 100 W). To kontrola deklaracji przy zapisie, nie blokada PTT ani pomiar mocy nadajnika.
 - WAG liczy mnożniki DXCC/WAE per pasmo i tryb dla stacji niemieckich (z osobnymi wyjątkami `IG9` i `IH9`) oraz pierwszą literę DOK dla stacji spoza Niemiec; `NM` nie jest mnożnikiem. Rozpoznanie obszaru DXCC/WAE zależy od załadowanej bazy CTY.
+- Presety SP DX, CQ WPX, CQ WW i IARU HF obsługują dynamiczne wymiany i punktację/mnożniki właściwe dla tych zawodów. Kontroler sprawdza ich okno UTC, pasma 160/80/40/20/15/10 m, emisje CW/SSB, wybraną kategorię pasma oraz zadeklarowaną moc. WPX nadaje serial `001...`; CQ WW własną strefę CQ; IARU własną strefę ITU lub `STATION_EXCHANGE` dla HQ/official. W SP DX stacja SP ustawia literę województwa w `STATION_EXCHANGE`, a stacja zagraniczna nadaje serial.
+- W punktacji/mnożnikach: WPX używa prefiksów z obsługą portable/no-digit; CQ WW liczy DXCC/WAE i strefy per pasmo, z osobnym `IG9/IH9` oraz `/MM` tylko do strefy; SP DX liczy DXCC lub województwo per pasmo; IARU liczy strefy ITU i exchange HQ/official per pasmo. IARU traktuje drugi kontakt z tą samą stacją na tym samym paśmie jako duplikat niezależnie od emisji.
+- Logger nie mierzy mocy ani nie steruje blokadą PTT. Nie wymusza limitów 10 minut/liczby zmian pasma Multi-Single, liczby nadajników, assisted/unassisted, self-spotting, czasu off-time WPX, lokalizacji 500 m ani kwalifikacji YOTA/Youth/Rookie/Classic. Te reguły i poprawność specjalnych exchange wymagają kontroli operatora; dane DXCC/WAE zależą od CTY.
+- Wymiany HQ/official IARU są walidowane składniowo (alfanumeryczny skrót), nie przez pełny katalog wszystkich aktualnych stacji i skrótów IARU. Błędny, ale poprawnie sformatowany skrót może przejść lokalną walidację; komisja zawodów pozostaje źródłem ostatecznej weryfikacji.
+- Dla SP DX ustaw `STATION_EXCHANGE` na literę województwa, gdy pracujesz ze stacji w Polsce; pozwala to poprawnie rozpoznać polską rolę również przy znaku gościnnym. Dla IARU ustaw tam własną strefę ITU albo skrót HQ/official.
+- Wymiana serialowa WPX używa jednej sekwencji globalnej. Sekwencje per pasmo wymagane dla kategorii Multi-Two/Multi-Unlimited nie są osobno implementowane; podobnie logger nie egzekwuje limitów zmian pasma Multi-Single.
+- Kontrola zakresu HF nie egzekwuje dodatkowych ograniczeń częstotliwości ITU Region 1 (m.in. 40 m SSB powyżej 7200 kHz i 160 m poniżej 1810 kHz) ani szczegółowych segmentów band-planu IARU. Logger nie mierzy też emisji RF ani rzeczywistej mocy.
 - `OPERATOR_CALL` jest używany w działaniach operatora, np. przy logowaniu, CW, QTC i UI.
 - W głównym oknie można zmienić aktywnego operatora szybkim skrótem `Ctrl+O`.
 - Pasek statusu pokazuje bieżący znak operatora w formacie `OP: <znak>`.

@@ -379,6 +379,10 @@ const char *multiplier_to_text_for_save(ContestMultiplierType type) {
     return "SPDX";
   case CONTEST_MULT_WAG:
     return "WAG";
+  case CONTEST_MULT_IARU:
+    return "IARU";
+  case CONTEST_MULT_CQWW:
+    return "CQWW";
   case CONTEST_MULT_MODE_DXCC:
     return "MODE_DXCC";
   default:
@@ -423,15 +427,17 @@ int save_contest_definition_file(const char *path, const ContestDefinition *def,
   std::fprintf(f, "EXCHANGE_SENT=%s\n",
                def->exchange_sent_template[0] ? def->exchange_sent_template :
                                                 "#");
-  std::fprintf(f, "POINTS_PER_QSO=%d\n",
-               def->points_per_qso > 0 ? def->points_per_qso : 1);
-  std::fprintf(f, "POINTS_CW=%d\n", def->points_cw);
-  std::fprintf(f, "POINTS_PHONE=%d\n", def->points_phone);
-  std::fprintf(f, "POINTS_DIGI=%d\n", def->points_digi);
-  std::fprintf(f, "POINTS_NEW_DXCC=%d\n", def->points_new_dxcc);
-  std::fprintf(f, "POINTS_SAME_DXCC=%d\n", def->points_same_dxcc);
-  std::fprintf(f, "POINTS_NEW_BAND_DXCC=%d\n", def->points_new_band_dxcc);
-  std::fprintf(f, "POINTS_SAME_BAND_DXCC=%d\n", def->points_same_band_dxcc);
+  if (def->points_configured) {
+    std::fprintf(f, "POINTS_PER_QSO=%d\n",
+                 def->points_per_qso > 0 ? def->points_per_qso : 1);
+    std::fprintf(f, "POINTS_CW=%d\n", def->points_cw);
+    std::fprintf(f, "POINTS_PHONE=%d\n", def->points_phone);
+    std::fprintf(f, "POINTS_DIGI=%d\n", def->points_digi);
+    std::fprintf(f, "POINTS_NEW_DXCC=%d\n", def->points_new_dxcc);
+    std::fprintf(f, "POINTS_SAME_DXCC=%d\n", def->points_same_dxcc);
+    std::fprintf(f, "POINTS_NEW_BAND_DXCC=%d\n", def->points_new_band_dxcc);
+    std::fprintf(f, "POINTS_SAME_BAND_DXCC=%d\n", def->points_same_band_dxcc);
+  }
   std::fprintf(f, "MULTIPLIER=%s\n",
                multiplier_to_text_for_save(def->multiplier_type));
   std::fprintf(f, "BONUS_POINTS=%d\n", def->bonus_points);
