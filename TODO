@@ -1,4 +1,4 @@
-Aktualizacja: 2026-10-04
+Aktualizacja: 2026-10-05
 Status: runtime, trwałość, hardening tokenu/TLS, test wieloprocesowy, odzyskiwanie failed i deployment hardening zaimplementowane.
 
 ## Zakończone
@@ -7,7 +7,7 @@ Status: runtime, trwałość, hardening tokenu/TLS, test wieloprocesowy, odzyski
 - Catch-up zaczyna się od lokalnego cursoru, obsługuje `has_more`, replay i restart. Broadcast nie przesuwa cursoru.
 - Klient działa w workerze poza UI; krótkie sesje TCP są okresowo otwierane i zamykane. Stop przerywa aktywne połączenie.
 - Serwer odrzuca start bez silnego `NET_AUTH_TOKEN`/`NET_SHARED_KEY` (min. 32 znaki, różnorodne klasy znaków); pusty token nie uwierzytelnia HELLO.
-- Przy TLS klient wymaga jawnego fingerprintu SHA-256. Pierwsze połączenie nie zapisuje pinu automatycznie; wybrany model to ręczne pinning, nie TOFU ani mTLS.
+- Przy TLS klient wymaga jawnego fingerprintu SHA-256. Pierwsze połączenie nie zapisuje pinu automatycznie; używane jest ręczne pinning, nie TOFU. Opcjonalne mTLS wymaga ręcznej konfiguracji certyfikatów i CA.
 - Rezerwacje seriali są lokalnie buforowane; `request_id` jest unikalny per stacja, ponowienie zwraca tę samą rezerwację, a klient trwale zachowuje ID żądania do zapisu ACK. Commit pozostaje idempotentny.
 - `shared_log_id` jest wymagany w protocol v2 envelope i HELLO_ACK; klient musi jawnie sparować bazę, a serwer odrzuca mismatch przed APPEND, PULL/CATCHUP, rezerwacją i commitem.
 - Liczbowe `logbook_id` pozostaje lokalne: serwer mapuje APPEND/rezerwacje na swój aktywny logbook, a klient mapuje catch-up na swój aktywny logbook.
@@ -16,10 +16,16 @@ Status: runtime, trwałość, hardening tokenu/TLS, test wieloprocesowy, odzyski
 - `logger.conf` jest ładowany/zapisywany jako plik bieżącego użytkownika z prawami `0600`; TLS jest wymagany, chyba że jawnie ustawiono `NET_ALLOW_INSECURE_LAN=1`. Klucz serwera ma prawa `0600`, a rotacja tokenu i certyfikatu jest opisana.
 - `multiprocess_sync_tests` uruchamia serwer i dwóch klientów z osobnymi bazami; sprawdza równoległe QSO, numerację, catch-up ponad stronę, powtórzony APPEND, outage/reconnect i restart procesów.
 - Serwer publikuje operacje lokalnego aktywnego logbooka do `log_ops` przed PULL/CATCHUP; starsze QSO bez operacji są idempotentnie backfillowane.
+- Naprawiono pełny `unit_tests`: F3 i named logs zachowują stan przełączenia baz, archiwum jest kopią SQLite z QSO, listing uwzględnia najnowsze logi, a testy runtime działają pod izolowanym `HOME`.
+- Wymiana contestowa może zawierać literalną spację, więc wejście `SERIAL + LOCATOR` działa z klawiatury.
+- Opcjonalne mTLS: serwer weryfikuje certyfikat klienta względem CA, klient może przedstawić certyfikat i klucz; pin serwera i token nadal są wymagane.
+- `net status` pokazuje aktywne sesje oraz liczniki żądań, błędów TLS/auth, rate limitu i blokad IP. Trzy przekroczenia limitu z IPv4 w skonfigurowanym oknie blokują adres na 60 s.
+- Test fault injection obejmuje utratę ACK, opóźnienie i uciętą ramkę odpowiedzi; niepotwierdzone QSO pozostaje w outboxie.
 
 ## Ograniczenia pozostałe
 
-- Jedna instancja serwera routuje do jednego aktywnego pliku SQLite. Dla różnych wspólnych logów używaj osobnych instancji/baz serwera; `shared_log_id` zapobiega ich przypadkowemu połączeniu.
-- Pełny `./build/unit_tests` ma nadal błędy w istniejących testach F3/#LOCATOR, sugestii, konfiguracji zawodów i logbooków. Zarejestrowane CTest oraz testy sieciowe przechodzą.
-- Jawny wyjątek `NET_ALLOW_INSECURE_LAN=1` przesyła token jawnie; można go stosować tylko w zaufanej, odizolowanej sieci. Domyślnie TLS jest wymagany.
-- mTLS/PKI, metryki i blacklist dla rate limitu oraz chaos-testy WAN pozostają poza zakresem.
+- Pełny `./build/unit_tests` oraz zarejestrowane testy CTest przechodzą. Budowanie z OpenSSL 3 nadal pokazuje ostrzeżenia o przestarzałym API RSA przy generowaniu self-signed certyfikatu.
+- Jedna instancja serwera nadal obsługuje jedną aktywną bazę SQLite. Równoczesne routowanie wielu `shared_log_id` w jednym procesie wymaga przebudowy singletonowego DB na pulę kontekstów; obecnie używaj osobnej instancji/portu na wspólny log.
+- mTLS korzysta z ręcznie dostarczonych certyfikatów i CA; brak automatycznego enrollment, rotacji CA i revocation list.
+- Blokada IP jest tymczasowa, tylko dla IPv4 i tylko w pamięci; restart czyści stan. Brak trwałej blacklisty administracyjnej oraz eksportu metryk do Prometheus.
+- Jawny wyjątek `NET_ALLOW_INSECURE_LAN=1` nadal przesyła token jawnie; używaj go wyłącznie w zaufanej, odizolowanej sieci.

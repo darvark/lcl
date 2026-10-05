@@ -1580,6 +1580,19 @@ private:
       auto *fingerprint_edit = new QLineEdit(
           QString::fromLatin1(config.net_tls_peer_fingerprint), security_group);
       security_form->addRow("Server SHA-256 fingerprint (client):", fingerprint_edit);
+        auto *mtls_check = new QCheckBox(
+          "Require a trusted client certificate (server mTLS)", security_group);
+        mtls_check->setChecked(config.net_tls_require_client_cert != 0);
+        security_form->addRow(mtls_check);
+        auto *client_ca_edit = new QLineEdit(
+          QString::fromLatin1(config.net_tls_client_ca_file), security_group);
+        security_form->addRow("Client certificate CA file (server):", client_ca_edit);
+        auto *client_cert_edit = new QLineEdit(
+          QString::fromLatin1(config.net_tls_client_cert_file), security_group);
+        security_form->addRow("Client certificate file:", client_cert_edit);
+        auto *client_key_edit = new QLineEdit(
+          QString::fromLatin1(config.net_tls_client_key_file), security_group);
+        security_form->addRow("Client private key file:", client_key_edit);
       auto *insecure_check = new QCheckBox(
           "Allow plain TCP on a trusted, isolated LAN only", security_group);
       insecure_check->setChecked(config.net_allow_insecure_lan != 0);
@@ -1616,19 +1629,34 @@ private:
       contents_layout->addStretch(1);
 
       auto update_role_fields = [role_combo, host_edit, shared_log_edit, cert_edit,
-                                 key_edit, fingerprint_edit, rate_window_spin,
-                                 rate_burst_spin]() {
+               key_edit, fingerprint_edit, mtls_check,
+               client_ca_edit, client_cert_edit, client_key_edit,
+               tls_check, rate_window_spin, rate_burst_spin]() {
         const bool is_client = role_combo->currentData().toString() == "client";
+        const bool use_tls = tls_check->isChecked();
         host_edit->setEnabled(is_client);
         shared_log_edit->setEnabled(is_client);
-        fingerprint_edit->setEnabled(is_client);
+        fingerprint_edit->setEnabled(is_client && use_tls);
         cert_edit->setEnabled(!is_client);
         key_edit->setEnabled(!is_client);
+        mtls_check->setEnabled(!is_client && use_tls);
+        client_ca_edit->setEnabled(!is_client && use_tls &&
+                 mtls_check->isChecked());
+        client_cert_edit->setEnabled(is_client && use_tls);
+        client_key_edit->setEnabled(is_client && use_tls);
         rate_window_spin->setEnabled(!is_client);
         rate_burst_spin->setEnabled(!is_client);
       };
       connect(role_combo, &QComboBox::currentIndexChanged, &dialog,
               [update_role_fields](int) { update_role_fields(); });
+            connect(tls_check, &QCheckBox::toggled, &dialog,
+              [update_role_fields](bool) { update_role_fields(); });
+            connect(mtls_check, &QCheckBox::toggled, client_ca_edit,
+              [client_ca_edit, role_combo, tls_check](bool checked) {
+          client_ca_edit->setEnabled(
+              checked && tls_check->isChecked() &&
+              role_combo->currentData().toString() == "server");
+              });
       update_role_fields();
 
       scroll_area->setWidget(contents);
@@ -1675,6 +1703,13 @@ private:
       copy_field(config.net_tls_key_file, sizeof(config.net_tls_key_file), key_edit->text());
       copy_field(config.net_tls_peer_fingerprint,
                  sizeof(config.net_tls_peer_fingerprint), fingerprint_edit->text());
+      config.net_tls_require_client_cert = mtls_check->isChecked() ? 1 : 0;
+      copy_field(config.net_tls_client_ca_file,
+             sizeof(config.net_tls_client_ca_file), client_ca_edit->text());
+      copy_field(config.net_tls_client_cert_file,
+             sizeof(config.net_tls_client_cert_file), client_cert_edit->text());
+      copy_field(config.net_tls_client_key_file,
+             sizeof(config.net_tls_client_key_file), client_key_edit->text());
       config.net_allow_insecure_lan = insecure_check->isChecked() ? 1 : 0;
       config.live_upload_enabled = livescore_enabled_check->isChecked() ? 1 : 0;
       copy_field(config.live_upload_host, sizeof(config.live_upload_host),
@@ -2545,7 +2580,20 @@ private:
       const bool own_is_dl = config.station_exchange[0] ||
                              (own_cty && std::strcmp(own_cty->prefix, "DL") == 0);
       if (own_is_dl) {
-        add_country();
+        const CtyEntry *worked_cty = cty_lookup(q.call);
+        const QString worked_call = call.toUpper();
+        QString special_entity;
+        if (worked_call.startsWith("IG9") ||
+            (worked_cty && std::strcmp(worked_cty->prefix, "IG9") == 0))
+          special_entity = "IG9";
+        else if (worked_call.startsWith("IH9") ||
+                 (worked_cty && std::strcmp(worked_cty->prefix, "IH9") == 0))
+          special_entity = "IH9";
+        if (!special_entity.isEmpty())
+          out_keys.insert(QString("%1|%2|%3").arg(q.band, q.mode,
+                                                    special_entity));
+        else if (!country.isEmpty() && country != "UNKNOWN")
+          out_keys.insert(QString("%1|%2|%3").arg(q.band, q.mode, country));
         return;
       }
 
@@ -2553,7 +2601,8 @@ private:
       if ((worked_cty && std::strcmp(worked_cty->prefix, "DL") == 0) ||
           country.contains("GERMANY", Qt::CaseInsensitive)) {
         if (!exch.isEmpty() && exch != "NM")
-          out_keys.insert(exch.left(1));
+          out_keys.insert(QString("%1|%2|%3").arg(q.band, q.mode,
+                                                    exch.left(1)));
       }
       return;
     }

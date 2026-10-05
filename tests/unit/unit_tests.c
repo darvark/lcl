@@ -17,6 +17,7 @@
 #include "qtc.h"
 #include "suggestion.h"
 #include "stats.h"
+#include "wag_rules.h"
 
 #include <errno.h>
 #include <math.h>
@@ -28,6 +29,7 @@
 #include <stdarg.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 static int g_failures = 0;
@@ -154,7 +156,10 @@ static void set_test_db_path(const char *dir_path) {
   snprintf(config.net_shared_log_id, sizeof(config.net_shared_log_id), "%s",
            TEST_SHARED_LOG_ID);
   config.net_allow_insecure_lan = 1;
-  config.net_allow_insecure_lan = 1;
+  config.net_tls_require_client_cert = 0;
+  config.net_tls_client_ca_file[0] = 0;
+  config.net_tls_client_cert_file[0] = 0;
+  config.net_tls_client_key_file[0] = 0;
 }
 
 static int make_temp_dir(char *out, size_t out_size) {
@@ -188,6 +193,7 @@ static void test_config_load(const char *tmp_dir) {
       "DXC_CALL = SP9XYZ\n"
       "STATION_CALL = SP9STAC\n"
       "STATION_EXCHANGE = DOK1234\n"
+      "STATION_TX_POWER_WATTS = 75\n"
       "OPERATOR_CALL = SP9OPER\n"
       "CAT_MODE_FROM_RIG = 1\n"
       "CONTEST_TECHNIQUE = SO2R\n"
@@ -217,6 +223,8 @@ static void test_config_load(const char *tmp_dir) {
   expect_str_eq(config.station_call, "SP9STAC", "config station call parsed");
   expect_str_eq(config.station_exchange, "DOK1234",
                 "config station exchange parsed");
+  expect_int_eq(config.station_tx_power_watts, 75,
+                "config station TX power parsed");
   expect_str_eq(config.operator_call, "SP9OPER", "config operator call parsed");
   expect_int_eq(config.cat_mode_from_rig, 1,
                 "config CAT mode-from-rig parsed");
@@ -253,6 +261,8 @@ static void test_config_load(const char *tmp_dir) {
                 "default station call restored on missing config");
   expect_str_eq(config.station_exchange, "",
                 "default station exchange restored on missing config");
+  expect_int_eq(config.station_tx_power_watts, 0,
+                "default station TX power restored on missing config");
   expect_str_eq(config.operator_call, "N0CALL",
                 "default operator call restored on missing config");
   expect_int_eq(config.cat_mode_from_rig, 0,
@@ -275,6 +285,7 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
   snprintf(config.dxc_call, sizeof(config.dxc_call), "%s", "SP0PERSIST");
   snprintf(config.station_exchange, sizeof(config.station_exchange), "%s",
            "NM");
+  config.station_tx_power_watts = 75;
   config.cat_model = 1234;
   snprintf(config.cat_device, sizeof(config.cat_device), "%s", "/dev/ttyS9");
   config.cat_baud = 38400;
@@ -287,6 +298,13 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
   snprintf(config.net_shared_log_id, sizeof(config.net_shared_log_id), "%s",
            TEST_SHARED_LOG_ID);
   config.net_allow_insecure_lan = 1;
+  config.net_tls_require_client_cert = 1;
+  snprintf(config.net_tls_client_ca_file,
+           sizeof(config.net_tls_client_ca_file), "%s", "client_ca.pem");
+  snprintf(config.net_tls_client_cert_file,
+           sizeof(config.net_tls_client_cert_file), "%s", "client.pem");
+  snprintf(config.net_tls_client_key_file,
+           sizeof(config.net_tls_client_key_file), "%s", "client_key.pem");
   config.live_upload_enabled = 1;
   snprintf(config.live_upload_host, sizeof(config.live_upload_host), "%s",
            "persist-upload.local");
@@ -313,6 +331,10 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
   config.net_shared_log_id[0] = 0;
   config.net_allow_insecure_lan = 0;
   config.live_upload_enabled = 0;
+  config.net_tls_require_client_cert = 0;
+  config.net_tls_client_ca_file[0] = 0;
+  config.net_tls_client_cert_file[0] = 0;
+  config.net_tls_client_key_file[0] = 0;
   config.live_upload_host[0] = 0;
   config.live_upload_port = 0;
   config.live_upload_token[0] = 0;
@@ -321,6 +343,8 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
                 "config_load should read saved config");
   expect_str_eq(config.station_exchange, "NM",
                 "saved station exchange restored");
+  expect_int_eq(config.station_tx_power_watts, 75,
+                "saved station TX power restored");
   expect_int_eq(config.cat_model, 1234, "saved CAT model restored");
   expect_str_eq(config.cat_device, "/dev/ttyS9", "saved CAT device restored");
   expect_int_eq(config.cat_baud, 38400, "saved CAT baud restored");
@@ -337,6 +361,14 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
                 "saved shared log pairing restored");
   expect_int_eq(config.net_allow_insecure_lan, 1,
                 "saved trusted-LAN opt-in restored");
+  expect_int_eq(config.net_tls_require_client_cert, 1,
+                "saved mTLS requirement restored");
+  expect_str_eq(config.net_tls_client_ca_file, "client_ca.pem",
+                "saved mTLS client CA path restored");
+  expect_str_eq(config.net_tls_client_cert_file, "client.pem",
+                "saved client certificate path restored");
+  expect_str_eq(config.net_tls_client_key_file, "client_key.pem",
+                "saved client key path restored");
   expect_int_eq(config.live_upload_enabled, 1,
                 "saved live upload enabled restored");
   expect_str_eq(config.live_upload_host, "persist-upload.local",
@@ -470,8 +502,8 @@ static void test_controller_static_tx_exchange_override(const char *tmp_dir) {
   expect_true(state.contest_exchange_sent != NULL,
               "contest tx exchange should be present in render state");
   if (state.contest_exchange_sent)
-    expect_str_eq(state.contest_exchange_sent, "28",
-                  "static tx exchange should use config override");
+    expect_str_eq(state.contest_exchange_sent, "ITU",
+                  "static tx exchange should use its configured literal");
 
   send_controller_chars("SP9AAA");
   app_controller_handle_key(APP_KEY_SPACE);
@@ -480,7 +512,7 @@ static void test_controller_static_tx_exchange_override(const char *tmp_dir) {
 
   expect_int_eq(qso_count, base_qso_count + 1,
                 "one QSO should be saved in static tx exchange test");
-  expect_str_eq(logbook[base_qso_count].exchange_sent, "28",
+  expect_str_eq(logbook[base_qso_count].exchange_sent, "ITU",
                 "saved QSO should use configured static tx exchange");
   expect_str_eq(logbook[base_qso_count].exchange_recv, "28",
                 "saved QSO should store entered received exchange");
@@ -563,7 +595,8 @@ static void test_controller_incremental_exchange_generation(const char *tmp_dir)
   const char *contest_text =
       "NAME=WAG\n"
       "CABRILLO_NAME=WAG\n"
-      "MODE=MIXED\n"
+      "MODE=CW\n"
+      "CATEGORY_POWER=HIGH\n"
       "EXCHANGE_SENT=#\n"
       "FIELD=EXCHANGE,Rcv Exch,required\n";
   expect_int_eq(write_text_file(contest_path, contest_text), 0,
@@ -572,7 +605,8 @@ static void test_controller_incremental_exchange_generation(const char *tmp_dir)
   char conf_path[512];
   join_path(conf_path, sizeof(conf_path), case_dir, "logger.conf");
   const char *conf_text =
-      "CONTEST_DEF_FILE=contest.conf\n";
+      "CONTEST_DEF_FILE=contest.conf\n"
+      "STATION_TX_POWER_WATTS=150\n";
   expect_int_eq(write_text_file(conf_path, conf_text), 0,
                 "write logger.conf for incremental exchange test");
 
@@ -582,7 +616,14 @@ static void test_controller_incremental_exchange_generation(const char *tmp_dir)
   expect_int_eq(chdir(case_dir), 0,
                 "chdir to incremental exchange test directory");
 
+  struct tm wag_start_tm = {0};
+  wag_start_tm.tm_year = 2026 - 1900;
+  wag_start_tm.tm_mon = 9;
+  wag_start_tm.tm_mday = 17;
+  wag_start_tm.tm_hour = 16;
+  wag_rules_set_test_time(timegm(&wag_start_tm));
   app_controller_init();
+  app_controller_set_active_frequency_khz(14050);
   app_controller_handle_key(APP_KEY_F2);
   const int base_qso_count = qso_count;
   AppRenderState state;
@@ -650,6 +691,7 @@ static void test_controller_incremental_exchange_generation(const char *tmp_dir)
                   "next incremental TX exchange should advance to serial 3");
 
   app_controller_shutdown();
+  wag_rules_set_test_time((time_t)-1);
   expect_int_eq(chdir(old_cwd), 0,
                 "restore cwd after incremental exchange test");
 }
@@ -665,7 +707,8 @@ static void test_controller_wag_station_exchange(const char *tmp_dir) {
   const char *contest_text =
       "NAME=WAG\n"
       "CABRILLO_NAME=WAG\n"
-      "MODE=MIXED\n"
+      "MODE=CW\n"
+      "CATEGORY_POWER=HIGH\n"
       "EXCHANGE_SENT=WAG_EXCHANGE\n"
       "FIELD=EXCHANGE,Rcv Exch,required\n";
   expect_int_eq(write_text_file(contest_path, contest_text), 0,
@@ -676,7 +719,8 @@ static void test_controller_wag_station_exchange(const char *tmp_dir) {
   const char *conf_text =
       "CONTEST_DEF_FILE=contest.conf\n"
       "STATION_CALL=SP9XYZ\n"
-      "STATION_EXCHANGE=DOK1234\n";
+      "STATION_EXCHANGE=DOK1234\n"
+      "STATION_TX_POWER_WATTS=150\n";
   expect_int_eq(write_text_file(conf_path, conf_text), 0,
                 "write logger.conf with German station DOK");
 
@@ -686,7 +730,14 @@ static void test_controller_wag_station_exchange(const char *tmp_dir) {
   expect_int_eq(chdir(case_dir), 0,
                 "chdir to WAG station exchange test directory");
 
+  struct tm wag_start_tm = {0};
+  wag_start_tm.tm_year = 2026 - 1900;
+  wag_start_tm.tm_mon = 9;
+  wag_start_tm.tm_mday = 17;
+  wag_start_tm.tm_hour = 16;
+  wag_rules_set_test_time(timegm(&wag_start_tm));
   app_controller_init();
+  app_controller_set_active_frequency_khz(14050);
   const int base_qso_count = qso_count;
   AppRenderState state;
   app_controller_get_render_state(&state);
@@ -715,6 +766,7 @@ static void test_controller_wag_station_exchange(const char *tmp_dir) {
   }
 
   app_controller_shutdown();
+  wag_rules_set_test_time((time_t)-1);
   expect_int_eq(chdir(old_cwd), 0,
                 "restore cwd after WAG station exchange test");
 }
@@ -1649,6 +1701,7 @@ static void test_net_protocol_frames(void) {
 }
 
   static void test_net_sync_config_validation(void) {
+    const Config saved_config = config;
     int saved_port = config.net_server_port;
     int saved_enabled = config.net_enabled;
     int saved_tls = config.net_tls;
@@ -1668,6 +1721,10 @@ static void test_net_protocol_frames(void) {
          config.net_shared_log_id);
     snprintf(saved_fingerprint, sizeof(saved_fingerprint), "%s",
              config.net_tls_peer_fingerprint);
+    config.net_tls_require_client_cert = 0;
+    config.net_tls_client_ca_file[0] = 0;
+    config.net_tls_client_cert_file[0] = 0;
+    config.net_tls_client_key_file[0] = 0;
 
     char error[128] = {0};
     snprintf(config.net_role, sizeof(config.net_role), "%s", "peer");
@@ -1701,6 +1758,10 @@ static void test_net_protocol_frames(void) {
     expect_true(strstr(error, "NET_TLS=1") != NULL,
           "plaintext sync rejection should explain TLS requirement");
     config.net_allow_insecure_lan = 1;
+        config.net_tls_require_client_cert = 0;
+    config.net_tls_client_ca_file[0] = 0;
+    config.net_tls_client_cert_file[0] = 0;
+    config.net_tls_client_key_file[0] = 0;
     expect_int_eq(net_sync_validate_config(error, sizeof(error)), 0,
             "explicit trusted LAN opt-in should allow plaintext tests");
 
@@ -1721,10 +1782,32 @@ static void test_net_protocol_frames(void) {
     expect_int_eq(net_sync_validate_config(error, sizeof(error)), 0,
                   "TLS clients with a configured certificate pin should pass");
 
+    config.net_tls_require_client_cert = 1;
+    expect_int_eq(net_sync_validate_config(error, sizeof(error)), -1,
+            "mTLS clients without identity files should be rejected");
+    snprintf(config.net_tls_client_cert_file,
+         sizeof(config.net_tls_client_cert_file), "%s", "client.pem");
+    snprintf(config.net_tls_client_key_file,
+         sizeof(config.net_tls_client_key_file), "%s", "client_key.pem");
+    expect_int_eq(net_sync_validate_config(error, sizeof(error)), 0,
+            "mTLS clients with certificate and key should pass");
+
     snprintf(config.net_role, sizeof(config.net_role), "%s", "server");
-    config.net_tls = 0;
-    config.net_allow_insecure_lan = 1;
+    config.net_tls = 1;
+    config.net_allow_insecure_lan = 0;
     config.net_server_port = 9230;
+    snprintf(config.net_auth_token, sizeof(config.net_auth_token), "%s",
+         TEST_NET_AUTH_TOKEN);
+    snprintf(config.net_shared_key, sizeof(config.net_shared_key), "%s",
+         TEST_NET_AUTH_TOKEN);
+    config.net_tls_client_ca_file[0] = 0;
+    expect_int_eq(net_sync_validate_config(error, sizeof(error)), -1,
+            "mTLS server without client CA should be rejected");
+    snprintf(config.net_tls_client_ca_file,
+         sizeof(config.net_tls_client_ca_file), "%s", "client_ca.pem");
+    expect_int_eq(net_sync_validate_config(error, sizeof(error)), 0,
+            "mTLS server with a CA should pass validation");
+    config.net_tls_require_client_cert = 0;
     config.net_auth_token[0] = 0;
     config.net_shared_key[0] = 0;
     expect_int_eq(net_sync_validate_config(error, sizeof(error)), -1,
@@ -1751,6 +1834,7 @@ static void test_net_protocol_frames(void) {
          saved_shared_log_id);
     snprintf(config.net_tls_peer_fingerprint,
              sizeof(config.net_tls_peer_fingerprint), "%s", saved_fingerprint);
+    config = saved_config;
   }
 
 typedef struct {
@@ -1767,7 +1851,8 @@ typedef struct {
 enum {
   MOCK_SYNC_MODE_NORMAL = 0,
   MOCK_SYNC_MODE_DROP_APPEND_ACK = 1,
-  MOCK_SYNC_MODE_DELAY_PULL_RESP = 2
+  MOCK_SYNC_MODE_DELAY_PULL_RESP = 2,
+  MOCK_SYNC_MODE_TRUNCATE_PULL_RESP = 3
 };
 
 static void *mock_sync_server_thread(void *arg) {
@@ -1835,6 +1920,16 @@ static void *mock_sync_server_thread(void *arg) {
   }
   snprintf(ctx->received + strlen(ctx->received),
            sizeof(ctx->received) - strlen(ctx->received), "%s", frame);
+
+  if (ctx->mode == MOCK_SYNC_MODE_TRUNCATE_PULL_RESP) {
+    const uint32_t declared_length = htonl(128);
+    (void)send(cli, &declared_length, sizeof(declared_length), 0);
+    (void)send(cli, "{\"type\":\"PULL_OPS_RESP\"", 22, 0);
+    ctx->ok = 1;
+    close(cli);
+    close(srv);
+    return NULL;
+  }
 
   char pull_resp[1024] = {0};
   if (ctx->mode == MOCK_SYNC_MODE_DELAY_PULL_RESP && ctx->delay_sec > 0)
@@ -3223,6 +3318,53 @@ static void test_net_server_rate_limit(const char *tmp_dir) {
               "second response should hit rate limit");
 
   close(cli);
+
+  for (int strike = 2; strike <= 3; strike++) {
+    cli = socket(AF_INET, SOCK_STREAM, 0);
+    expect_true(cli >= 0, "reconnecting client socket should be created");
+    expect_int_eq(connect(cli, (struct sockaddr *)&addr, sizeof(addr)), 0,
+                  "reconnecting client should connect before blacklist");
+    expect_int_eq(net_protocol_send_framed(cli, hello_frame), 0,
+                  "reconnecting client should send HELLO");
+    expect_int_eq(net_protocol_recv_framed(cli, response, sizeof(response)), 0,
+                  "server should authenticate reconnecting client");
+    expect_int_eq(net_protocol_send_framed(cli, pull_frame), 0,
+                  "reconnecting client should send first pull");
+    expect_int_eq(net_protocol_recv_framed(cli, response, sizeof(response)), 0,
+                  "reconnecting client first pull should pass");
+    expect_int_eq(net_protocol_send_framed(cli, pull_frame), 0,
+                  "reconnecting client should send over-limit pull");
+    expect_int_eq(net_protocol_recv_framed(cli, response, sizeof(response)), 0,
+                  "reconnecting client should receive rate-limit error");
+    expect_true(strstr(response, "\"code\":\"RATE_LIMIT\"") != NULL,
+                "reconnecting client should incur another rate-limit strike");
+    close(cli);
+  }
+
+  NetServerMetrics metrics;
+  net_server_get_metrics(&metrics);
+  expect_true(metrics.accepted_connections >= 3,
+              "server metrics should count accepted client connections");
+  expect_int_eq((int)metrics.requests, 3,
+                "server metrics should count allowed requests");
+  expect_int_eq((int)metrics.rate_limit_rejections, 3,
+                "server metrics should count rate-limit rejections");
+  expect_int_eq(metrics.blacklisted_ips, 1,
+                "repeated rate-limit violations should blacklist peer IP");
+
+  cli = socket(AF_INET, SOCK_STREAM, 0);
+  expect_true(cli >= 0, "blacklisted client socket should be created");
+  expect_int_eq(connect(cli, (struct sockaddr *)&addr, sizeof(addr)), 0,
+                "blacklisted peer TCP connect should reach listener");
+  expect_int_eq(net_protocol_send_framed(cli, hello_frame), 0,
+                "blacklisted peer can attempt HELLO before server close");
+  expect_int_eq(net_protocol_recv_framed(cli, response, sizeof(response)), -1,
+                "server should close a blacklisted peer before HELLO");
+  close(cli);
+  net_server_get_metrics(&metrics);
+  expect_int_eq(metrics.blacklist_rejections, 1,
+                "server metrics should count blacklist rejections");
+
   net_sync_stop();
   config.net_enabled = saved_net_enabled;
   config.net_rate_limit_window_sec = saved_window;
@@ -3384,6 +3526,69 @@ static void test_net_sync_fault_delayed_pull_response(const char *tmp_dir) {
 
   config.net_enabled = saved_net_enabled;
   config.net_heartbeat_sec = saved_heartbeat;
+  snprintf(config.net_role, sizeof(config.net_role), "%s", saved_role);
+  snprintf(config.net_server_host, sizeof(config.net_server_host), "%s",
+           saved_host);
+  config.net_server_port = saved_port;
+  set_test_db_path(tmp_dir);
+  qso_init();
+}
+
+static void test_net_sync_fault_truncated_pull_response(const char *tmp_dir) {
+  char case_dir[512];
+  snprintf(case_dir, sizeof(case_dir), "%s/net_sync_truncated_pull", tmp_dir);
+  expect_int_eq(mkdir(case_dir, 0777), 0,
+                "create truncated-pull fault test directory");
+
+  set_test_db_path(case_dir);
+  qso_init();
+  char status[128] = {0};
+  expect_true(qso_add_fields("SP9TRUNC", 7020, "599", "CW", "", status,
+                             sizeof(status)) >= 0,
+              "truncated-pull test should queue a local QSO");
+
+  const int saved_net_enabled = config.net_enabled;
+  const int saved_net_tls = config.net_tls;
+  const int saved_allow_insecure = config.net_allow_insecure_lan;
+  char saved_role[sizeof(config.net_role)];
+  char saved_host[sizeof(config.net_server_host)];
+  const int saved_port = config.net_server_port;
+  snprintf(saved_role, sizeof(saved_role), "%s", config.net_role);
+  snprintf(saved_host, sizeof(saved_host), "%s", config.net_server_host);
+
+  config.net_enabled = 1;
+  config.net_tls = 0;
+  config.net_allow_insecure_lan = 1;
+  snprintf(config.net_role, sizeof(config.net_role), "%s", "client");
+  snprintf(config.net_server_host, sizeof(config.net_server_host), "%s",
+           "127.0.0.1");
+  config.net_server_port = 19331;
+
+  MockSyncServerArgs server;
+  memset(&server, 0, sizeof(server));
+  server.port = config.net_server_port;
+  server.mode = MOCK_SYNC_MODE_TRUNCATE_PULL_RESP;
+  pthread_t tid;
+  expect_int_eq(pthread_create(&tid, NULL, mock_sync_server_thread, &server), 0,
+                "truncated-pull mock server should start");
+  usleep(120000);
+
+  expect_int_eq(net_sync_start(), 0,
+                "net sync should start for truncated-pull test");
+  expect_int_eq(net_sync_poll_once(), -1,
+                "truncated framed response should fail the poll");
+  net_sync_stop();
+  pthread_join(tid, NULL);
+
+  int pending = 0;
+  expect_int_eq(db_sync_get_pending_outbox_count(&pending), 0,
+                "pending outbox should remain readable after truncated frame");
+  expect_int_eq(pending, 1,
+                "truncated response must not discard an unacknowledged QSO");
+
+  config.net_enabled = saved_net_enabled;
+  config.net_tls = saved_net_tls;
+  config.net_allow_insecure_lan = saved_allow_insecure;
   snprintf(config.net_role, sizeof(config.net_role), "%s", saved_role);
   snprintf(config.net_server_host, sizeof(config.net_server_host), "%s",
            saved_host);
@@ -5480,23 +5685,21 @@ static void test_call_suggestions(void) {
                 "less than 3 chars should not return suggestions");
 
   call_suggestion_refresh(&list, "sp9", history, 8);
-  expect_true(list.count >= 3,
-              "3-char prefix should return multiple suggestions");
-  expect_str_eq(list.matches[0], "SP8QWE", "newest matching call appears first");
-  expect_str_eq(list.matches[1], "SP9AAA", "second suggestion respects recency");
-  expect_str_eq(list.matches[2], "SP9XYZ", "third suggestion respects recency");
-  expect_str_eq(list.matches[3], "SP3ABC", "older suggestion still listed");
+  expect_int_eq(list.count, 2,
+                "suggestions should include unique calls matching the prefix");
+  expect_str_eq(list.matches[0], "SP9AAA", "newest matching call appears first");
+  expect_str_eq(list.matches[1], "SP9XYZ", "older matching call appears second");
 
   call_suggestion_select_next(&list);
-  expect_str_eq(call_suggestion_selected(&list), "SP9AAA",
+  expect_str_eq(call_suggestion_selected(&list), "SP9XYZ",
                 "down arrow selection should move to next match");
 
   call_suggestion_select_prev(&list);
-  expect_str_eq(call_suggestion_selected(&list), "SP8QWE",
+  expect_str_eq(call_suggestion_selected(&list), "SP9AAA",
                 "up arrow selection should move to previous match");
 
   call_suggestion_select_prev(&list);
-  expect_str_eq(call_suggestion_selected(&list), "SP3ABC",
+  expect_str_eq(call_suggestion_selected(&list), "SP9XYZ",
                 "previous on first match should wrap to last");
 
   char input[64] = "sp9;599";
@@ -5758,6 +5961,7 @@ static void test_manual_frequency_entry_from_call_field(void) {
 
 static void test_named_log_commands(const char *tmp_dir) {
   AppRenderState state;
+  char named_log[64];
   char case_dir[512];
   snprintf(case_dir, sizeof(case_dir), "%s/named_logs_case", tmp_dir);
   expect_int_eq(mkdir(case_dir, 0777), 0,
@@ -5775,12 +5979,15 @@ static void test_named_log_commands(const char *tmp_dir) {
   send_controller_text("SP9ABC 14074 599");
   expect_int_eq(qso_count, 1, "one QSO added before named archive");
 
-  send_controller_text("newlog Summer Contest");
+  snprintf(named_log, sizeof(named_log), "Summer_Contest_%d", (int)getpid());
+  char command[128];
+  snprintf(command, sizeof(command), "newlog %s", named_log);
+  send_controller_text(command);
   app_controller_get_render_state(&state);
   expect_int_eq(qso_count, 0, "newlog <name> clears active logbook");
   expect_true(state.status != NULL, "newlog status exists");
   if (state.status)
-    expect_true(strstr(state.status, "New log created: Summer Contest") != NULL,
+    expect_true(strstr(state.status, named_log) != NULL,
                 "newlog should confirm selected name");
 
   send_controller_text("logs");
@@ -5791,20 +5998,21 @@ static void test_named_log_commands(const char *tmp_dir) {
     expect_true(strstr(state.status, "Named logs:") != NULL,
                 "logs should report available named archives");
   if (state.info)
-    expect_true(strstr(state.info, "Summer Contest") != NULL,
+    expect_true(strstr(state.info, named_log) != NULL,
                 "logs output should include archived log name");
 
   app_controller_handle_key(APP_KEY_F3);
   expect_int_eq(qso_count, 1,
                 "previous log should restore original QSO set");
 
-  send_controller_text("openlog Summer Contest");
+  snprintf(command, sizeof(command), "openlog %s", named_log);
+  send_controller_text(command);
   app_controller_get_render_state(&state);
-  expect_int_eq(qso_count, 0,
-                "openlog <name> opens independent empty logbook");
+  expect_int_eq(qso_count, 1,
+                "openlog <name> opens the archived QSO set");
   expect_true(state.status != NULL, "openlog status exists");
   if (state.status)
-    expect_true(strstr(state.status, "Log opened: Summer Contest") != NULL,
+    expect_true(strstr(state.status, named_log) != NULL,
                 "openlog should confirm selected log name");
 
   app_controller_shutdown();
@@ -6706,6 +6914,22 @@ static void test_stats_wag_multipliers(void) {
   expect_int_eq(stats.contest_mults, 3,
                 "WAG DOK multiplier should ignore repeat districts, NM, and non-DL QSOs");
 
+  qso_count = 3;
+  snprintf(config.station_exchange, sizeof(config.station_exchange), "%s", "DOK1234");
+  for (int i = 0; i < qso_count; i++) {
+    memset(&logbook[i], 0, sizeof(logbook[i]));
+    snprintf(logbook[i].country, sizeof(logbook[i].country), "%s", "Italy");
+    snprintf(logbook[i].band, sizeof(logbook[i].band), "%s", "20M");
+    snprintf(logbook[i].mode, sizeof(logbook[i].mode), "%s", "CW");
+    logbook[i].points = 5;
+  }
+  snprintf(logbook[0].call, sizeof(logbook[0].call), "%s", "IK2ABC");
+  snprintf(logbook[1].call, sizeof(logbook[1].call), "%s", "IG9ABC");
+  snprintf(logbook[2].call, sizeof(logbook[2].call), "%s", "IH9ABC");
+  stats_update();
+  expect_int_eq(stats.contest_mults, 3,
+                "WAG treats IG9 and IH9 as separate multipliers from Italy");
+
   qso_count = saved_qso_count;
   memcpy(logbook, saved_qsos, sizeof(saved_qsos));
   config = saved_config;
@@ -6713,6 +6937,79 @@ static void test_stats_wag_multipliers(void) {
   contest_definition_init_defaults(&empty);
   stats_set_contest_definition(&empty);
   stats_update();
+}
+
+static time_t wag_test_utc(int year, int month, int day, int hour, int minute,
+                           int second) {
+  struct tm utc = {0};
+  utc.tm_year = year - 1900;
+  utc.tm_mon = month - 1;
+  utc.tm_mday = day;
+  utc.tm_hour = hour;
+  utc.tm_min = minute;
+  utc.tm_sec = second;
+  return timegm(&utc);
+}
+
+static void expect_wag_rules(int expected, time_t when, int freq_khz,
+                             const char *mode, int power_watts,
+                             const char *category, const char *message) {
+  char error[128] = {0};
+  const int actual = wag_rules_validate_qso(when, freq_khz, mode, power_watts,
+                                           category, error, sizeof(error));
+  expect_int_eq(actual, expected, message);
+}
+
+static void test_wag_operating_rules(void) {
+  const time_t start = wag_test_utc(2026, 10, 17, 15, 0, 0);
+  expect_wag_rules(0, wag_test_utc(2026, 10, 17, 14, 59, 59), 7020, "CW",
+                   150, "HIGH", "WAG rejects before Saturday start");
+  expect_wag_rules(1, start, 7020, "CW", 150, "HIGH",
+                   "WAG accepts exact Saturday start");
+  expect_wag_rules(1, wag_test_utc(2026, 10, 18, 14, 59, 59), 7020, "CW",
+                   150, "HIGH", "WAG accepts through Sunday 14:59 UTC");
+  expect_wag_rules(0, wag_test_utc(2026, 10, 18, 15, 0, 0), 7020, "CW",
+                   150, "HIGH", "WAG rejects at Sunday 15:00 UTC");
+  expect_wag_rules(0, wag_test_utc(2026, 10, 24, 16, 0, 0), 7020, "CW",
+                   150, "HIGH", "WAG rejects the following weekend");
+
+  expect_wag_rules(1, start, 3559, "CW", 150, "HIGH",
+                   "WAG accepts frequency before 80m excluded segment");
+  expect_wag_rules(0, start, 3560, "CW", 150, "HIGH",
+                   "WAG rejects 80m CW excluded segment");
+  expect_wag_rules(0, start, 3650, "SSB", 150, "HIGH",
+                   "WAG rejects 80m SSB excluded segment");
+  expect_wag_rules(0, start, 14100, "SSB", 150, "HIGH",
+                   "WAG rejects 20m SSB excluded segment");
+  expect_wag_rules(0, start, 7040, "CW", 150, "HIGH",
+                   "WAG rejects 40m CW excluded segment");
+  expect_wag_rules(0, start, 7080, "SSB", 150, "HIGH",
+                   "WAG rejects 40m SSB excluded segment");
+  expect_wag_rules(0, start, 14280, "SSB", 150, "HIGH",
+                   "WAG rejects upper 20m SSB excluded segment");
+  expect_wag_rules(0, start, 21350, "SSB", 150, "HIGH",
+                   "WAG rejects 15m SSB excluded segment");
+  expect_wag_rules(0, start, 28225, "SSB", 150, "HIGH",
+                   "WAG rejects 10m SSB excluded segment");
+  expect_wag_rules(0, start, 10120, "CW", 150, "HIGH",
+                   "WAG rejects a non-contest band");
+  expect_wag_rules(0, start, 7020, "RTTY", 150, "HIGH",
+                   "WAG rejects a non-contest mode");
+
+  expect_wag_rules(1, start, 7020, "CW", 5, "QRP",
+                   "WAG accepts QRP at 5 watts");
+  expect_wag_rules(0, start, 7020, "CW", 6, "QRP",
+                   "WAG rejects QRP above 5 watts");
+  expect_wag_rules(1, start, 7020, "CW", 100, "LOW",
+                   "WAG accepts low power at 100 watts");
+  expect_wag_rules(0, start, 7020, "CW", 101, "LOW",
+                   "WAG rejects low power above 100 watts");
+  expect_wag_rules(1, start, 7020, "CW", 101, "HIGH",
+                   "WAG accepts high power above 100 watts");
+  expect_wag_rules(0, start, 7020, "CW", 100, "HIGH",
+                   "WAG rejects high power at 100 watts");
+  expect_wag_rules(0, start, 7020, "CW", 0, "HIGH",
+                   "WAG requires configured station output power");
 }
 
 static void test_cw_qtc_expand(void) {
@@ -6858,6 +7155,11 @@ int main(void) {
     return 2;
   }
 
+  if (setenv("HOME", tmp_dir, 1) != 0) {
+    fprintf(stderr, "Cannot isolate test HOME: %s\n", strerror(errno));
+    return 2;
+  }
+
   char db_path[512];
   snprintf(db_path, sizeof(db_path), "%s/unit.sqlite3", tmp_dir);
   setenv("LOGGER_DB_PATH", db_path, 1);
@@ -6885,6 +7187,7 @@ int main(void) {
   test_net_server_pages_and_station_sequence_gaps(tmp_dir);
   test_net_sync_fault_drop_append_ack_retries(tmp_dir);
   test_net_sync_fault_delayed_pull_response(tmp_dir);
+  test_net_sync_fault_truncated_pull_response(tmp_dir);
   test_protocol_append_and_pull_parsing();
   test_db_sync_apply_remote_op_and_pull(tmp_dir);
   test_db_sync_publish_local_logbook_ops(tmp_dir);
@@ -6918,6 +7221,7 @@ int main(void) {
   test_net_server_pages_and_station_sequence_gaps(tmp_dir);
   test_net_sync_fault_drop_append_ack_retries(tmp_dir);
   test_net_sync_fault_delayed_pull_response(tmp_dir);
+  test_net_sync_fault_truncated_pull_response(tmp_dir);
   test_protocol_append_and_pull_parsing();
   test_db_sync_apply_remote_op_and_pull(tmp_dir);
   test_db_sync_publish_local_logbook_ops(tmp_dir);
@@ -6928,6 +7232,7 @@ int main(void) {
   test_db_sync_serial_reservation_and_commit(tmp_dir);
   test_qso_add_mark_and_stats();
   test_stats_wag_multipliers();
+  test_wag_operating_rules();
   test_export_csv_adif(tmp_dir);
   test_export_command_exports_cabrillo_too(tmp_dir);
   test_contest_definition_and_cabrillo(tmp_dir);

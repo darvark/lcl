@@ -29,6 +29,7 @@ Ten dokument opisuje pola obsługiwane w `logger.conf` oraz klucze dozwolone w p
 | `LOCATOR` | tekst | pusty | Lokator Maidenhead stacji. |
 | `STATION_CALL` | tekst | `N0CALL` | Znak stacji używany m.in. w eksporcie Cabrillo. |
 | `STATION_EXCHANGE` | tekst | pusty | Własna wymiana stacji w zawodach, które jej wymagają; w WAG ustaw DOK albo `NM`, jeśli stacja pracuje z Niemiec. |
+| `STATION_TX_POWER_WATTS` | liczba całkowita | `0` (nieustawiona) | Zadeklarowana moc wyjściowa używana do sprawdzenia kategorii mocy WAG. Ustaw moc, z którą faktycznie pracujesz; logger nie odczytuje jej z radia. |
 | `OPERATOR_CALL` | tekst | taki sam jak `STATION_CALL` | Znak operatora logującego łączność; jeśli nie ustawiony, domyślnie przyjmuje wartość znaku stacji. |
 | `OPERATOR_NAME` | tekst | pusty | Nazwa operatora do metadanych. |
 
@@ -36,6 +37,8 @@ Uwaga praktyczna:
 
 - `STATION_CALL` pozostaje niezmienione i jest używany tam, gdzie chodzi o tożsamość stacji (np. export Cabrillo i podstawowe dane stacji).
 - W profilu WAG stacja wysyła `STATION_EXCHANGE` jako DOK/`NM`; gdy pole jest puste, niemiecki znak jest wykrywany z CTY i logger zablokuje zapis QSO, prosząc o konfigurację wymiany. Stacje poza Niemcami nadają kolejny numer seryjny. Wpisywana wymiana odebrana jest tekstowa, więc obsługuje zarówno numery, jak i alfanumeryczne DOK.
+- Dla WAG logger blokuje zapis QSO poza oknem 15:00 UTC w sobotę–14:59 UTC w niedzielę trzeciego pełnego weekendu października, na pasmach innych niż 80/40/20/15/10 m, w segmentach contest-free podanych w regulaminie oraz w trybach innych niż CW/SSB. Wymaga też dodatniego `STATION_TX_POWER_WATTS` zgodnego z `CATEGORY_POWER` (`QRP` do 5 W, `LOW` do 100 W, `HIGH` powyżej 100 W). To kontrola deklaracji przy zapisie, nie blokada PTT ani pomiar mocy nadajnika.
+- WAG liczy mnożniki DXCC/WAE per pasmo i tryb dla stacji niemieckich (z osobnymi wyjątkami `IG9` i `IH9`) oraz pierwszą literę DOK dla stacji spoza Niemiec; `NM` nie jest mnożnikiem. Rozpoznanie obszaru DXCC/WAE zależy od załadowanej bazy CTY.
 - `OPERATOR_CALL` jest używany w działaniach operatora, np. przy logowaniu, CW, QTC i UI.
 - W głównym oknie można zmienić aktywnego operatora szybkim skrótem `Ctrl+O`.
 - Pasek statusu pokazuje bieżący znak operatora w formacie `OP: <znak>`.
@@ -107,6 +110,9 @@ Pola `CAT2_*` działają tak samo jak `CAT_*`, ale dotyczą drugiego radia.
 | `NET_TLS_CERT_FILE` | ścieżka PEM | `logger_net_cert.pem` | Certyfikat serwera; przy pierwszym starcie może zostać wygenerowany self-signed. |
 | `NET_TLS_KEY_FILE` | ścieżka PEM | `logger_net_key.pem` | Prywatny klucz serwera; ogranicz prawa pliku do operatora. |
 | `NET_TLS_PEER_FINGERPRINT` | SHA-256 z dwukropkami | pusty | Obowiązkowy pin klienta przy `NET_TLS=1`; nie jest akceptowany automatycznie przy pierwszym połączeniu. |
+| `NET_TLS_REQUIRE_CLIENT_CERT` | `0` lub `1` | `0` | Wymaga certyfikatu klienta mTLS po stronie serwera. |
+| `NET_TLS_CLIENT_CA_FILE` | ścieżka PEM | pusty | CA zaufane przez serwer do weryfikacji certyfikatów klientów mTLS. |
+| `NET_TLS_CLIENT_CERT_FILE` / `NET_TLS_CLIENT_KEY_FILE` | ścieżki PEM | puste | Para certyfikatu i klucza klienta mTLS; klucz prywatny musi mieć prawa `0600`. |
 | `NET_SYNC_INTERVAL_MS` | `100..60000` | `1000` | Odstęp okresowego pollingu klienta. Sesje TCP są krótkie; catch-up może pobrać wiele stron. |
 | `NET_HEARTBEAT_SEC` | `1..300` | `5` | Timeout/heartbeat sesji. |
 | `NET_RETRY_MIN_MS` / `NET_RETRY_MAX_MS` | liczba milisekund | `1000` / `30000` | Zakres retry z backoffem. |
@@ -140,6 +146,11 @@ formularzu konfiguracji sieciowej. W polu komend aplikacji dostępne jest
 sterowanie `net on|off|status`, `net role client|server`,
 `netsync pair <shared_log_id>` i `netsync catchup`. Po zmianie konfiguracji
 zatrzymaj i uruchom sieć ponownie.
+
+Serwerowe `net status` pokazuje też liczniki aktywnych sesji, żądań,
+uwierzytelnień, błędów TLS, rate limitu i blokad IP. Trzy przekroczenia limitu z
+tego samego IPv4 w skonfigurowanym oknie blokują adres na 60 sekund; stan nie
+jest trwały i znika po restarcie procesu.
 
 Przykład serwera:
 

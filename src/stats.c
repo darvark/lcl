@@ -177,6 +177,21 @@ static int wag_qso_is_german(const QSO *q) {
   return strstr(country, "GERMANY") != NULL;
 }
 
+static const char *wag_special_dxcc_prefix(const char *call) {
+  if (!call)
+    return NULL;
+  if (strncasecmp(call, "IG9", 3) == 0)
+    return "IG9";
+  if (strncasecmp(call, "IH9", 3) == 0)
+    return "IH9";
+  const CtyEntry *worked = cty_lookup(call);
+  if (!worked)
+    return NULL;
+  if (strcmp(worked->prefix, "IG9") == 0 || strcmp(worked->prefix, "IH9") == 0)
+    return worked->prefix;
+  return NULL;
+}
+
 static int build_callsign_prefix(const char *call, char *out,
                                  size_t out_size) {
   if (!out || out_size < 2)
@@ -265,8 +280,9 @@ static void maybe_add_multiplier(const QSO *q, int own_is_sp) {
     if (wag_station_is_german()) {
       if (!q->country[0] || strcmp(q->country, "UNKNOWN") == 0)
         return;
+      const char *special_prefix = wag_special_dxcc_prefix(q->call);
       snprintf(key, sizeof(key), "DX|%s|%s|%s", q->band, q->mode,
-               q->country);
+               special_prefix ? special_prefix : q->country);
     } else {
       if (!wag_qso_is_german(q) || !q->exchange_recv[0])
         return;

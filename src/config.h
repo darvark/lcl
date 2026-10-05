@@ -34,6 +34,7 @@ typedef struct {
 
   char station_call[32];
   char station_exchange[32];
+  int station_tx_power_watts;
   char operator_call[32];
   char operator_name[64];
   char contest_definition_path[256];
@@ -56,6 +57,10 @@ typedef struct {
   char net_tls_cert_file[256];
   char net_tls_key_file[256];
   char net_tls_peer_fingerprint[128];
+  int net_tls_require_client_cert;
+  char net_tls_client_ca_file[256];
+  char net_tls_client_cert_file[256];
+  char net_tls_client_key_file[256];
   int net_sync_interval_ms;
   int net_heartbeat_sec;
   int net_retry_min_ms;

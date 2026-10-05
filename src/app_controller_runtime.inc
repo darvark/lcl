@@ -67,6 +67,16 @@ static void render_sync_status(void) {
            sync.station_id[0] ? sync.station_id : "unassigned",
            sync.last_pulled_global_seq, sync.last_error[0] ? " error=" : "",
            sync.last_error);
+  if (strcasecmp(config.net_role, "server") == 0) {
+    NetServerMetrics metrics;
+    net_server_get_metrics(&metrics);
+    snprintf(info_text, sizeof(info_text),
+             "role=server conn=%llu active=%d req=%llu auth=%llu rate=%llu tls=%llu blocked=%d denied=%llu",
+             metrics.accepted_connections, metrics.active_sessions,
+             metrics.requests, metrics.auth_failures,
+             metrics.rate_limit_rejections, metrics.tls_failures,
+             metrics.blacklisted_ips, metrics.blacklist_rejections);
+  }
 }
 
 static int start_network_service(void) {
@@ -305,8 +315,8 @@ static int process_command(const char *cmd) {
 
       char resolved_dest[512] = {0};
       const char *dest_path = dest;
-      if (config_resolve_contest_path(dest, resolved_dest,
-                                      sizeof(resolved_dest)) == 0)
+      if (n < 2 && config_resolve_contest_path(dest, resolved_dest,
+                       sizeof(resolved_dest)) == 0)
         dest_path = resolved_dest;
 
       char err[128] = {0};
@@ -1020,6 +1030,19 @@ AppControllerEvent app_controller_handle_key(int key) {
   }
 
   if (!export_prompt_mode && key == APP_KEY_SPACE) {
+    const int active_radio_idx = active_radio_index();
+    if (contest_definition_loaded &&
+        *active_entry_field_for_idx(active_radio_idx) == ENTRY_FIELD_RST) {
+      char *exchange = entry_rst_for_idx(active_radio_idx);
+      const size_t exchange_len = strlen(exchange);
+      if (exchange_len + 1 < sizeof(entry_rst_by_radio[0])) {
+        exchange[exchange_len] = ' ';
+        exchange[exchange_len + 1] = 0;
+      }
+      update_composed_input_line();
+      return APP_CTRL_EVENT_NONE;
+    }
+
     if (*active_entry_field_for_idx(active_radio_index()) == ENTRY_FIELD_CALL &&
         call_suggestion_available) {
       const char *selected = call_suggestion_selected(&call_suggestions);
@@ -1116,6 +1139,18 @@ AppControllerEvent app_controller_handle_key(int key) {
           const int qso_freq_khz = resolve_qso_frequency_khz();
           char qso_mode[16] = {0};
           const char *mode = resolve_qso_mode(qso_mode, sizeof(qso_mode));
+          if (contest_name_contains("WAG")) {
+            char wag_error[128] = {0};
+            if (!wag_rules_validate_qso(wag_rules_now_utc(), qso_freq_khz,
+                                        mode, config.station_tx_power_watts,
+                                        active_contest_def.category_power,
+                                        wag_error, sizeof(wag_error))) {
+              snprintf(status_text, sizeof(status_text), "%s", wag_error);
+              clear_active_entry_fields();
+              clear_callsign_suggestion();
+              return APP_CTRL_EVENT_NONE;
+            }
+          }
           char qso_band[8] = {0};
           detect_band(qso_freq_khz, qso_band);
 

@@ -1,4 +1,5 @@
 #include "net_tls.h"
+#include "config.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -271,6 +272,21 @@ int net_transport_init_client(NetTransport *transport, int fd,
     }
     SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
     SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
+    if (config.net_tls_client_cert_file[0] ||
+        config.net_tls_client_key_file[0]) {
+      if (!config.net_tls_client_cert_file[0] ||
+          !config.net_tls_client_key_file[0] ||
+          secure_existing_private_key(config.net_tls_client_key_file) != 0 ||
+          SSL_CTX_use_certificate_file(ctx, config.net_tls_client_cert_file,
+                                       SSL_FILETYPE_PEM) != 1 ||
+          SSL_CTX_use_PrivateKey_file(ctx, config.net_tls_client_key_file,
+                                      SSL_FILETYPE_PEM) != 1 ||
+          SSL_CTX_check_private_key(ctx) != 1) {
+        set_ssl_error(error_text, error_size, "tls client identity");
+        SSL_CTX_free(ctx);
+        return -1;
+      }
+    }
 
     ssl = SSL_new(ctx);
     if (!ssl || init_tls_common(transport, ctx, ssl, error_text, error_size) !=
@@ -352,6 +368,19 @@ int net_transport_init_server(NetTransport *transport, int fd, int use_tls,
       return -1;
     }
     SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+    if (config.net_tls_require_client_cert) {
+      if (!config.net_tls_client_ca_file[0] ||
+          SSL_CTX_load_verify_locations(ctx, config.net_tls_client_ca_file,
+                                        NULL) != 1) {
+        set_ssl_error(error_text, error_size, "tls client CA certificate");
+        SSL_CTX_free(ctx);
+        return -1;
+      }
+      SSL_CTX_set_verify(ctx,
+                         SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT,
+                         NULL);
+      SSL_CTX_set_verify_depth(ctx, 4);
+    }
     int cert_missing = access(cert_file, F_OK) != 0 && errno == ENOENT;
     int key_missing = access(key_file, F_OK) != 0 && errno == ENOENT;
     int cert_rc = -1;

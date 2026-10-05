@@ -10,11 +10,13 @@
 #include "globals.h"
 #include "maidenhead.h"
 #include "live_upload.h"
+#include "net_server.h"
 #include "net_sync.h"
 #include "qso.h"
 #include "qtc.h"
 #include "suggestion.h"
 #include "stats.h"
+#include "wag_rules.h"
 
 #include <errno.h>
 #include <pthread.h>

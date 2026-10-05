@@ -66,6 +66,7 @@ set(LOGGER_CORE_SOURCES
     src/live_upload.c
     src/export.c
     src/stats.c
+    src/wag_rules.c
     src/maidenhead.c
     src/net_protocol.c
     src/net_sync.c
@@ -87,12 +88,13 @@ add_executable(unit_tests
     tests/unit/unit_tests.c
     ${LOGGER_CORE_SOURCES}
 )
+target_compile_definitions(unit_tests PRIVATE LOGGER_TESTING=1)
 
 add_executable(network_tests
     tests/unit/unit_tests.c
     ${LOGGER_CORE_SOURCES}
 )
-target_compile_definitions(network_tests PRIVATE LOGGER_NETWORK_TESTS_ONLY=1)
+target_compile_definitions(network_tests PRIVATE LOGGER_NETWORK_TESTS_ONLY=1 LOGGER_TESTING=1)
 
 add_executable(multiprocess_sync_tests
     tests/unit/multiprocess_sync_test.c

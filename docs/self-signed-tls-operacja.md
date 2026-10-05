@@ -20,6 +20,10 @@ W `logger.conf` obsluzone sa pola:
 - `NET_TLS_CERT_FILE=logger_net_cert.pem`
 - `NET_TLS_KEY_FILE=logger_net_key.pem`
 - `NET_TLS_PEER_FINGERPRINT=`
+- `NET_TLS_REQUIRE_CLIENT_CERT=0`
+- `NET_TLS_CLIENT_CA_FILE=`
+- `NET_TLS_CLIENT_CERT_FILE=`
+- `NET_TLS_CLIENT_KEY_FILE=`
 - `NET_AUTH_TOKEN=<silny sekret współdzielony z klientami>`
 - `NET_RATE_LIMIT_WINDOW_SEC=1`
 - `NET_RATE_LIMIT_BURST=32`
@@ -30,6 +34,9 @@ Znaczenie:
 - `NET_TLS_CERT_FILE`: sciezka PEM certyfikatu serwera.
 - `NET_TLS_KEY_FILE`: sciezka PEM klucza prywatnego serwera.
 - `NET_TLS_PEER_FINGERPRINT`: pin SHA-256 certyfikatu serwera po stronie klienta.
+- `NET_TLS_REQUIRE_CLIENT_CERT=1`: opcjonalne mTLS; serwer wymaga certyfikatu klienta zaufanego przez `NET_TLS_CLIENT_CA_FILE`.
+- `NET_TLS_CLIENT_CA_FILE`: ścieżka do PEM CA weryfikującego certyfikaty klientów (serwer).
+- `NET_TLS_CLIENT_CERT_FILE` i `NET_TLS_CLIENT_KEY_FILE`: para certyfikatu i klucza tożsamości klienta mTLS.
 - `NET_ALLOW_INSECURE_LAN=1`: jawny wyjątek dla zaufanej, odizolowanej sieci;
 	nigdy nie ustawiaj go dla Internetu, Wi-Fi gościnnego ani sieci współdzielonej.
 
@@ -100,6 +107,29 @@ openssl x509 -in logger_net_cert.pem -noout -fingerprint -sha256
 Klient nie wykona TLS handshake przez warstwę synchronizacji, jeśli pin jest
 pusty. Zmiana certyfikatu bez aktualizacji pinu kończy połączenie błędem.
 
+## Wzajemne uwierzytelnianie TLS
+
+mTLS jest opcjonalne i nie zastępuje pinu serwera ani tokenu aplikacyjnego.
+Certyfikat klienta musi być podpisany przez CA zaufane przez serwer:
+
+- serwer: ustaw `NET_TLS=1`, `NET_TLS_REQUIRE_CLIENT_CERT=1` oraz
+	`NET_TLS_CLIENT_CA_FILE=/ścieżka/ca-klientów.pem`,
+- klient: ustaw `NET_TLS=1`, `NET_TLS_CLIENT_CERT_FILE=/ścieżka/klient.pem` i
+	`NET_TLS_CLIENT_KEY_FILE=/ścieżka/klient.key`,
+- skonfiguruj także dotychczasowy `NET_TLS_PEER_FINGERPRINT` i
+	`NET_AUTH_TOKEN`.
+
+Klucz klienta musi należeć do bieżącego użytkownika i mieć prawa `0600`.
+Niepoprawny, brakujący lub niezaufany certyfikat zamyka handshake.
+
+## Metryki i blokada IP
+
+`net status` pokazuje aktywne sesje oraz liczniki żądań, błędów uwierzytelniania
+i TLS, przekroczeń rate limitu oraz blokad. Trzy naruszenia limitu z tego samego
+IPv4 w skonfigurowanym oknie blokują ten adres na 60 sekund. Liczniki i blokady
+są przechowywane w pamięci procesu; restart serwera je czyści. Adresy klientów
+nie są wypisywane.
+
 ## Kolejne polaczenia klienta
 
 Przy nastepnych polaczeniach:
@@ -144,10 +174,11 @@ przerwy:
 
 ## Token i ograniczenia
 
-- brak mTLS,
+- mTLS jest opcjonalne; certyfikaty klienta i CA muszą być dostarczone oraz rotowane ręcznie,
 - brak CRL/OCSP,
-- brak zewnetrznego CA,
+- brak automatycznego enrollment i lifecycle zewnętrznego CA,
 - fingerprint pinning wymaga bezpiecznego kanału dystrybucji pinu,
+- metryki i blokady IP są tylko w pamięci procesu; blacklist dotyczy IPv4 i wygasa po 60 sekundach,
 - bez TLS token jest przesyłany jawnie; wyjątek plain TCP jest możliwy wyłącznie
 	przez `NET_ALLOW_INSECURE_LAN=1` w zaufanej, izolowanej sieci.
 

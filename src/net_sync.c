@@ -150,6 +150,36 @@ int net_sync_validate_config(char *error, size_t error_size) {
                "NET_TLS_PEER_FINGERPRINT is required for TLS clients");
     return -1;
   }
+  if (config.net_tls_require_client_cert && !config.net_tls) {
+    if (error && error_size > 1)
+      snprintf(error, error_size, "mTLS requires NET_TLS=1");
+    return -1;
+  }
+  if (config.net_tls_require_client_cert &&
+      strcasecmp(config.net_role, "server") == 0 &&
+      !config.net_tls_client_ca_file[0]) {
+    if (error && error_size > 1)
+      snprintf(error, error_size,
+               "NET_TLS_CLIENT_CA_FILE is required for mTLS servers");
+    return -1;
+  }
+  if (config.net_tls && strcasecmp(config.net_role, "client") == 0 &&
+      (config.net_tls_client_cert_file[0] !=
+       config.net_tls_client_key_file[0])) {
+    if (error && error_size > 1)
+      snprintf(error, error_size,
+               "NET_TLS_CLIENT_CERT_FILE and NET_TLS_CLIENT_KEY_FILE must be set together");
+    return -1;
+  }
+  if (config.net_tls_require_client_cert &&
+      strcasecmp(config.net_role, "client") == 0 &&
+      (!config.net_tls_client_cert_file[0] ||
+       !config.net_tls_client_key_file[0])) {
+    if (error && error_size > 1)
+      snprintf(error, error_size,
+               "Client certificate and key are required for mTLS");
+    return -1;
+  }
   if (config.net_sync_interval_ms < 100 ||
       config.net_sync_interval_ms > 60000 || config.net_heartbeat_sec < 1 ||
       config.net_heartbeat_sec > 300 || config.net_retry_min_ms < 100 ||

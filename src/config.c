@@ -246,6 +246,7 @@ static void set_defaults(void) {
 
   strcpy(config.station_call, "N0CALL");
   strcpy(config.station_exchange, "");
+  config.station_tx_power_watts = 0;
   strcpy(config.operator_call, "N0CALL");
   strcpy(config.operator_name, "");
   strcpy(config.contest_definition_path, "contest.conf");
@@ -268,6 +269,10 @@ static void set_defaults(void) {
   strcpy(config.net_tls_cert_file, "logger_net_cert.pem");
   strcpy(config.net_tls_key_file, "logger_net_key.pem");
   strcpy(config.net_tls_peer_fingerprint, "");
+  config.net_tls_require_client_cert = 0;
+  strcpy(config.net_tls_client_ca_file, "");
+  strcpy(config.net_tls_client_cert_file, "");
+  strcpy(config.net_tls_client_key_file, "");
   config.net_sync_interval_ms = 1000;
   config.net_heartbeat_sec = 5;
   config.net_retry_min_ms = 1000;
@@ -417,6 +422,10 @@ int config_load(const char *filename) {
     } else if (strcmp(key, "STATION_EXCHANGE") == 0) {
       strncpy(config.station_exchange, value, sizeof(config.station_exchange));
       config.station_exchange[sizeof(config.station_exchange) - 1] = 0;
+    } else if (strcmp(key, "STATION_TX_POWER_WATTS") == 0) {
+      config.station_tx_power_watts = atoi(value);
+      if (config.station_tx_power_watts < 0)
+        config.station_tx_power_watts = 0;
     } else if (strcmp(key, "OPERATOR_CALL") == 0) {
       strncpy(config.operator_call, value, sizeof(config.operator_call));
       config.operator_call[sizeof(config.operator_call) - 1] = 0;
@@ -491,6 +500,20 @@ int config_load(const char *filename) {
               sizeof(config.net_tls_peer_fingerprint));
       config.net_tls_peer_fingerprint[sizeof(config.net_tls_peer_fingerprint) -
                                       1] = 0;
+    } else if (strcmp(key, "NET_TLS_REQUIRE_CLIENT_CERT") == 0) {
+      config.net_tls_require_client_cert = atoi(value) ? 1 : 0;
+    } else if (strcmp(key, "NET_TLS_CLIENT_CA_FILE") == 0) {
+      strncpy(config.net_tls_client_ca_file, value,
+              sizeof(config.net_tls_client_ca_file));
+      config.net_tls_client_ca_file[sizeof(config.net_tls_client_ca_file) - 1] = 0;
+    } else if (strcmp(key, "NET_TLS_CLIENT_CERT_FILE") == 0) {
+      strncpy(config.net_tls_client_cert_file, value,
+              sizeof(config.net_tls_client_cert_file));
+      config.net_tls_client_cert_file[sizeof(config.net_tls_client_cert_file) - 1] = 0;
+    } else if (strcmp(key, "NET_TLS_CLIENT_KEY_FILE") == 0) {
+      strncpy(config.net_tls_client_key_file, value,
+              sizeof(config.net_tls_client_key_file));
+      config.net_tls_client_key_file[sizeof(config.net_tls_client_key_file) - 1] = 0;
     } else if (strcmp(key, "NET_SYNC_INTERVAL_MS") == 0) {
       config.net_sync_interval_ms = atoi(value);
       if (config.net_sync_interval_ms < 100) config.net_sync_interval_ms = 100;
@@ -619,6 +642,7 @@ int config_save(const char *filename) {
   fprintf(f, "\n");
   fprintf(f, "STATION_CALL=%s\n", config.station_call);
   fprintf(f, "STATION_EXCHANGE=%s\n", config.station_exchange);
+  fprintf(f, "STATION_TX_POWER_WATTS=%d\n", config.station_tx_power_watts);
   fprintf(f, "OPERATOR_CALL=%s\n", config.operator_call);
   fprintf(f, "OPERATOR_NAME=%s\n", config.operator_name);
   fprintf(f, "CONTEST_DEF_FILE=%s\n", config.contest_definition_path);
@@ -643,6 +667,13 @@ int config_save(const char *filename) {
   fprintf(f, "NET_TLS_KEY_FILE=%s\n", config.net_tls_key_file);
   fprintf(f, "NET_TLS_PEER_FINGERPRINT=%s\n",
           config.net_tls_peer_fingerprint);
+    fprintf(f, "NET_TLS_REQUIRE_CLIENT_CERT=%d\n",
+      config.net_tls_require_client_cert ? 1 : 0);
+    fprintf(f, "NET_TLS_CLIENT_CA_FILE=%s\n", config.net_tls_client_ca_file);
+    fprintf(f, "NET_TLS_CLIENT_CERT_FILE=%s\n",
+      config.net_tls_client_cert_file);
+    fprintf(f, "NET_TLS_CLIENT_KEY_FILE=%s\n",
+      config.net_tls_client_key_file);
   fprintf(f, "NET_SYNC_INTERVAL_MS=%d\n", config.net_sync_interval_ms);
   fprintf(f, "NET_HEARTBEAT_SEC=%d\n", config.net_heartbeat_sec);
   fprintf(f, "NET_RETRY_MIN_MS=%d\n", config.net_retry_min_ms);

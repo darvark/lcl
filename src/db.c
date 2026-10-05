@@ -6,6 +6,7 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,6 +18,7 @@
 
 typedef struct sqlite3 sqlite3;
 typedef struct sqlite3_stmt sqlite3_stmt;
+typedef struct sqlite3_backup sqlite3_backup;
 
 #define SQLITE_OK 0
 #define SQLITE_ROW 100
@@ -41,6 +43,10 @@ extern int sqlite3_changes(sqlite3 *db);
 extern void sqlite3_free(void *ptr);
 extern int sqlite3_reset(sqlite3_stmt *stmt);
 extern int sqlite3_clear_bindings(sqlite3_stmt *stmt);
+extern sqlite3_backup *sqlite3_backup_init(sqlite3 *dest, const char *dest_name,
+                                          sqlite3 *src, const char *src_name);
+extern int sqlite3_backup_step(sqlite3_backup *backup, int pages);
+extern int sqlite3_backup_finish(sqlite3_backup *backup);
 
 static sqlite3 *db = NULL;
 static char db_path[512] = {0};
@@ -384,6 +390,12 @@ static int count_qsos_for_file(const char *path, int *out_count) {
   return 0;
 }
 
+static int stat_is_newer(const struct stat *left, const struct stat *right) {
+  if (left->st_mtime != right->st_mtime)
+    return left->st_mtime > right->st_mtime;
+  return left->st_mtim.tv_nsec > right->st_mtim.tv_nsec;
+}
+
 static int list_log_db_files(char paths[][512], char names[][64],
                              struct stat stats[], int max_items,
                              int *out_count) {
@@ -409,23 +421,42 @@ static int list_log_db_files(char paths[][512], char names[][64],
       continue;
     if (!has_suffix(entry->d_name, ".db"))
       continue;
-    if (count >= max_items)
-      break;
 
-    snprintf(paths[count], 512, "%s/%s", logs_dir, entry->d_name);
-    db_path_to_log_name(entry->d_name, names[count], 64);
+    char candidate_path[512] = {0};
+    char candidate_name[64] = {0};
+    struct stat candidate_stat;
+    snprintf(candidate_path, sizeof(candidate_path), "%s/%s", logs_dir,
+             entry->d_name);
+    db_path_to_log_name(entry->d_name, candidate_name,
+                        sizeof(candidate_name));
 
-    if (stat(paths[count], &stats[count]) != 0)
-      memset(&stats[count], 0, sizeof(struct stat));
+    if (stat(candidate_path, &candidate_stat) != 0)
+      continue;
 
-    count++;
+    int slot = count;
+    if (count == max_items) {
+      slot = 0;
+      for (int i = 1; i < count; i++) {
+        if (stat_is_newer(&stats[slot], &stats[i]))
+          slot = i;
+      }
+      if (!stat_is_newer(&candidate_stat, &stats[slot]))
+        continue;
+    } else {
+      count++;
+    }
+
+    snprintf(paths[slot], 512, "%s", candidate_path);
+    snprintf(names[slot], 64, "%s", candidate_name);
+    stats[slot] = candidate_stat;
+
   }
 
   closedir(dir);
 
   for (int i = 0; i < count; i++) {
     for (int j = i + 1; j < count; j++) {
-      if (strcasecmp(names[i], names[j]) <= 0)
+      if (stat_is_newer(&stats[i], &stats[j]))
         continue;
 
       char tmp_path[512];
@@ -479,8 +510,14 @@ static int switch_to_db_file_impl(const char *path, const char *log_name,
   if (remember_previous && old_path[0] && strcmp(old_path, target_path) != 0)
     snprintf(previous_db_path, sizeof(previous_db_path), "%s", old_path);
 
-  if (db)
+  char saved_previous_path[sizeof(previous_db_path)] = {0};
+  snprintf(saved_previous_path, sizeof(saved_previous_path), "%s",
+           previous_db_path);
+  if (db) {
     db_shutdown();
+    snprintf(previous_db_path, sizeof(previous_db_path), "%s",
+             saved_previous_path);
+  }
 
   snprintf(db_path, sizeof(db_path), "%s", target_path);
   snprintf(pending_logbook_name, sizeof(pending_logbook_name), "%s",
@@ -1350,10 +1387,10 @@ static int ensure_open(void) {
   const char *target_path = NULL;
   int using_default_path = 0;
 
-  if (env_path && env_path[0]) {
-    target_path = env_path;
-  } else if (db_path[0]) {
+  if (db_path[0]) {
     target_path = db_path;
+  } else if (env_path && env_path[0]) {
+    target_path = env_path;
   } else {
     if (build_log_db_path("GeneralLog", db_path, sizeof(db_path)) == 0)
       target_path = db_path;
@@ -1878,7 +1915,8 @@ void db_shutdown(void) {
  */
 static int db_init_impl(void) {
   const char *env_path = getenv("LOGGER_DB_PATH");
-  const char *target_path = env_path && env_path[0] ? env_path : db_path[0] ? db_path : NULL;
+  const char *target_path = db_path[0] ? db_path
+                                       : env_path && env_path[0] ? env_path : NULL;
 
   if (db_initialized && db && db_path[0] && target_path &&
       strcmp(db_path, target_path) == 0)
@@ -1893,12 +1931,6 @@ static int db_init_impl(void) {
       previous_db_path[0] = 0;
       pending_logbook_name[0] = 0;
     }
-  }
-
-  if (env_path && env_path[0] && db_path[0] && strcmp(db_path, env_path) != 0) {
-    db_path[0] = 0;
-    previous_db_path[0] = 0;
-    pending_logbook_name[0] = 0;
   }
 
   if (ensure_open() != 0)
@@ -2655,13 +2687,53 @@ int db_archive_current_logbook_named(const char *name) {
   if (build_log_db_path(safe_name, db_file, sizeof(db_file)) != 0)
     return -1;
 
-  if (access(db_file, F_OK) == 0)
-    return -1;
+  db_operation_lock();
+  int rc = -1;
+  int created = 0;
+  sqlite3 *archive_db = NULL;
+  sqlite3_backup *backup = NULL;
+  if (access(db_file, F_OK) == 0 || db_init() != 0 || !db)
+    goto cleanup;
 
-  if (switch_to_db_file(db_file, safe_name, 1) != 0)
-    return -1;
+  int create_flags = O_CREAT | O_EXCL | O_RDWR;
+#ifdef O_NOFOLLOW
+  create_flags |= O_NOFOLLOW;
+#endif
+  int fd = open(db_file, create_flags, S_IRUSR | S_IWUSR);
+  if (fd < 0)
+    goto cleanup;
+  created = 1;
+  close(fd);
 
-  return 0;
+  if (sqlite3_open(db_file, &archive_db) != SQLITE_OK || !archive_db)
+    goto cleanup;
+  (void)sqlite3_busy_timeout(archive_db, 3000);
+  backup = sqlite3_backup_init(archive_db, "main", db, "main");
+  if (!backup)
+    goto cleanup;
+  if (sqlite3_backup_step(backup, -1) != SQLITE_DONE)
+    goto cleanup;
+  if (sqlite3_backup_finish(backup) != SQLITE_OK) {
+    backup = NULL;
+    goto cleanup;
+  }
+  backup = NULL;
+  if (sqlite3_close(archive_db) != SQLITE_OK)
+    goto cleanup;
+  archive_db = NULL;
+
+  snprintf(previous_db_path, sizeof(previous_db_path), "%s", db_file);
+  rc = 0;
+
+cleanup:
+  if (backup)
+    (void)sqlite3_backup_finish(backup);
+  if (archive_db)
+    (void)sqlite3_close(archive_db);
+  if (rc != 0 && created)
+    (void)unlink(db_file);
+  db_operation_unlock();
+  return rc;
 }
 
 /*

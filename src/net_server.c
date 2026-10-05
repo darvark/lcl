@@ -23,6 +23,9 @@
 #define NET_SERVER_MAX_OPS 64
 #define NET_SERVER_MAX_SESSIONS 16
 #define NET_SERVER_SESSION_IDLE_SEC 60
+#define NET_SERVER_BLACKLIST_SLOTS 64
+#define NET_SERVER_BLACKLIST_THRESHOLD 3
+#define NET_SERVER_BLACKLIST_SEC 60
 
 typedef struct {
   int in_use;
@@ -34,7 +37,15 @@ typedef struct {
   pthread_mutex_t write_mutex;
   char station_id[32];
   char shared_log_id[36];
+  char peer_ip[INET_ADDRSTRLEN];
 } NetServerSession;
+
+typedef struct {
+  char address[INET_ADDRSTRLEN];
+  int violations;
+  time_t violation_window_started;
+  time_t blocked_until;
+} NetServerBlacklistEntry;
 
 static pthread_t net_server_thread;
 static int net_server_running = 0;
@@ -43,6 +54,62 @@ static int net_server_listen_fd = -1;
 
 static NetServerSession net_server_sessions[NET_SERVER_MAX_SESSIONS];
 static pthread_mutex_t net_server_sessions_mutex = PTHREAD_MUTEX_INITIALIZER;
+static NetServerMetrics net_server_metrics;
+static NetServerBlacklistEntry net_server_blacklist[NET_SERVER_BLACKLIST_SLOTS];
+
+static NetServerBlacklistEntry *blacklist_entry_locked(const char *address,
+                                                        int create) {
+  NetServerBlacklistEntry *free_entry = NULL;
+  for (int i = 0; i < NET_SERVER_BLACKLIST_SLOTS; i++) {
+    NetServerBlacklistEntry *entry = &net_server_blacklist[i];
+    if (entry->address[0] && strcmp(entry->address, address) == 0)
+      return entry;
+    if (!entry->address[0] || entry->blocked_until <= time(NULL)) {
+      if (!free_entry)
+        free_entry = entry;
+    }
+  }
+  if (!create || !free_entry)
+    return NULL;
+  memset(free_entry, 0, sizeof(*free_entry));
+  snprintf(free_entry->address, sizeof(free_entry->address), "%s", address);
+  return free_entry;
+}
+
+static int peer_is_blacklisted(const char *address) {
+  if (!address || !address[0])
+    return 0;
+  pthread_mutex_lock(&net_server_sessions_mutex);
+  NetServerBlacklistEntry *entry = blacklist_entry_locked(address, 0);
+  const int blocked = entry && entry->blocked_until > time(NULL);
+  if (blocked)
+    net_server_metrics.blacklist_rejections++;
+  pthread_mutex_unlock(&net_server_sessions_mutex);
+  return blocked;
+}
+
+static void record_rate_limit_violation(const char *address) {
+  if (!address || !address[0])
+    return;
+  pthread_mutex_lock(&net_server_sessions_mutex);
+  net_server_metrics.rate_limit_rejections++;
+  NetServerBlacklistEntry *entry = blacklist_entry_locked(address, 1);
+  if (entry) {
+    const time_t now = time(NULL);
+    int window_sec = config.net_rate_limit_window_sec;
+    if (window_sec < 1)
+      window_sec = 1;
+    if (!entry->violation_window_started ||
+        now - entry->violation_window_started >= window_sec) {
+      entry->violation_window_started = now;
+      entry->violations = 0;
+    }
+    entry->violations++;
+    if (entry->violations >= NET_SERVER_BLACKLIST_THRESHOLD)
+      entry->blocked_until = now + NET_SERVER_BLACKLIST_SEC;
+  }
+  pthread_mutex_unlock(&net_server_sessions_mutex);
+}
 
 static int session_rate_limit_exceeded(time_t *window_started,
                                        int *window_count) {
@@ -401,6 +468,7 @@ static void release_session_slot(NetServerSession *session) {
   session->authenticated = 0;
   session->station_id[0] = 0;
   session->shared_log_id[0] = 0;
+  session->peer_ip[0] = 0;
   session->client_fd = -1;
   session->last_activity_utc = 0;
   session->in_use = 0;
@@ -491,7 +559,12 @@ static void *net_server_client_worker(void *arg) {
         (void)send_session_frame(session, hello_ack);
 
       if (!accepted)
+      {
+        pthread_mutex_lock(&net_server_sessions_mutex);
+        net_server_metrics.auth_failures++;
+        pthread_mutex_unlock(&net_server_sessions_mutex);
         break;
+      }
       continue;
     }
 
@@ -517,10 +590,15 @@ static void *net_server_client_worker(void *arg) {
     }
 
     if (session_rate_limit_exceeded(&rate_window_started, &rate_window_count)) {
+      record_rate_limit_violation(session->peer_ip);
       (void)send_session_frame(session,
                                "{\"type\":\"ERROR\",\"code\":\"RATE_LIMIT\"}");
       break;
     }
+
+    pthread_mutex_lock(&net_server_sessions_mutex);
+    net_server_metrics.requests++;
+    pthread_mutex_unlock(&net_server_sessions_mutex);
 
     if (mt == NET_MSG_APPEND_OPS) {
       handle_append_ops(session, frame);
@@ -614,9 +692,22 @@ static void *net_server_worker(void *arg) {
     if (rc <= 0)
       continue;
 
-    int cli = accept(srv, NULL, NULL);
+    struct sockaddr_in peer_addr;
+    socklen_t peer_len = sizeof(peer_addr);
+    memset(&peer_addr, 0, sizeof(peer_addr));
+    int cli = accept(srv, (struct sockaddr *)&peer_addr, &peer_len);
     if (cli < 0)
       continue;
+
+    char peer_ip[INET_ADDRSTRLEN] = {0};
+    (void)inet_ntop(AF_INET, &peer_addr.sin_addr, peer_ip, sizeof(peer_ip));
+    pthread_mutex_lock(&net_server_sessions_mutex);
+    net_server_metrics.accepted_connections++;
+    pthread_mutex_unlock(&net_server_sessions_mutex);
+    if (peer_is_blacklisted(peer_ip)) {
+      close(cli);
+      continue;
+    }
 
     NetTransport transport;
     char transport_error[128] = {0};
@@ -624,6 +715,9 @@ static void *net_server_worker(void *arg) {
                                   config.net_tls_cert_file,
                                   config.net_tls_key_file, transport_error,
                                   sizeof(transport_error)) != 0) {
+                          pthread_mutex_lock(&net_server_sessions_mutex);
+                          net_server_metrics.tls_failures++;
+                          pthread_mutex_unlock(&net_server_sessions_mutex);
       close(cli);
       continue;
     }
@@ -636,6 +730,7 @@ static void *net_server_worker(void *arg) {
 
     session->transport = transport;
     session->client_fd = cli;
+    snprintf(session->peer_ip, sizeof(session->peer_ip), "%s", peer_ip);
 
     if (pthread_create(&session->thread, NULL, net_server_client_worker,
                        session) != 0) {
@@ -680,6 +775,10 @@ int net_server_start(void) {
            shared_log_id);
 
   net_server_stop_flag = 0;
+  pthread_mutex_lock(&net_server_sessions_mutex);
+  memset(&net_server_metrics, 0, sizeof(net_server_metrics));
+  memset(net_server_blacklist, 0, sizeof(net_server_blacklist));
+  pthread_mutex_unlock(&net_server_sessions_mutex);
   for (int i = 0; i < NET_SERVER_MAX_SESSIONS; i++) {
     net_server_sessions[i].in_use = 0;
     net_server_sessions[i].authenticated = 0;
@@ -721,3 +820,19 @@ void net_server_stop(void) {
 }
 
 int net_server_is_running(void) { return net_server_running ? 1 : 0; }
+
+void net_server_get_metrics(NetServerMetrics *out) {
+  if (!out)
+    return;
+  memset(out, 0, sizeof(*out));
+  pthread_mutex_lock(&net_server_sessions_mutex);
+  *out = net_server_metrics;
+  for (int i = 0; i < NET_SERVER_MAX_SESSIONS; i++)
+    if (net_server_sessions[i].in_use)
+      out->active_sessions++;
+  const time_t now = time(NULL);
+  for (int i = 0; i < NET_SERVER_BLACKLIST_SLOTS; i++)
+    if (net_server_blacklist[i].blocked_until > now)
+      out->blacklisted_ips++;
+  pthread_mutex_unlock(&net_server_sessions_mutex);
+}

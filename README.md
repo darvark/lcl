@@ -15,14 +15,18 @@ Dodatkowa dokumentacja:
 
 ## Status prac i stabilizacji
 
-Aktualny stan repozytorium jest etapem stabilizacji po wprowadzeniu nowych funkcji VHF i runtime synchronizacji. Nie jest to jeszcze stan produkcyjnie stabilny:
+Aktualny stan repozytorium obejmuje obsługę VHF i runtime synchronizacji. Pełny
+zestaw jednostkowy oraz zarejestrowane testy CTest przechodzą. Ostrzeżenia
+OpenSSL 3 dotyczą użycia przestarzałego API RSA przy generowaniu self-signed
+certyfikatu.
 
 - wprowadzono obsługę VHF/UHF/SHF z lokalizacją i punktacją odległościową,
 - dodano nowe typy exchange i multiplierów dla `SERIAL_GRID` / `GRID_PER_BAND`,
 - wprowadzono testy regresyjne dla VHF,
-- pełny historyczny `unit_tests` ma znane błędy w obszarach F3/#LOCATOR, sugestii i logbooków.
+- poprawiono archiwizację i przełączanie named logs, wejście wymiany z lokatorem oraz testy sugestii.
 
-Sieciowe bramki CTest obejmują migracje, protokół, routing `shared_log_id` oraz test wieloprocesowy serwera i dwóch klientów. Pozostałe testy aplikacyjne należy uporządkować przed deklaracją pełnej stabilności.
+Sieciowe bramki CTest obejmują migracje, protokół, routing `shared_log_id`,
+testy fault injection i test wieloprocesowy serwera z dwoma klientami.
 
 ## Status pracy sieciowej
 
@@ -32,29 +36,35 @@ seriali. TLS jest wymagany domyślnie; klient musi mieć wcześniej skonfigurowa
 fingerprint SHA-256 i nie ma automatycznego TOFU. Serwer generuje
 `shared_log_id`; klienta jawnie paruje się z ID widocznym w `net status` przez
 `netsync pair <shared_log_id>` przy wyłączonej synchronizacji.
+Opcjonalny mTLS pozwala serwerowi wymagać certyfikatu klienta podpisanego przez
+skonfigurowane CA. `net status` pokazuje liczniki sesji, żądań, błędów
+uwierzytelniania/TLS, rate limitu i blokad IP.
 Pełne ustawienia sieciowe (`NET_*`) są w `logger.conf` bieżącego użytkownika
-(`~/.config/contest-logger/logger.conf`, prawa `0600`). UI udostępnia komendy
-sterujące, ale nie formularz edycji hosta, tokenu ani TLS. Plain TCP wymaga
+(`~/.config/contest-logger/logger.conf`, prawa `0600`) i w formularzu ustawień
+sieciowych UI. Dostępne są też komendy sterujące:
+`net on|off|status`, `net role client|server`, `netsync pair <shared_log_id>`.
+Plain TCP wymaga
 jawnego `NET_ALLOW_INSECURE_LAN=1` i może być użyty wyłącznie w zaufanej,
 odizolowanej sieci. Zobacz [konfigurację synchronizacji](docs/konfiguracja-i-zawody.md#centralny-log-i-synchronizacja)
 i [procedurę TLS](docs/self-signed-tls-operacja.md).
 
-Ograniczenie v1: jedna instancja serwera obsługuje aktywny plik SQLite i jego
-`shared_log_id`; używaj osobnej instancji/bazy dla każdego wspólnego logu. Pełny historyczny
-`unit_tests` ma znane błędy F3/#LOCATOR i logbooków; sieciowe bramki CTest są
-osobnymi testami.
+Ograniczenie v1: jedna instancja serwera obsługuje jeden aktywny plik SQLite i
+jego `shared_log_id`; używaj osobnej instancji/portu dla każdego wspólnego logu.
+Blacklist jest tymczasowy, tylko IPv4 i przechowywany w pamięci procesu. mTLS
+opiera się na ręcznie dostarczonych certyfikatach; enrollment i revocation list
+nie są obsługiwane.
 
 ## Testowanie i konfiguracja runtime
 
 Projekt ma dwa obszary konfiguracji: plik lokalny `logger.conf` w bieżącym katalogu roboczym oraz katalog runtime w `$HOME/.config/contest-logger`. W praktyce aplikacja priorytetowo czyta plik z katalogu roboczego, a dopiero gdy go nie ma, korzysta z runtime. To pozwala uruchamiać testy izolowane w katalogach tymczasowych bez ładowania globalnych ustawień repozytorium.
 
-W środowisku WSL testy należy uruchamiać przez:
+Testy należy uruchamiać przez:
 
 ```bash
-cd /home/miwaniuk/test_scripts/lcl-main
 cmake -S . -B build
-cmake --build build -- -j2
-ctest --test-dir build --output-on-failure -R unit_tests
+cmake --build build -j2
+./build/unit_tests
+ctest --test-dir build --output-on-failure
 ```
 
 ## Architektura
