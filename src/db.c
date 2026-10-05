@@ -3355,11 +3355,14 @@ static int db_sync_next_station_seq_impl(long long *out_seq) {
                    "  UNION ALL "
                    "  SELECT IFNULL(MAX(origin_station_seq), 0) AS v FROM qso WHERE origin_station_id = ? "
                    "  UNION ALL "
+                   "  SELECT IFNULL(MAX(station_seq), 0) AS v FROM log_ops WHERE station_id = ? "
+                   "  UNION ALL "
                    "  SELECT IFNULL(last_acked_local_seq, 0) AS v FROM sync_cursors WHERE id = 1"
                    ");") != SQLITE_OK)
     return -1;
 
   sqlite3_bind_text(stmt, 1, station_id, -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt, 2, station_id, -1, SQLITE_TRANSIENT);
 
   long long max_seq = 0;
   int rc = sqlite3_step(stmt);
@@ -4166,6 +4169,167 @@ static int db_sync_pull_ops_impl(long long from_global_seq, int limit,
   sqlite3_finalize(stmt);
   *out_count = count;
   return 0;
+}
+
+static int db_sync_backfill_local_qsos_impl(int logbook_id,
+                                            const char *station_id) {
+  if (logbook_id <= 0 || !station_id || !station_id[0])
+    return -1;
+
+  for (;;) {
+    sqlite3_stmt *select = NULL;
+    if (prepare_stmt(&select,
+                     "SELECT id, qso_uid, origin_station_id, origin_station_seq, "
+                     "last_modified_utc FROM qso AS q "
+                     "WHERE logbook_id = ? "
+                     "AND (origin_station_id = '' OR origin_station_id = ?) "
+                     "AND NOT EXISTS (SELECT 1 FROM log_outbox AS o "
+                     "WHERE o.op_id = q.last_op_id) "
+                     "AND NOT EXISTS (SELECT 1 FROM log_ops AS p "
+                     "WHERE p.op_id = q.last_op_id) "
+                     "ORDER BY id LIMIT 1;") != SQLITE_OK)
+      return -1;
+    sqlite3_bind_int(select, 1, logbook_id);
+    sqlite3_bind_text(select, 2, station_id, -1, SQLITE_TRANSIENT);
+
+    int rc = sqlite3_step(select);
+    if (rc == SQLITE_DONE) {
+      sqlite3_finalize(select);
+      return 0;
+    }
+    if (rc != SQLITE_ROW) {
+      sqlite3_finalize(select);
+      return -1;
+    }
+
+    long long qso_id = sqlite3_column_int64(select, 0);
+    char qso_uid[40] = {0};
+    char origin_station_id[32] = {0};
+    long long origin_station_seq = sqlite3_column_int64(select, 3);
+    char op_utc[32] = {0};
+    const unsigned char *uid_col = sqlite3_column_text(select, 1);
+    const unsigned char *origin_col = sqlite3_column_text(select, 2);
+    const unsigned char *utc_col = sqlite3_column_text(select, 4);
+    snprintf(qso_uid, sizeof(qso_uid), "%s", uid_col ? (const char *)uid_col : "");
+    snprintf(origin_station_id, sizeof(origin_station_id), "%s",
+             origin_col ? (const char *)origin_col : "");
+    snprintf(op_utc, sizeof(op_utc), "%s", utc_col ? (const char *)utc_col : "");
+    sqlite3_finalize(select);
+
+    if (qso_id <= 0 || !qso_uid[0])
+      return -1;
+
+    long long station_seq = 0;
+    if (db_sync_next_station_seq_impl(&station_seq) != 0)
+      return -1;
+    if (origin_station_seq <= 0)
+      origin_station_seq = station_seq;
+    if (!origin_station_id[0])
+      snprintf(origin_station_id, sizeof(origin_station_id), "%s", station_id);
+    if (!op_utc[0])
+      utc_now_iso(op_utc, sizeof(op_utc));
+
+    char op_token[17] = {0};
+    char op_id[96] = {0};
+    if (sync_generate_hex_token(8, op_token, sizeof(op_token)) != 0)
+      return -1;
+    snprintf(op_id, sizeof(op_id), "op-%s-%lld-%s", station_id, station_seq,
+             op_token);
+
+    sqlite3_stmt *update = NULL;
+    if (prepare_stmt(&update,
+                     "UPDATE qso SET origin_station_id = ?, origin_station_seq = ?, "
+                     "last_op_id = ?, last_modified_utc = CASE "
+                     "WHEN last_modified_utc = '' THEN ? ELSE last_modified_utc END, "
+                     "version = CASE WHEN version < 1 THEN 1 ELSE version END "
+                     "WHERE id = ? AND logbook_id = ?;") != SQLITE_OK)
+      return -1;
+    sqlite3_bind_text(update, 1, origin_station_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(update, 2, origin_station_seq);
+    sqlite3_bind_text(update, 3, op_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(update, 4, op_utc, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(update, 5, qso_id);
+    sqlite3_bind_int(update, 6, logbook_id);
+    rc = sqlite3_step(update);
+    sqlite3_finalize(update);
+    if (rc != SQLITE_DONE || sqlite3_changes(db) != 1)
+      return -1;
+
+    char payload[2048] = {0};
+    if (sync_build_qso_payload_from_row(qso_id, logbook_id, payload,
+                                        sizeof(payload)) != 0 ||
+        !payload[0] ||
+        db_sync_outbox_enqueue_impl(op_id, station_seq, logbook_id,
+                                    "QSO_INSERT", qso_uid, payload,
+                                    op_utc) != 0)
+      return -1;
+  }
+}
+
+static int db_sync_publish_local_logbook_ops_impl(void) {
+  if (db_init() != 0)
+    return -1;
+
+  int logbook_id = 0;
+  char station_id[32] = {0};
+  if (get_current_logbook_id(&logbook_id) != 0 || logbook_id <= 0 ||
+      db_sync_get_or_create_station_id(station_id, sizeof(station_id)) != 0)
+    return -1;
+
+  if (exec_sql_checked("BEGIN IMMEDIATE;") != 0)
+    return -1;
+
+  if (db_sync_backfill_local_qsos_impl(logbook_id, station_id) != 0)
+    goto publish_rollback;
+
+  sqlite3_stmt *publish = NULL;
+  if (prepare_stmt(&publish,
+                   "INSERT INTO log_ops "
+                   "(op_id, station_id, station_seq, logbook_id, op_type, "
+                   "entity_id, payload_json, op_utc) "
+                   "SELECT o.op_id, ?, o.station_seq, o.logbook_id, o.op_type, "
+                   "o.entity_id, o.payload_json, o.op_utc "
+                   "FROM log_outbox AS o WHERE o.logbook_id = ? "
+                   "AND NOT EXISTS (SELECT 1 FROM log_ops AS p "
+                   "WHERE p.op_id = o.op_id) "
+                   "ORDER BY o.station_seq, o.id;") != SQLITE_OK)
+    goto publish_rollback;
+  sqlite3_bind_text(publish, 1, station_id, -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int(publish, 2, logbook_id);
+  int rc = sqlite3_step(publish);
+  sqlite3_finalize(publish);
+  if (rc != SQLITE_DONE)
+    goto publish_rollback;
+
+  sqlite3_stmt *ack = NULL;
+  if (prepare_stmt(&ack,
+                   "UPDATE log_outbox SET status = 'acked', "
+                   "next_retry_utc = CURRENT_TIMESTAMP "
+                   "WHERE logbook_id = ? AND EXISTS ("
+                   "SELECT 1 FROM log_ops WHERE log_ops.op_id = log_outbox.op_id "
+                   "AND log_ops.station_id = ?);") != SQLITE_OK)
+    goto publish_rollback;
+  sqlite3_bind_int(ack, 1, logbook_id);
+  sqlite3_bind_text(ack, 2, station_id, -1, SQLITE_TRANSIENT);
+  rc = sqlite3_step(ack);
+  sqlite3_finalize(ack);
+  if (rc != SQLITE_DONE)
+    goto publish_rollback;
+
+  if (exec_sql_checked("COMMIT;") != 0)
+    goto publish_rollback;
+  return 0;
+
+publish_rollback:
+  (void)exec_sql_checked("ROLLBACK;");
+  return -1;
+}
+
+int db_sync_publish_local_logbook_ops(void) {
+  db_operation_lock();
+  int rc = db_sync_publish_local_logbook_ops_impl();
+  db_operation_unlock();
+  return rc;
 }
 
 int db_sync_pull_ops(long long from_global_seq, int limit, SyncLogOpEntry *out,

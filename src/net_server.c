@@ -291,7 +291,8 @@ static void handle_pull_ops(NetServerSession *session, const char *frame,
   long long last_seq = from_seq;
   memset(ops, 0, sizeof(ops));
 
-  if (db_sync_pull_ops(from_seq, limit + 1, ops, NET_SERVER_MAX_OPS + 1, &count,
+  if (db_sync_publish_local_logbook_ops() != 0 ||
+      db_sync_pull_ops(from_seq, limit + 1, ops, NET_SERVER_MAX_OPS + 1, &count,
                        &last_seq) != 0) {
     (void)send_session_frame(session,
                              "{\"type\":\"ERROR\",\"code\":\"PULL_FAILED\"}");

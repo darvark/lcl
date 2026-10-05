@@ -12,6 +12,21 @@ static const ContestFieldDef *active_exchange_field_def(void) {
 
 static int contest_exchange_is_serial_locator(const ContestFieldDef *field);
 static int contest_exchange_uses_serial_counter(void);
+static int contest_name_contains(const char *needle);
+
+static int contest_station_is_dl(void) {
+  if (config.station_exchange[0])
+    return 1;
+
+  const CtyEntry *station_cty = cty_lookup(config.station_call);
+  return station_cty && strcmp(station_cty->prefix, "DL") == 0;
+}
+
+static int contest_uses_wag_exchange_template(void) {
+  const char *tpl = active_contest_def.exchange_sent_template;
+  return tpl && strcmp(tpl, "WAG_EXCHANGE") == 0 &&
+         contest_name_contains("WAG");
+}
 
 static int contest_exchange_is_numeric(const ContestFieldDef *field) {
   if (!field || !field->name[0])
@@ -805,6 +820,14 @@ static void build_exchange_sent_with_serial(char *out, size_t out_size,
 
   out[0] = 0;
   const char *tpl = active_contest_def.exchange_sent_template;
+  if (contest_uses_wag_exchange_template()) {
+    if (contest_station_is_dl()) {
+      snprintf(out, out_size, "%s",
+               config.station_exchange[0] ? config.station_exchange : "SET EXCH");
+      return;
+    }
+    tpl = "#";
+  }
   if (!tpl || !tpl[0]) {
     const int largest_serial = highest_numeric_exchange_sent();
     const int next_serial = reserved_serial > 0
@@ -895,6 +918,8 @@ static int contest_uses_locator_exchange(void) {
 
 static int contest_exchange_uses_serial_counter(void) {
   const char *tpl = active_contest_def.exchange_sent_template;
+  if (contest_uses_wag_exchange_template())
+    return !contest_station_is_dl();
   return !tpl || !tpl[0] || strcmp(tpl, "#") == 0 ||
          strcmp(tpl, "SERIAL") == 0 || strcmp(tpl, "SERIAL+LOCATOR") == 0 ||
          strcmp(tpl, "SERIAL_GRID") == 0 || strcmp(tpl, "#GRID") == 0 ||
@@ -1200,11 +1225,11 @@ static int resolve_contest_points(const char *mode, const char *band,
    * non-DL source: works DL=3, else=0.
    */
   if (!prefer_definition_points && contest_name_contains("WAG")) {
-    const int src_is_dl = src_cty && strcmp(src_cty->prefix, "DL") == 0;
+    const int src_is_dl = contest_station_is_dl();
     const int dst_is_dl = dst_cty && strcmp(dst_cty->prefix, "DL") == 0;
     if (src_is_dl) {
       if (dst_is_dl) return 1;
-      return same_cont ? 3 : 5;
+      return dst_cont[0] && strcmp(dst_cont, "EU") == 0 ? 3 : 5;
     }
     return dst_is_dl ? 3 : 0;
   }

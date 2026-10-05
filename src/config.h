@@ -33,6 +33,7 @@ typedef struct {
   char cat2_handshake[16];
 
   char station_call[32];
+  char station_exchange[32];
   char operator_call[32];
   char operator_name[64];
   char contest_definition_path[256];

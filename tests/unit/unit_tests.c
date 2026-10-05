@@ -12,6 +12,7 @@
 #include "net_server.h"
 #include "net_sync.h"
 #include "net_tls.h"
+#include "live_upload.h"
 #include "qso.h"
 #include "qtc.h"
 #include "suggestion.h"
@@ -186,6 +187,7 @@ static void test_config_load(const char *tmp_dir) {
       "DXC_PORT = 9000\n"
       "DXC_CALL = SP9XYZ\n"
       "STATION_CALL = SP9STAC\n"
+      "STATION_EXCHANGE = DOK1234\n"
       "OPERATOR_CALL = SP9OPER\n"
       "CAT_MODE_FROM_RIG = 1\n"
       "CONTEST_TECHNIQUE = SO2R\n"
@@ -213,6 +215,8 @@ static void test_config_load(const char *tmp_dir) {
   expect_int_eq(config.dxc_port, 9000, "config port parsed");
   expect_str_eq(config.dxc_call, "SP9XYZ", "config call parsed");
   expect_str_eq(config.station_call, "SP9STAC", "config station call parsed");
+  expect_str_eq(config.station_exchange, "DOK1234",
+                "config station exchange parsed");
   expect_str_eq(config.operator_call, "SP9OPER", "config operator call parsed");
   expect_int_eq(config.cat_mode_from_rig, 1,
                 "config CAT mode-from-rig parsed");
@@ -247,6 +251,8 @@ static void test_config_load(const char *tmp_dir) {
                 "default call restored on missing config");
   expect_str_eq(config.station_call, "N0CALL",
                 "default station call restored on missing config");
+  expect_str_eq(config.station_exchange, "",
+                "default station exchange restored on missing config");
   expect_str_eq(config.operator_call, "N0CALL",
                 "default operator call restored on missing config");
   expect_int_eq(config.cat_mode_from_rig, 0,
@@ -267,6 +273,8 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
   snprintf(config.dxc_host, sizeof(config.dxc_host), "%s", "persist.example.net");
   config.dxc_port = 7100;
   snprintf(config.dxc_call, sizeof(config.dxc_call), "%s", "SP0PERSIST");
+  snprintf(config.station_exchange, sizeof(config.station_exchange), "%s",
+           "NM");
   config.cat_model = 1234;
   snprintf(config.cat_device, sizeof(config.cat_device), "%s", "/dev/ttyS9");
   config.cat_baud = 38400;
@@ -311,6 +319,8 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
 
   expect_int_eq(config_load(conf_path), 0,
                 "config_load should read saved config");
+  expect_str_eq(config.station_exchange, "NM",
+                "saved station exchange restored");
   expect_int_eq(config.cat_model, 1234, "saved CAT model restored");
   expect_str_eq(config.cat_device, "/dev/ttyS9", "saved CAT device restored");
   expect_int_eq(config.cat_baud, 38400, "saved CAT baud restored");
@@ -335,6 +345,88 @@ static void test_config_save_roundtrip(const char *tmp_dir) {
                 "saved live upload port restored");
   expect_str_eq(config.live_upload_token, "persist-token",
                 "saved live upload token restored");
+}
+
+static void test_live_upload_publish(void) {
+  int server_fd = socket(AF_INET, SOCK_DGRAM, 0);
+  expect_true(server_fd >= 0, "create LiveScore UDP test socket");
+  if (server_fd < 0)
+    return;
+
+  struct sockaddr_in address;
+  memset(&address, 0, sizeof(address));
+  address.sin_family = AF_INET;
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  address.sin_port = 0;
+  expect_int_eq(bind(server_fd, (struct sockaddr *)&address, sizeof(address)), 0,
+                "bind LiveScore UDP test socket");
+
+  socklen_t address_size = sizeof(address);
+  expect_int_eq(getsockname(server_fd, (struct sockaddr *)&address,
+                            &address_size), 0,
+                "get LiveScore test port");
+  struct timeval timeout = {2, 0};
+  setsockopt(server_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
+  config.live_upload_enabled = 0;
+  snprintf(config.live_upload_host, sizeof(config.live_upload_host), "%s",
+           "127.0.0.1");
+  config.live_upload_port = ntohs(address.sin_port);
+  expect_int_eq(live_upload_publish_qso_and_stats(NULL, NULL, NULL), 0,
+                "disabled LiveScore upload should be a no-op");
+
+  config.live_upload_enabled = 1;
+  char previous_station_call[sizeof(config.station_call)];
+  char previous_operator_call[sizeof(config.operator_call)];
+  snprintf(previous_station_call, sizeof(previous_station_call), "%s",
+           config.station_call);
+  snprintf(previous_operator_call, sizeof(previous_operator_call), "%s",
+           config.operator_call);
+  snprintf(config.live_upload_token, sizeof(config.live_upload_token), "%s",
+           "token\nkey");
+  snprintf(config.station_call, sizeof(config.station_call), "%s", "SP9\"ST");
+  snprintf(config.operator_call, sizeof(config.operator_call), "%s",
+           "OP\\CALL");
+  QSO qso = {0};
+  snprintf(qso.date, sizeof(qso.date), "%s", "20261004");
+  snprintf(qso.utc, sizeof(qso.utc), "%s", "1200");
+  snprintf(qso.call, sizeof(qso.call), "%s", "DL1\"ABC");
+  snprintf(qso.band, sizeof(qso.band), "%s", "20M");
+  snprintf(qso.mode, sizeof(qso.mode), "%s", "CW");
+  snprintf(qso.country, sizeof(qso.country), "%s", "Germany");
+  qso.freq = 14000;
+  qso.points = 3;
+  Statistics current_stats = {0};
+  current_stats.total_qso = 12;
+  current_stats.contest_score = 42;
+
+  expect_int_eq(live_upload_publish_qso_and_stats(&qso, &current_stats,
+                                                  "TEST CONTEST"),
+                0, "LiveScore upload should queue successfully");
+
+  char payload[2048] = {0};
+  ssize_t received = recvfrom(server_fd, payload, sizeof(payload) - 1, 0, NULL,
+                              NULL);
+  expect_true(received > 0, "receive LiveScore UDP update");
+  if (received > 0) {
+    payload[received] = 0;
+    expect_true(strstr(payload, "\"station\":\"SP9\\\"ST\"") != NULL,
+                "LiveScore station string should be JSON escaped");
+    expect_true(strstr(payload, "\"token\":\"token\\nkey\"") != NULL,
+                "LiveScore token should escape JSON control characters");
+    expect_true(strstr(payload, "\"call\":\"DL1\\\"ABC\"") != NULL,
+                "LiveScore QSO should include escaped callsign");
+    expect_true(strstr(payload, "\"total_qso\":12") != NULL &&
+            strstr(payload, "\"contest_score\":42") != NULL,
+                "LiveScore update should include current score");
+  }
+
+  close(server_fd);
+  snprintf(config.station_call, sizeof(config.station_call), "%s",
+           previous_station_call);
+  snprintf(config.operator_call, sizeof(config.operator_call), "%s",
+           previous_operator_call);
+  config.live_upload_enabled = 0;
 }
 
 static void test_controller_static_tx_exchange_override(const char *tmp_dir) {
@@ -560,6 +652,71 @@ static void test_controller_incremental_exchange_generation(const char *tmp_dir)
   app_controller_shutdown();
   expect_int_eq(chdir(old_cwd), 0,
                 "restore cwd after incremental exchange test");
+}
+
+static void test_controller_wag_station_exchange(const char *tmp_dir) {
+  char case_dir[512];
+  snprintf(case_dir, sizeof(case_dir), "%s/wag_station_exchange_case", tmp_dir);
+  expect_int_eq(mkdir(case_dir, 0777), 0,
+                "create isolated directory for WAG station exchange test");
+
+  char contest_path[512];
+  join_path(contest_path, sizeof(contest_path), case_dir, "contest.conf");
+  const char *contest_text =
+      "NAME=WAG\n"
+      "CABRILLO_NAME=WAG\n"
+      "MODE=MIXED\n"
+      "EXCHANGE_SENT=WAG_EXCHANGE\n"
+      "FIELD=EXCHANGE,Rcv Exch,required\n";
+  expect_int_eq(write_text_file(contest_path, contest_text), 0,
+                "write WAG station exchange contest definition");
+
+  char conf_path[512];
+  join_path(conf_path, sizeof(conf_path), case_dir, "logger.conf");
+  const char *conf_text =
+      "CONTEST_DEF_FILE=contest.conf\n"
+      "STATION_CALL=SP9XYZ\n"
+      "STATION_EXCHANGE=DOK1234\n";
+  expect_int_eq(write_text_file(conf_path, conf_text), 0,
+                "write logger.conf with German station DOK");
+
+  char old_cwd[512];
+  expect_true(getcwd(old_cwd, sizeof(old_cwd)) != NULL,
+              "getcwd before WAG station exchange test");
+  expect_int_eq(chdir(case_dir), 0,
+                "chdir to WAG station exchange test directory");
+
+  app_controller_init();
+  const int base_qso_count = qso_count;
+  AppRenderState state;
+  app_controller_get_render_state(&state);
+  expect_true(state.contest_exchange_label != NULL,
+              "WAG received exchange label should be available");
+  if (state.contest_exchange_label)
+    expect_str_eq(state.contest_exchange_label, "Rcv Exch",
+                  "WAG received exchange field should use its configured label");
+  expect_true(state.contest_exchange_sent != NULL,
+              "WAG German TX exchange should be present");
+  if (state.contest_exchange_sent)
+    expect_str_eq(state.contest_exchange_sent, "DOK1234",
+                  "WAG German station should send configured DOK");
+
+  send_controller_chars("SP9WAG");
+  app_controller_handle_key(APP_KEY_SPACE);
+  send_controller_chars("DOKA");
+  app_controller_handle_key(APP_KEY_ENTER);
+  expect_int_eq(qso_count, base_qso_count + 1,
+                "WAG German station should save QSO with alphanumeric DOK");
+  if (qso_count > base_qso_count) {
+    expect_str_eq(logbook[base_qso_count].exchange_sent, "DOK1234",
+                  "WAG German QSO should store sent DOK");
+    expect_str_eq(logbook[base_qso_count].exchange_recv, "DOKA",
+                  "WAG German QSO should store received DOK");
+  }
+
+  app_controller_shutdown();
+  expect_int_eq(chdir(old_cwd), 0,
+                "restore cwd after WAG station exchange test");
 }
 
 static void test_controller_reopen_resume_from_last_sent_serial(const char *tmp_dir) {
@@ -2560,6 +2717,115 @@ static void test_db_sync_apply_remote_op_and_pull(const char *tmp_dir) {
   qso_init();
 }
 
+static void test_db_sync_publish_local_logbook_ops(const char *tmp_dir) {
+  char case_dir[512];
+  snprintf(case_dir, sizeof(case_dir), "%s/db_publish_local_ops", tmp_dir);
+  expect_int_eq(mkdir(case_dir, 0777), 0,
+                "create local publisher test directory");
+
+  set_test_db_path(case_dir);
+  qso_init();
+
+  QSO current_qso = {0};
+  snprintf(current_qso.date, sizeof(current_qso.date), "%s", "20261004");
+  snprintf(current_qso.utc, sizeof(current_qso.utc), "%s", "1200");
+  snprintf(current_qso.call, sizeof(current_qso.call), "%s", "SP9PUB");
+  current_qso.freq = 7020;
+  snprintf(current_qso.band, sizeof(current_qso.band), "%s", "40M");
+  snprintf(current_qso.mode, sizeof(current_qso.mode), "%s", "CW");
+  snprintf(current_qso.rst, sizeof(current_qso.rst), "%s", "599");
+  long long current_qso_id = 0;
+  expect_int_eq(db_insert_qso(&current_qso, &current_qso_id), 0,
+                "insert local QSO with outbox operation");
+  expect_int_eq(db_update_qso_invalid(current_qso_id, 1), 0,
+                "enqueue local QSO update for publisher");
+
+  QSO legacy_qso = {0};
+  snprintf(legacy_qso.date, sizeof(legacy_qso.date), "%s", "20261003");
+  snprintf(legacy_qso.utc, sizeof(legacy_qso.utc), "%s", "1100");
+  snprintf(legacy_qso.call, sizeof(legacy_qso.call), "%s", "SP9OLD");
+  legacy_qso.freq = 7025;
+  snprintf(legacy_qso.band, sizeof(legacy_qso.band), "%s", "40M");
+  snprintf(legacy_qso.mode, sizeof(legacy_qso.mode), "%s", "CW");
+  snprintf(legacy_qso.rst, sizeof(legacy_qso.rst), "%s", "599");
+  long long legacy_qso_id = 0;
+  expect_int_eq(db_insert_qso(&legacy_qso, &legacy_qso_id), 0,
+                "insert QSO to model a pre-sync local record");
+
+  char db_path[512];
+  snprintf(db_path, sizeof(db_path), "%s/unit.sqlite3", case_dir);
+  sqlite3 *test_db = NULL;
+  expect_int_eq(sqlite3_open(db_path, &test_db), SQLITE_OK,
+                "open test database to restore legacy QSO metadata");
+  if (test_db) {
+    sqlite3_stmt *stmt = NULL;
+    expect_int_eq(sqlite3_prepare_v2(
+                      test_db,
+                      "DELETE FROM log_outbox WHERE entity_id = ?;", -1,
+                      &stmt, NULL),
+                  SQLITE_OK, "prepare removal of legacy QSO outbox row");
+    if (stmt) {
+      sqlite3_bind_text(stmt, 1, legacy_qso.qso_uid, -1, SQLITE_TRANSIENT);
+      expect_int_eq(sqlite3_step(stmt), SQLITE_DONE,
+                    "remove legacy QSO outbox row");
+      sqlite3_finalize(stmt);
+    }
+    stmt = NULL;
+    expect_int_eq(sqlite3_prepare_v2(
+                      test_db,
+                      "UPDATE qso SET origin_station_id = '', "
+                      "origin_station_seq = 0, last_op_id = '' WHERE id = ?;",
+                      -1, &stmt, NULL),
+                  SQLITE_OK, "prepare legacy QSO metadata reset");
+    if (stmt) {
+      sqlite3_bind_int64(stmt, 1, legacy_qso_id);
+      expect_int_eq(sqlite3_step(stmt), SQLITE_DONE,
+                    "reset legacy QSO synchronization metadata");
+      sqlite3_finalize(stmt);
+    }
+    sqlite3_close(test_db);
+  }
+
+  expect_int_eq(db_sync_publish_local_logbook_ops(), 0,
+                "publish local outbox and backfill legacy QSO");
+  int pending_count = -1;
+  expect_int_eq(db_sync_get_pending_outbox_count(&pending_count), 0,
+                "read local outbox count after server publication");
+  expect_int_eq(pending_count, 0,
+                "published server-local operations should be acknowledged");
+  SyncLogOpEntry published[8];
+  int published_count = 0;
+  long long last_global_seq = 0;
+  memset(published, 0, sizeof(published));
+  expect_int_eq(db_sync_pull_ops(0, 8, published, 8, &published_count,
+                                 &last_global_seq),
+                0, "read published local operations");
+  expect_int_eq(published_count, 3,
+                "publisher should include local insert, update and backfill");
+  if (published_count == 3) {
+    expect_str_eq(published[0].op_type, "QSO_INSERT",
+                  "first local operation should be the original QSO");
+    expect_str_eq(published[1].op_type, "QSO_INVALID",
+                  "local QSO update should be published in sequence");
+    expect_str_eq(published[2].op_type, "QSO_INSERT",
+                  "legacy QSO should be backfilled as a full insert");
+    expect_str_eq(published[2].entity_id, legacy_qso.qso_uid,
+                  "backfill should retain the legacy QSO identity");
+  }
+
+  expect_int_eq(db_sync_publish_local_logbook_ops(), 0,
+                "repeated publication should succeed");
+  published_count = 0;
+  expect_int_eq(db_sync_pull_ops(0, 8, published, 8, &published_count,
+                                 &last_global_seq),
+                0, "read operations after repeated publication");
+  expect_int_eq(published_count, 3,
+                "repeated publication should not create duplicates");
+
+  set_test_db_path(tmp_dir);
+  qso_init();
+}
+
 static void test_net_server_client_roundtrip_apply_pull(const char *tmp_dir) {
   char server_dir[512];
   snprintf(server_dir, sizeof(server_dir), "%s/net_server_roundtrip_server",
@@ -2576,6 +2842,17 @@ static void test_net_server_client_roundtrip_apply_pull(const char *tmp_dir) {
 
   set_test_db_path(server_dir);
   qso_init();
+  QSO server_qso = {0};
+  snprintf(server_qso.date, sizeof(server_qso.date), "%s", "20261004");
+  snprintf(server_qso.utc, sizeof(server_qso.utc), "%s", "1159");
+  snprintf(server_qso.call, sizeof(server_qso.call), "%s", "SP9LOCAL");
+  server_qso.freq = 7021;
+  snprintf(server_qso.band, sizeof(server_qso.band), "%s", "40M");
+  snprintf(server_qso.mode, sizeof(server_qso.mode), "%s", "CW");
+  snprintf(server_qso.rst, sizeof(server_qso.rst), "%s", "599");
+  long long server_qso_id = 0;
+  expect_int_eq(db_insert_qso(&server_qso, &server_qso_id), 0,
+                "insert a local QSO before starting the server");
   config.net_enabled = 1;
   snprintf(config.net_role, sizeof(config.net_role), "%s", "server");
   config.net_server_port = 19324;
@@ -2641,12 +2918,14 @@ static void test_net_server_client_roundtrip_apply_pull(const char *tmp_dir) {
                 "server should respond to pull");
   expect_true(strstr(response, "\"type\":\"PULL_OPS_RESP\"") != NULL,
               "server pull response type should be PULL_OPS_RESP");
+  expect_true(strstr(response, server_qso.qso_uid) != NULL,
+              "server pull should include a QSO created at the central station");
 
   close(cli);
 
   qso_init();
-  expect_int_eq(qso_count, 1,
-                "server DB should contain one synced QSO from client");
+  expect_int_eq(qso_count, 2,
+                "server DB should contain local and synced client QSOs");
 
   net_sync_stop();
 
@@ -4334,6 +4613,9 @@ static void test_contest_definition_and_cabrillo(const char *tmp_dir) {
   expect_int_eq((int)contest_multiplier_from_text("PREFIX_PER_BAND"),
                 (int)CONTEST_MULT_PREFIX_PER_BAND,
                 "MULTIPLIER PREFIX_PER_BAND parsed");
+  expect_int_eq((int)contest_multiplier_from_text("WAG"),
+                (int)CONTEST_MULT_WAG,
+                "MULTIPLIER WAG parsed");
 
   const int base_qso_count = qso_count;
 
@@ -6376,6 +6658,63 @@ static void test_stats_qtc_scoring(void) {
   stats_set_contest_definition(&empty);
 }
 
+static void test_stats_wag_multipliers(void) {
+  const int saved_qso_count = qso_count;
+  const Config saved_config = config;
+  QSO saved_qsos[6];
+  memcpy(saved_qsos, logbook, sizeof(saved_qsos));
+
+  ContestDefinition def;
+  contest_definition_init_defaults(&def);
+  def.multiplier_type = CONTEST_MULT_WAG;
+  stats_set_contest_definition(&def);
+
+  qso_count = 4;
+  memset(logbook, 0, sizeof(logbook));
+  snprintf(config.station_call, sizeof(config.station_call), "%s", "SP9XYZ");
+  snprintf(config.station_exchange, sizeof(config.station_exchange), "%s", "DOK1234");
+  for (int i = 0; i < qso_count; i++) {
+    snprintf(logbook[i].call, sizeof(logbook[i].call), "%s", "K1ABC");
+    snprintf(logbook[i].country, sizeof(logbook[i].country), "%s", "United States");
+    snprintf(logbook[i].band, sizeof(logbook[i].band), "%s", "20M");
+    snprintf(logbook[i].mode, sizeof(logbook[i].mode), "%s", "CW");
+    logbook[i].points = 3;
+  }
+  snprintf(logbook[2].mode, sizeof(logbook[2].mode), "%s", "SSB");
+  snprintf(logbook[3].band, sizeof(logbook[3].band), "%s", "40M");
+  stats_update();
+  expect_int_eq(stats.contest_mults, 3,
+                "WAG German DXCC multiplier should be unique per band and mode");
+
+  qso_count = 6;
+  snprintf(config.station_exchange, sizeof(config.station_exchange), "%s", "");
+  snprintf(config.station_call, sizeof(config.station_call), "%s", "SP9XYZ");
+  const char *received[] = {"C12", "C99", "C12", "NM", "B01", "C33"};
+  const char *bands[] = {"20M", "20M", "40M", "80M", "20M", "20M"};
+  const char *countries[] = {"Germany", "Germany", "Germany", "Germany", "Poland", "Germany"};
+  for (int i = 0; i < qso_count; i++) {
+    memset(&logbook[i], 0, sizeof(logbook[i]));
+    snprintf(logbook[i].call, sizeof(logbook[i].call), "%s", "DL1ABC");
+    snprintf(logbook[i].country, sizeof(logbook[i].country), "%s", countries[i]);
+    snprintf(logbook[i].exchange_recv, sizeof(logbook[i].exchange_recv), "%s", received[i]);
+    snprintf(logbook[i].band, sizeof(logbook[i].band), "%s", bands[i]);
+    snprintf(logbook[i].mode, sizeof(logbook[i].mode), "%s",
+         (i == 2 || i == 5) ? "SSB" : "CW");
+    logbook[i].points = 3;
+  }
+  stats_update();
+  expect_int_eq(stats.contest_mults, 3,
+                "WAG DOK multiplier should ignore repeat districts, NM, and non-DL QSOs");
+
+  qso_count = saved_qso_count;
+  memcpy(logbook, saved_qsos, sizeof(saved_qsos));
+  config = saved_config;
+  ContestDefinition empty;
+  contest_definition_init_defaults(&empty);
+  stats_set_contest_definition(&empty);
+  stats_update();
+}
+
 static void test_cw_qtc_expand(void) {
   char out[256];
 
@@ -6525,6 +6864,7 @@ int main(void) {
 
   test_config_load(tmp_dir);
   test_config_save_roundtrip(tmp_dir);
+  test_live_upload_publish();
 #ifdef LOGGER_NETWORK_TESTS_ONLY
   test_db_sync_identity_and_sequence(tmp_dir);
   test_db_sync_outbox_lifecycle(tmp_dir);
@@ -6547,6 +6887,7 @@ int main(void) {
   test_net_sync_fault_delayed_pull_response(tmp_dir);
   test_protocol_append_and_pull_parsing();
   test_db_sync_apply_remote_op_and_pull(tmp_dir);
+  test_db_sync_publish_local_logbook_ops(tmp_dir);
   test_net_server_client_roundtrip_apply_pull(tmp_dir);
 #ifdef HAVE_OPENSSL
   test_net_server_client_roundtrip_apply_pull_tls(tmp_dir);
@@ -6579,12 +6920,14 @@ int main(void) {
   test_net_sync_fault_delayed_pull_response(tmp_dir);
   test_protocol_append_and_pull_parsing();
   test_db_sync_apply_remote_op_and_pull(tmp_dir);
+  test_db_sync_publish_local_logbook_ops(tmp_dir);
   test_net_server_client_roundtrip_apply_pull(tmp_dir);
   test_net_server_client_roundtrip_apply_pull_tls(tmp_dir);
   test_net_server_duplicate_append_is_idempotent(tmp_dir);
   test_db_sync_qso_uid_conflict_is_rejected(tmp_dir);
   test_db_sync_serial_reservation_and_commit(tmp_dir);
   test_qso_add_mark_and_stats();
+  test_stats_wag_multipliers();
   test_export_csv_adif(tmp_dir);
   test_export_command_exports_cabrillo_too(tmp_dir);
   test_contest_definition_and_cabrillo(tmp_dir);
@@ -6608,6 +6951,7 @@ int main(void) {
   test_controller_static_tx_exchange_override(tmp_dir);
   test_controller_numeric_static_exchange_template(tmp_dir);
   test_controller_incremental_exchange_generation(tmp_dir);
+  test_controller_wag_station_exchange(tmp_dir);
   test_controller_reopen_resume_from_last_sent_serial(tmp_dir);
   test_controller_received_exchange_persists_after_reopen(tmp_dir);
   test_controller_contest_mode_overrides_detected_mode(tmp_dir);

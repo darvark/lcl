@@ -650,8 +650,8 @@ static int load_contest_definition_file(const char *path) {
 
   contest_definition_loaded = 1;
   clear_entry_fields();
-  snprintf(contest_exchange_label_text, sizeof(contest_exchange_label_text), "%s",
-           "EXCH");
+  snprintf(contest_exchange_label_text, sizeof(contest_exchange_label_text),
+           "%s", contest_exchange_label());
   snprintf(config.contest_definition_path, sizeof(config.contest_definition_path), "%s",
            path);
   config_save_active();

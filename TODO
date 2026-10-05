@@ -15,16 +15,11 @@ Status: runtime, trwałość, hardening tokenu/TLS, test wieloprocesowy, odzyski
 - Menu `Operations > Failed Sync Operations...` pokazuje failed outbox i commity seriali; retry zaznaczonego wpisu zachowuje oryginalny identyfikator i wymaga potwierdzenia. Nie ma ręcznego ACK, a retry jest dostępne w trybie klienta.
 - `logger.conf` jest ładowany/zapisywany jako plik bieżącego użytkownika z prawami `0600`; TLS jest wymagany, chyba że jawnie ustawiono `NET_ALLOW_INSECURE_LAN=1`. Klucz serwera ma prawa `0600`, a rotacja tokenu i certyfikatu jest opisana.
 - `multiprocess_sync_tests` uruchamia serwer i dwóch klientów z osobnymi bazami; sprawdza równoległe QSO, numerację, catch-up ponad stronę, powtórzony APPEND, outage/reconnect i restart procesów.
+- Serwer publikuje operacje lokalnego aktywnego logbooka do `log_ops` przed PULL/CATCHUP; starsze QSO bez operacji są idempotentnie backfillowane.
 
 ## Ograniczenia pozostałe
 
 - Jedna instancja serwera routuje do jednego aktywnego pliku SQLite. Dla różnych wspólnych logów używaj osobnych instancji/baz serwera; `shared_log_id` zapobiega ich przypadkowemu połączeniu.
-- Lokalne QSO zapisane na serwerze nadal trafia do outboxu, ale nie jest automatycznie publikowane do `log_ops`; potrzebny jest publisher serwerowego outboxu oraz backfill istniejących QSO. Test wieloprocesowy seeduje ten wpis jawnie.
 - Pełny `./build/unit_tests` ma nadal błędy w istniejących testach F3/#LOCATOR, sugestii, konfiguracji zawodów i logbooków. Zarejestrowane CTest oraz testy sieciowe przechodzą.
 - Jawny wyjątek `NET_ALLOW_INSECURE_LAN=1` przesyła token jawnie; można go stosować tylko w zaufanej, odizolowanej sieci. Domyślnie TLS jest wymagany.
 - mTLS/PKI, metryki i blacklist dla rate limitu oraz chaos-testy WAN pozostają poza zakresem.
-
-## Następne prace
-
-3. Rozszerzyć testy awarii. `multiprocess_sync_tests` pokrywa dwa klienty z osobnymi bazami, równoległe QSO, wspólną numerację, catch-up ponad stronę, outage/reconnect, powtórzony APPEND i restart klientów. Brakuje m.in. twardego restartu procesu serwera podczas pracy.
-4. Dodać publisher i backfill QSO zapisanych lokalnie na serwerze do `log_ops`, aby catch-up klientów obejmował także wpisy utworzone na stacji centralnej.

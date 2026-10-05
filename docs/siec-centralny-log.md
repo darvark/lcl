@@ -704,6 +704,9 @@ Zrealizowano pelny pakiet 5 etapow wdrozenia technicznego (bez czekania na kroki
 5. Etap 5: runtime i komendy operatora
 - Klient ma cykliczny worker poll poza wątkiem UI, zatrzymywany i dołączany przy shutdown.
 - `NET_ENABLED=1` i `NET_ROLE` z logger.conf są respektowane przy starcie aplikacji.
+- Konfiguracje sieci i stan usługi można zmieniać w GUI: `Menu > Network Configuration...`.
+- Dialog udostępnia role klient/serwer, adres i port, wspólny log, TLS, poświadczenia oraz parametry synchronizacji; start sprawdza wymagane pola i TLS.
+- Przed odpowiedzią PULL/CATCHUP serwer publikuje outbox aktywnego logbooka do `log_ops` i backfilluje starsze lokalne QSO bez operacji.
 - Dodano komendy:
   - `net on`
   - `net off`

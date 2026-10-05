@@ -27,12 +27,25 @@ static void json_escape(char *dst, size_t dst_size, const char *src) {
   size_t out = 0;
   for (size_t i = 0; src[i] && out < dst_size - 1; i++) {
     unsigned char c = (unsigned char)src[i];
-    if (c < 32)
-      continue;
-
-    if ((c == '"' || c == '\\') && out + 2 < dst_size) {
+    if (c == '"' || c == '\\') {
+      if (out + 2 >= dst_size)
+        break;
       dst[out++] = '\\';
       dst[out++] = (char)c;
+    } else if (c == '\b' || c == '\f' || c == '\n' || c == '\r' ||
+               c == '\t') {
+      if (out + 2 >= dst_size)
+        break;
+      dst[out++] = '\\';
+      dst[out++] = c == '\b' ? 'b' : c == '\f' ? 'f' : c == '\n' ? 'n' :
+                   c == '\r' ? 'r' : 't';
+    } else if (c < 32) {
+      if (out + 6 >= dst_size)
+        break;
+      int written = snprintf(dst + out, dst_size - out, "\\u%04x", c);
+      if (written != 6)
+        break;
+      out += 6;
     } else if (out + 1 < dst_size) {
       dst[out++] = (char)c;
     } else {
@@ -93,6 +106,10 @@ int live_upload_publish_qso_and_stats(const QSO *q, const Statistics *stats,
   char recv[48] = {0};
   char contest[96] = {0};
   char token[160] = {0};
+  char station[64] = {0};
+  char operator_call[64] = {0};
+  char date[24] = {0};
+  char utc[16] = {0};
 
   json_escape(call, sizeof(call), q->call);
   json_escape(mode, sizeof(mode), q->mode);
@@ -103,6 +120,11 @@ int live_upload_publish_qso_and_stats(const QSO *q, const Statistics *stats,
   json_escape(contest, sizeof(contest),
               contest_name && contest_name[0] ? contest_name : q->contest_id);
   json_escape(token, sizeof(token), config.live_upload_token);
+  json_escape(station, sizeof(station), config.station_call);
+  json_escape(operator_call, sizeof(operator_call),
+              config_effective_operator_call());
+  json_escape(date, sizeof(date), q->date);
+  json_escape(utc, sizeof(utc), q->utc);
 
   char payload[1536] = {0};
   snprintf(payload, sizeof(payload),
@@ -122,8 +144,8 @@ int live_upload_publish_qso_and_stats(const QSO *q, const Statistics *stats,
            "\"contest_mults\":%d,\"contest_score\":%d,"
            "\"total_dxcc\":%d,\"qtc_records\":%d,\"qtc_points\":%d}"
            "}",
-           config.station_call, config_effective_operator_call(), token,
-           contest, q->date, q->utc, call, q->freq, band, mode, q->points,
+           station, operator_call, token, contest, date, utc, call, q->freq,
+           band, mode, q->points,
            sent, recv, country, stats->total_qso, stats->contest_qso_points,
            stats->contest_mults, stats->contest_score, stats->total_dxcc,
            stats->qtc_records, stats->qtc_points);

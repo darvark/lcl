@@ -1104,6 +1104,14 @@ AppControllerEvent app_controller_handle_key(int key) {
             clear_callsign_suggestion();
             return APP_CTRL_EVENT_NONE;
           }
+          if (contest_uses_wag_exchange_template() && contest_station_is_dl() &&
+              !config.station_exchange[0]) {
+            snprintf(status_text, sizeof(status_text),
+                     "Set STATION_EXCHANGE to your DOK or NM");
+            clear_active_entry_fields();
+            clear_callsign_suggestion();
+            return APP_CTRL_EVENT_NONE;
+          }
 
           const int qso_freq_khz = resolve_qso_frequency_khz();
           char qso_mode[16] = {0};

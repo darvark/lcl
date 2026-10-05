@@ -1,6 +1,7 @@
 #include "stats.h"
 
 #include "config.h"
+#include "cty.h"
 #include "maidenhead.h"
 #include "qtc.h"
 
@@ -157,6 +158,25 @@ static int is_sp_callsign(const char *call) {
   return strcmp(cty->country, "Poland") == 0;
 }
 
+static int wag_station_is_german(void) {
+  if (config.station_exchange[0])
+    return 1;
+  const CtyEntry *station = cty_lookup(config.station_call);
+  return station && strcmp(station->prefix, "DL") == 0;
+}
+
+static int wag_qso_is_german(const QSO *q) {
+  const CtyEntry *worked = cty_lookup(q->call);
+  if (worked && strcmp(worked->prefix, "DL") == 0)
+    return 1;
+
+  char country[sizeof(q->country)] = {0};
+  snprintf(country, sizeof(country), "%s", q->country);
+  for (size_t i = 0; country[i]; i++)
+    country[i] = (char)toupper((unsigned char)country[i]);
+  return strstr(country, "GERMANY") != NULL;
+}
+
 static int build_callsign_prefix(const char *call, char *out,
                                  size_t out_size) {
   if (!out || out_size < 2)
@@ -240,6 +260,27 @@ static void maybe_add_multiplier(const QSO *q, int own_is_sp) {
     if (!q->country[0] || strcmp(q->country, "UNKNOWN") == 0)
       return;
     snprintf(key, sizeof(key), "%s|%s", q->mode, q->country);
+    break;
+  case CONTEST_MULT_WAG:
+    if (wag_station_is_german()) {
+      if (!q->country[0] || strcmp(q->country, "UNKNOWN") == 0)
+        return;
+      snprintf(key, sizeof(key), "DX|%s|%s|%s", q->band, q->mode,
+               q->country);
+    } else {
+      if (!wag_qso_is_german(q) || !q->exchange_recv[0])
+        return;
+
+      char exchange[sizeof(q->exchange_recv)] = {0};
+      snprintf(exchange, sizeof(exchange), "%s", q->exchange_recv);
+      for (size_t i = 0; exchange[i]; i++)
+        exchange[i] = (char)toupper((unsigned char)exchange[i]);
+      if (strcmp(exchange, "NM") == 0)
+        return;
+
+      snprintf(key, sizeof(key), "DOK|%s|%s|%c", q->band, q->mode,
+               exchange[0]);
+    }
     break;
   case CONTEST_MULT_DXCC_PLUS_ZONE_PER_BAND:
     if (!q->country[0] || strcmp(q->country, "UNKNOWN") == 0)

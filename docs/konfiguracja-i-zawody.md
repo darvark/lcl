@@ -28,12 +28,14 @@ Ten dokument opisuje pola obsługiwane w `logger.conf` oraz klucze dozwolone w p
 | `LON` | liczba zmiennoprzecinkowa | `0.0` | Długość geograficzna stacji. |
 | `LOCATOR` | tekst | pusty | Lokator Maidenhead stacji. |
 | `STATION_CALL` | tekst | `N0CALL` | Znak stacji używany m.in. w eksporcie Cabrillo. |
+| `STATION_EXCHANGE` | tekst | pusty | Własna wymiana stacji w zawodach, które jej wymagają; w WAG ustaw DOK albo `NM`, jeśli stacja pracuje z Niemiec. |
 | `OPERATOR_CALL` | tekst | taki sam jak `STATION_CALL` | Znak operatora logującego łączność; jeśli nie ustawiony, domyślnie przyjmuje wartość znaku stacji. |
 | `OPERATOR_NAME` | tekst | pusty | Nazwa operatora do metadanych. |
 
 Uwaga praktyczna:
 
 - `STATION_CALL` pozostaje niezmienione i jest używany tam, gdzie chodzi o tożsamość stacji (np. export Cabrillo i podstawowe dane stacji).
+- W profilu WAG stacja wysyła `STATION_EXCHANGE` jako DOK/`NM`; gdy pole jest puste, niemiecki znak jest wykrywany z CTY i logger zablokuje zapis QSO, prosząc o konfigurację wymiany. Stacje poza Niemcami nadają kolejny numer seryjny. Wpisywana wymiana odebrana jest tekstowa, więc obsługuje zarówno numery, jak i alfanumeryczne DOK.
 - `OPERATOR_CALL` jest używany w działaniach operatora, np. przy logowaniu, CW, QTC i UI.
 - W głównym oknie można zmienić aktywnego operatora szybkim skrótem `Ctrl+O`.
 - Pasek statusu pokazuje bieżący znak operatora w formacie `OP: <znak>`.
@@ -110,6 +112,21 @@ Pola `CAT2_*` działają tak samo jak `CAT_*`, ale dotyczą drugiego radia.
 | `NET_RETRY_MIN_MS` / `NET_RETRY_MAX_MS` | liczba milisekund | `1000` / `30000` | Zakres retry z backoffem. |
 | `NET_MAX_FRAME_BYTES` | `1024..65536` | `65536` | Limit ramki protokołu. |
 
+### LiveScore
+
+| Klucz | Typ / wartości | Domyślna wartość | Opis |
+| --- | --- | --- | --- |
+| `LIVE_UPLOAD_ENABLED` | `0` lub `1` | `0` | Wysyła aktualizację po zapisaniu QSO. |
+| `LIVE_UPLOAD_HOST` | nazwa lub adres IP | pusty | Host serwera LiveScore. |
+| `LIVE_UPLOAD_PORT` | `1..65535` | `9871` | Port UDP serwera LiveScore. |
+| `LIVE_UPLOAD_TOKEN` | tekst | pusty | Token przekazywany w każdym pakiecie aktualizacji. |
+
+Aktualizacja jest wysyłana jako pojedynczy datagram UDP z JSON-em typu
+`qso_score_update`; zawiera ostatnie QSO i bieżące statystyki. UDP nie gwarantuje
+dostarczenia pakietu, a pakiet ani token nie są szyfrowane. Używaj integracji
+wyłącznie w zaufanej sieci. Ustawienia LiveScore są dostępne w formularzu
+konfiguracji sieciowej, w sekcji LiveScore.
+
 Token musi mieć co najmniej 32 znaki, co najmniej trzy klasy znaków i być
 identyczny na serwerze oraz klientach. Wygeneruj go bez spacji/nowej linii, np.:
 
@@ -117,10 +134,10 @@ identyczny na serwerze oraz klientach. Wygeneruj go bez spacji/nowej linii, np.:
 openssl rand -base64 48 | tr -d '\n'
 ```
 
-Pełne ustawienia sieciowe edytuje się w `logger.conf`; plik bieżącego
-użytkownika znajduje się w `~/.config/contest-logger/logger.conf` i ma prawa
-`0600`. UI nie ma formularza edycji hosta, portu, tokenu ani TLS. W polu komend
-aplikacji dostępne jest sterowanie `net on|off|status`, `net role client|server`,
+Plik bieżącego użytkownika znajduje się w `~/.config/contest-logger/logger.conf`
+i ma prawa `0600`. Ustawienia synchronizacji oraz LiveScore edytuje się w
+formularzu konfiguracji sieciowej. W polu komend aplikacji dostępne jest
+sterowanie `net on|off|status`, `net role client|server`,
 `netsync pair <shared_log_id>` i `netsync catchup`. Po zmianie konfiguracji
 zatrzymaj i uruchom sieć ponownie.
 
@@ -215,6 +232,11 @@ OPERATOR_NAME=
 # W GUI: Ctrl+O zmienia aktywnego operatora, a pasek statusu pokazuje OP: SP6MI
 CONTEST_DEF_FILE=contest_defs/cq_wpx_cw.conf
 CONTEST_TECHNIQUE=SO2V
+
+LIVE_UPLOAD_ENABLED=0
+LIVE_UPLOAD_HOST=
+LIVE_UPLOAD_PORT=9871
+LIVE_UPLOAD_TOKEN=
 
 CW_DEVICE=/dev/ttyUSB1
 CW_KEYER_LINE=DTR

@@ -245,6 +245,7 @@ static void set_defaults(void) {
   strcpy(config.cat2_handshake, "None");
 
   strcpy(config.station_call, "N0CALL");
+  strcpy(config.station_exchange, "");
   strcpy(config.operator_call, "N0CALL");
   strcpy(config.operator_name, "");
   strcpy(config.contest_definition_path, "contest.conf");
@@ -413,6 +414,9 @@ int config_load(const char *filename) {
       strncpy(config.station_call, value, sizeof(config.station_call));
 
       config.station_call[sizeof(config.station_call) - 1] = 0;
+    } else if (strcmp(key, "STATION_EXCHANGE") == 0) {
+      strncpy(config.station_exchange, value, sizeof(config.station_exchange));
+      config.station_exchange[sizeof(config.station_exchange) - 1] = 0;
     } else if (strcmp(key, "OPERATOR_CALL") == 0) {
       strncpy(config.operator_call, value, sizeof(config.operator_call));
       config.operator_call[sizeof(config.operator_call) - 1] = 0;
@@ -614,6 +618,7 @@ int config_save(const char *filename) {
   fprintf(f, "CAT2_HANDSHAKE=%s\n", config.cat2_handshake);
   fprintf(f, "\n");
   fprintf(f, "STATION_CALL=%s\n", config.station_call);
+  fprintf(f, "STATION_EXCHANGE=%s\n", config.station_exchange);
   fprintf(f, "OPERATOR_CALL=%s\n", config.operator_call);
   fprintf(f, "OPERATOR_NAME=%s\n", config.operator_name);
   fprintf(f, "CONTEST_DEF_FILE=%s\n", config.contest_definition_path);

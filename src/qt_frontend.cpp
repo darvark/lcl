@@ -31,6 +31,7 @@
 #include <QMouseEvent>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QShortcut>
 #include <QSplitter>
 #include <QSet>
@@ -376,6 +377,8 @@ const char *multiplier_to_text_for_save(ContestMultiplierType type) {
     return "DXCC_PLUS_ZONE_PER_BAND";
   case CONTEST_MULT_SPDX:
     return "SPDX";
+  case CONTEST_MULT_WAG:
+    return "WAG";
   case CONTEST_MULT_MODE_DXCC:
     return "MODE_DXCC";
   default:

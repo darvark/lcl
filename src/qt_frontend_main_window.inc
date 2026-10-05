@@ -531,6 +531,12 @@ public:
         refresh_ui();
       });
 
+      QAction *network_config_action = new QAction("Network Configuration...", this);
+      connect(network_config_action, &QAction::triggered, this, [this]() {
+        prompt_network_configuration();
+        refresh_ui();
+      });
+
             QAction *cluster_action = new QAction("DX Cluster", this);
       cluster_action->setShortcut(QKeySequence("Ctrl+F5"));
       connect(cluster_action, &QAction::triggered, this,
@@ -650,6 +656,7 @@ public:
       main_menu->addAction(export_action);
       main_menu->addSeparator();
       main_menu->addAction(station_config_action);
+      main_menu->addAction(network_config_action);
       main_menu->addAction(cty_action);
       main_menu->addAction(scp_action);
       main_menu->addSeparator();
@@ -1482,6 +1489,229 @@ private:
       refresh_ui();
     }
 
+    void prompt_network_configuration() {
+      QDialog dialog(this);
+      dialog.setWindowTitle("Network Configuration");
+      dialog.setModal(true);
+      dialog.resize(620, 650);
+
+      auto *layout = new QVBoxLayout(&dialog);
+      auto *scroll_area = new QScrollArea(&dialog);
+      scroll_area->setWidgetResizable(true);
+      auto *contents = new QWidget(scroll_area);
+      auto *contents_layout = new QVBoxLayout(contents);
+
+      auto *service_group = new QGroupBox("Network service", contents);
+      auto *service_form = new QFormLayout(service_group);
+      auto *enabled_check = new QCheckBox("Enable network synchronization", service_group);
+      enabled_check->setChecked(config.net_enabled != 0);
+      service_form->addRow(enabled_check);
+      auto *role_combo = new QComboBox(service_group);
+      role_combo->addItem("Client", "client");
+      role_combo->addItem("Server", "server");
+      const int role_index = role_combo->findData(
+          QString::fromLatin1(config.net_role[0] ? config.net_role : "client"));
+      role_combo->setCurrentIndex(role_index >= 0 ? role_index : 0);
+      service_form->addRow("Role:", role_combo);
+      auto *station_id_edit = new QLineEdit(QString::fromLatin1(config.net_station_id), service_group);
+      service_form->addRow("Station ID (optional):", station_id_edit);
+      auto *host_edit = new QLineEdit(QString::fromLatin1(config.net_server_host), service_group);
+      service_form->addRow("Server host (client):", host_edit);
+      auto *port_spin = new QSpinBox(service_group);
+      port_spin->setRange(1, 65535);
+      port_spin->setValue(config.net_server_port);
+      service_form->addRow("Server port:", port_spin);
+      auto *shared_log_edit = new QLineEdit(QString::fromLatin1(config.net_shared_log_id), service_group);
+      shared_log_edit->setMaxLength(35);
+      service_form->addRow("Shared log ID:", shared_log_edit);
+      contents_layout->addWidget(service_group);
+
+      auto *sync_group = new QGroupBox("Synchronization and server limits", contents);
+      auto *sync_form = new QFormLayout(sync_group);
+      auto *sync_interval_spin = new QSpinBox(sync_group);
+      sync_interval_spin->setRange(100, 60000);
+      sync_interval_spin->setValue(config.net_sync_interval_ms);
+      sync_form->addRow("Poll interval (ms):", sync_interval_spin);
+      auto *heartbeat_spin = new QSpinBox(sync_group);
+      heartbeat_spin->setRange(1, 300);
+      heartbeat_spin->setValue(config.net_heartbeat_sec);
+      sync_form->addRow("Heartbeat (seconds):", heartbeat_spin);
+      auto *retry_min_spin = new QSpinBox(sync_group);
+      retry_min_spin->setRange(100, 60000);
+      retry_min_spin->setValue(config.net_retry_min_ms);
+      sync_form->addRow("Minimum retry delay (ms):", retry_min_spin);
+      auto *retry_max_spin = new QSpinBox(sync_group);
+      retry_max_spin->setRange(100, 600000);
+      retry_max_spin->setValue(config.net_retry_max_ms);
+      sync_form->addRow("Maximum retry delay (ms):", retry_max_spin);
+      connect(retry_min_spin, &QSpinBox::valueChanged, retry_max_spin,
+              [retry_max_spin](int minimum) {
+                retry_max_spin->setMinimum(minimum);
+                if (retry_max_spin->value() < minimum)
+                  retry_max_spin->setValue(minimum);
+              });
+      auto *max_frame_spin = new QSpinBox(sync_group);
+      max_frame_spin->setRange(1024, 65536);
+      max_frame_spin->setValue(config.net_max_frame_bytes);
+      sync_form->addRow("Maximum frame size (bytes):", max_frame_spin);
+      auto *rate_window_spin = new QSpinBox(sync_group);
+      rate_window_spin->setRange(1, 300);
+      rate_window_spin->setValue(config.net_rate_limit_window_sec);
+      sync_form->addRow("Server rate-limit window (seconds):", rate_window_spin);
+      auto *rate_burst_spin = new QSpinBox(sync_group);
+      rate_burst_spin->setRange(1, 10000);
+      rate_burst_spin->setValue(config.net_rate_limit_burst);
+      sync_form->addRow("Server request limit per window:", rate_burst_spin);
+      contents_layout->addWidget(sync_group);
+
+      auto *security_group = new QGroupBox("Security", contents);
+      auto *security_form = new QFormLayout(security_group);
+      auto *tls_check = new QCheckBox("Use TLS", security_group);
+      tls_check->setChecked(config.net_tls != 0);
+      security_form->addRow(tls_check);
+      auto *token_edit = new QLineEdit(QString::fromLatin1(
+          config.net_auth_token[0] ? config.net_auth_token : config.net_shared_key), security_group);
+      token_edit->setEchoMode(QLineEdit::Password);
+      security_form->addRow("Authentication token:", token_edit);
+      auto *cert_edit = new QLineEdit(QString::fromLatin1(config.net_tls_cert_file), security_group);
+      security_form->addRow("Server certificate file:", cert_edit);
+      auto *key_edit = new QLineEdit(QString::fromLatin1(config.net_tls_key_file), security_group);
+      security_form->addRow("Server private key file:", key_edit);
+      auto *fingerprint_edit = new QLineEdit(
+          QString::fromLatin1(config.net_tls_peer_fingerprint), security_group);
+      security_form->addRow("Server SHA-256 fingerprint (client):", fingerprint_edit);
+      auto *insecure_check = new QCheckBox(
+          "Allow plain TCP on a trusted, isolated LAN only", security_group);
+      insecure_check->setChecked(config.net_allow_insecure_lan != 0);
+      security_form->addRow(insecure_check);
+      contents_layout->addWidget(security_group);
+
+        auto *livescore_group = new QGroupBox("LiveScore", contents);
+        auto *livescore_form = new QFormLayout(livescore_group);
+        auto *livescore_enabled_check = new QCheckBox(
+          "Send QSO and score updates", livescore_group);
+        livescore_enabled_check->setChecked(config.live_upload_enabled != 0);
+        livescore_form->addRow(livescore_enabled_check);
+        auto *livescore_host_edit = new QLineEdit(
+          QString::fromLatin1(config.live_upload_host), livescore_group);
+        livescore_form->addRow("Server host:", livescore_host_edit);
+        auto *livescore_port_spin = new QSpinBox(livescore_group);
+        livescore_port_spin->setRange(1, 65535);
+        livescore_port_spin->setValue(config.live_upload_port);
+        livescore_form->addRow("Server port:", livescore_port_spin);
+        auto *livescore_token_edit = new QLineEdit(
+          QString::fromLatin1(config.live_upload_token), livescore_group);
+        livescore_token_edit->setEchoMode(QLineEdit::Password);
+        livescore_form->addRow("Authentication token:", livescore_token_edit);
+        connect(livescore_enabled_check, &QCheckBox::toggled, livescore_host_edit,
+            &QLineEdit::setEnabled);
+        connect(livescore_enabled_check, &QCheckBox::toggled, livescore_port_spin,
+            &QSpinBox::setEnabled);
+        connect(livescore_enabled_check, &QCheckBox::toggled, livescore_token_edit,
+            &QLineEdit::setEnabled);
+        livescore_host_edit->setEnabled(config.live_upload_enabled != 0);
+        livescore_port_spin->setEnabled(config.live_upload_enabled != 0);
+        livescore_token_edit->setEnabled(config.live_upload_enabled != 0);
+        contents_layout->addWidget(livescore_group);
+      contents_layout->addStretch(1);
+
+      auto update_role_fields = [role_combo, host_edit, shared_log_edit, cert_edit,
+                                 key_edit, fingerprint_edit, rate_window_spin,
+                                 rate_burst_spin]() {
+        const bool is_client = role_combo->currentData().toString() == "client";
+        host_edit->setEnabled(is_client);
+        shared_log_edit->setEnabled(is_client);
+        fingerprint_edit->setEnabled(is_client);
+        cert_edit->setEnabled(!is_client);
+        key_edit->setEnabled(!is_client);
+        rate_window_spin->setEnabled(!is_client);
+        rate_burst_spin->setEnabled(!is_client);
+      };
+      connect(role_combo, &QComboBox::currentIndexChanged, &dialog,
+              [update_role_fields](int) { update_role_fields(); });
+      update_role_fields();
+
+      scroll_area->setWidget(contents);
+      layout->addWidget(scroll_area, 1);
+      auto *buttons = new QDialogButtonBox(
+          QDialogButtonBox::Ok | QDialogButtonBox::Cancel, Qt::Horizontal, &dialog);
+      connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+      connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+      layout->addWidget(buttons);
+
+      if (dialog.exec() != QDialog::Accepted)
+        return;
+
+      const Config previous_config = config;
+      const bool was_enabled = config.net_enabled != 0;
+      const bool should_enable = enabled_check->isChecked();
+      if (was_enabled)
+        net_sync_stop();
+
+      auto copy_field = [](char *dst, size_t dst_size, const QString &text) {
+        QByteArray bytes = text.trimmed().toLatin1();
+        std::snprintf(dst, dst_size, "%s", bytes.constData());
+      };
+      config.net_enabled = 0;
+      copy_field(config.net_role, sizeof(config.net_role),
+                 role_combo->currentData().toString());
+      copy_field(config.net_station_id, sizeof(config.net_station_id), station_id_edit->text());
+      copy_field(config.net_server_host, sizeof(config.net_server_host), host_edit->text());
+      config.net_server_port = port_spin->value();
+      copy_field(config.net_shared_log_id, sizeof(config.net_shared_log_id),
+                 shared_log_edit->text());
+      config.net_sync_interval_ms = sync_interval_spin->value();
+      config.net_heartbeat_sec = heartbeat_spin->value();
+      config.net_retry_min_ms = retry_min_spin->value();
+      config.net_retry_max_ms = retry_max_spin->value();
+      config.net_max_frame_bytes = max_frame_spin->value();
+      config.net_rate_limit_window_sec = rate_window_spin->value();
+      config.net_rate_limit_burst = rate_burst_spin->value();
+      config.net_tls = tls_check->isChecked() ? 1 : 0;
+      copy_field(config.net_auth_token, sizeof(config.net_auth_token), token_edit->text());
+      if (config.net_shared_key[0])
+        copy_field(config.net_shared_key, sizeof(config.net_shared_key), token_edit->text());
+      copy_field(config.net_tls_cert_file, sizeof(config.net_tls_cert_file), cert_edit->text());
+      copy_field(config.net_tls_key_file, sizeof(config.net_tls_key_file), key_edit->text());
+      copy_field(config.net_tls_peer_fingerprint,
+                 sizeof(config.net_tls_peer_fingerprint), fingerprint_edit->text());
+      config.net_allow_insecure_lan = insecure_check->isChecked() ? 1 : 0;
+      config.live_upload_enabled = livescore_enabled_check->isChecked() ? 1 : 0;
+      copy_field(config.live_upload_host, sizeof(config.live_upload_host),
+             livescore_host_edit->text());
+      config.live_upload_port = livescore_port_spin->value();
+      copy_field(config.live_upload_token, sizeof(config.live_upload_token),
+             livescore_token_edit->text());
+
+      if (config_save_active() != 0) {
+        config = previous_config;
+        if (was_enabled) {
+          config.net_enabled = 1;
+          (void)net_sync_start();
+        }
+        QMessageBox::warning(this, "Network Configuration",
+                             "Could not save logger.conf.");
+        return;
+      }
+
+      if (should_enable) {
+        config.net_enabled = 1;
+        if (net_sync_start() != 0) {
+          NetSyncStatus status{};
+          net_sync_get_status(&status);
+          config.net_enabled = 0;
+          (void)config_save_active();
+          const QString reason = QString::fromLocal8Bit(status.last_error);
+          QMessageBox::warning(this, "Network Configuration",
+                               reason.isEmpty()
+                                   ? "Network service could not be started. Check the configuration."
+                                   : QString("Network service could not be started: %1").arg(reason));
+          return;
+        }
+        (void)config_save_active();
+      }
+    }
+
     void prompt_contest_configuration() {
       ContestDefinition def;
       contest_definition_init_defaults(&def);
@@ -2310,6 +2540,23 @@ private:
     case CONTEST_MULT_MODE_DXCC:
       add_country();
       return;
+    case CONTEST_MULT_WAG: {
+      const CtyEntry *own_cty = cty_lookup(config.station_call);
+      const bool own_is_dl = config.station_exchange[0] ||
+                             (own_cty && std::strcmp(own_cty->prefix, "DL") == 0);
+      if (own_is_dl) {
+        add_country();
+        return;
+      }
+
+      const CtyEntry *worked_cty = cty_lookup(q.call);
+      if ((worked_cty && std::strcmp(worked_cty->prefix, "DL") == 0) ||
+          country.contains("GERMANY", Qt::CaseInsensitive)) {
+        if (!exch.isEmpty() && exch != "NM")
+          out_keys.insert(exch.left(1));
+      }
+      return;
+    }
     case CONTEST_MULT_DXCC_PLUS_ZONE_PER_BAND:
       add_country();
       if (q.cq_zone > 0)

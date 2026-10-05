@@ -417,6 +417,9 @@ int db_sync_pull_ops(long long from_global_seq, int limit, SyncLogOpEntry *out,
 				 int max_items, int *out_count,
 				 long long *out_last_global_seq);
 
+/* Publish local operations and backfill legacy local QSOs for the active logbook. */
+int db_sync_publish_local_logbook_ops(void);
+
 /*
  * Reserve and commit central serial numbers.
  */

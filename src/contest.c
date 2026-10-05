@@ -443,6 +443,8 @@ ContestMultiplierType contest_multiplier_from_text(const char *text) {
     return CONTEST_MULT_DXCC_PLUS_ZONE_PER_BAND;
   if (strcmp(upper, "SPDX") == 0)
     return CONTEST_MULT_SPDX;
+  if (strcmp(upper, "WAG") == 0)
+    return CONTEST_MULT_WAG;
   if (strcmp(upper, "GRID_PER_BAND") == 0 ||
       strcmp(upper, "GRID-PER-BAND") == 0 ||
       strcmp(upper, "WWL_PER_BAND") == 0 ||
@@ -487,6 +489,8 @@ static const char *contest_multiplier_to_text(ContestMultiplierType type) {
     return "MODE_DXCC";
   case CONTEST_MULT_CUSTOM_LIST:
     return "CUSTOM_LIST";
+  case CONTEST_MULT_WAG:
+    return "WAG";
   default:
     return "DXCC";
   }
