@@ -491,9 +491,13 @@ static void *cluster_thread(void *arg) {
                             strerror(errno));
         break;
       }
+      if (ready == 0)
+        continue;
 
       n = read(sock, buf, sizeof(buf));
       if (n <= 0) {
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+          continue;
         if (n == 0)
           dxcluster_debug_log("server closed the connection");
         else

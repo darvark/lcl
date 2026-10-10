@@ -5689,6 +5689,8 @@ static void test_dxcluster_connect_disconnect_and_send_spot(void) {
   expect_int_eq(dxcluster_connect(), 0,
                 "dxcluster_connect should start worker thread");
 
+  usleep(1500000);
+
   int sent_ok = 0;
   for (int i = 0; i < 30; i++) {
     if (dxcluster_send_spot("14074 SP9TEST CQ TEST") == 0 &&
