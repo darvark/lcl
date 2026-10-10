@@ -66,7 +66,6 @@ set(LOGGER_CORE_SOURCES
     src/live_upload.c
     src/export.c
     src/stats.c
-    src/wag_rules.c
     src/contest_rules.c
     src/maidenhead.c
     src/net_protocol.c

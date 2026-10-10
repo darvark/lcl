@@ -427,6 +427,40 @@ int save_contest_definition_file(const char *path, const ContestDefinition *def,
   std::fprintf(f, "EXCHANGE_SENT=%s\n",
                def->exchange_sent_template[0] ? def->exchange_sent_template :
                                                 "#");
+  if (def->exchange_received_type[0])
+    std::fprintf(f, "EXCHANGE_RECEIVED_TYPE=%s\n",
+                 def->exchange_received_type);
+  if (def->station_exchange_region[0])
+    std::fprintf(f, "STATION_EXCHANGE_REGION=%s\n",
+                 def->station_exchange_region);
+  if (def->serial_width > 0)
+    std::fprintf(f, "SERIAL_WIDTH=%d\n", def->serial_width);
+  if (def->serial_locator_separator[0])
+    std::fprintf(f, "SERIAL_LOCATOR_SEPARATOR=%s\n",
+                 def->serial_locator_separator);
+  if (!def->duplicate_mode_sensitive)
+    std::fprintf(f, "DUPLICATE_MODE_SENSITIVE=0\n");
+  if (def->validate_operating_rules)
+    std::fprintf(f, "VALIDATE_OPERATING_RULES=1\n");
+  if (def->allowed_modes[0])
+    std::fprintf(f, "ALLOWED_MODES=%s\n", def->allowed_modes);
+  if (def->allowed_bands[0])
+    std::fprintf(f, "ALLOWED_BANDS=%s\n", def->allowed_bands);
+  if (def->max_power_watts > 0)
+    std::fprintf(f, "MAX_POWER_WATTS=%d\n", def->max_power_watts);
+  if (def->distance_scoring)
+    std::fprintf(f, "DISTANCE_SCORING=1\n");
+  if (def->start_utc[0])
+    std::fprintf(f, "START_UTC=%s\n", def->start_utc);
+  if (def->end_utc[0])
+    std::fprintf(f, "END_UTC=%s\n", def->end_utc);
+  if (def->enforce_time_window)
+    std::fprintf(f, "ENFORCE_TIME_WINDOW=1\n");
+  for (int i = 0; i < def->excluded_segment_count; i++)
+    std::fprintf(f, "EXCLUDED_SEGMENT=%s,%d,%d\n",
+                 def->excluded_segments[i].mode,
+                 def->excluded_segments[i].low_khz,
+                 def->excluded_segments[i].high_khz);
   if (def->points_configured) {
     std::fprintf(f, "POINTS_PER_QSO=%d\n",
                  def->points_per_qso > 0 ? def->points_per_qso : 1);
@@ -438,9 +472,36 @@ int save_contest_definition_file(const char *path, const ContestDefinition *def,
     std::fprintf(f, "POINTS_NEW_BAND_DXCC=%d\n", def->points_new_band_dxcc);
     std::fprintf(f, "POINTS_SAME_BAND_DXCC=%d\n", def->points_same_band_dxcc);
   }
-  std::fprintf(f, "MULTIPLIER=%s\n",
-               multiplier_to_text_for_save(def->multiplier_type));
+  std::fprintf(f, "MULTIPLIER=");
+  for (int i = 0; i < def->multiplier_count; i++)
+    std::fprintf(f, "%s%s", i ? "," : "",
+                 multiplier_to_text_for_save(def->multipliers[i]));
+  std::fputc('\n', f);
   std::fprintf(f, "BONUS_POINTS=%d\n", def->bonus_points);
+  for (int i = 0; i < def->score_rule_count; i++)
+    std::fprintf(f, "SCORING_RULE=%d;%s\n", def->score_rules[i].points,
+                 def->score_rules[i].conditions);
+  for (int i = 0; i < def->multiplier_count; i++) {
+    if (def->multiplier_excluded_suffixes[i][0])
+      std::fprintf(f, "MULTIPLIER%d_EXCLUDED_SUFFIXES=%s\n", i + 1,
+                   def->multiplier_excluded_suffixes[i]);
+    if (def->multiplier_special_prefixes[i][0])
+      std::fprintf(f, "MULTIPLIER%d_SPECIAL_PREFIXES=%s\n", i + 1,
+                   def->multiplier_special_prefixes[i]);
+  }
+  for (int i = 0; i < def->region_count; i++) {
+    const ContestRegionDef *region = &def->regions[i];
+    std::fprintf(f, "REGION=%s", region->name);
+    if (region->continent[0])
+      std::fprintf(f, ";CONTINENT=%s", region->continent);
+    if (region->countries[0])
+      std::fprintf(f, ";COUNTRIES=%s", region->countries);
+    if (region->prefixes[0])
+      std::fprintf(f, ";PREFIXES=%s", region->prefixes);
+    if (region->exchanges[0])
+      std::fprintf(f, ";EXCHANGES=%s", region->exchanges);
+    std::fputc('\n', f);
+  }
 
   /* QTC traffic fields (WAE and similar contests). */
   if (def->qtc_sender_side[0] && std::strcmp(def->qtc_sender_side, "NONE") != 0) {

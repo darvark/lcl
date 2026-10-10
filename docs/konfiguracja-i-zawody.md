@@ -37,9 +37,15 @@ Uwaga praktyczna:
 
 - `STATION_CALL` pozostaje niezmienione i jest używany tam, gdzie chodzi o tożsamość stacji (np. export Cabrillo i podstawowe dane stacji).
 - W profilu WAG stacja wysyła `STATION_EXCHANGE` jako DOK/`NM`; gdy pole jest puste, niemiecki znak jest wykrywany z CTY i logger zablokuje zapis QSO, prosząc o konfigurację wymiany. Stacje poza Niemcami nadają kolejny numer seryjny. Wpisywana wymiana odebrana jest tekstowa, więc obsługuje zarówno numery, jak i alfanumeryczne DOK.
-- Dla WAG logger blokuje zapis QSO poza oknem 15:00 UTC w sobotę–14:59 UTC w niedzielę trzeciego pełnego weekendu października, na pasmach innych niż 80/40/20/15/10 m, w segmentach contest-free podanych w regulaminie oraz w trybach innych niż CW/SSB. Wymaga też dodatniego `STATION_TX_POWER_WATTS` zgodnego z `CATEGORY_POWER` (`QRP` do 5 W, `LOW` do 100 W, `HIGH` powyżej 100 W). To kontrola deklaracji przy zapisie, nie blokada PTT ani pomiar mocy nadajnika.
+- WAG nie ma domyślnego terminu konkretnej edycji. Gdy definicja zawiera
+  `START_UTC`, `END_UTC` i `ENFORCE_TIME_WINDOW=1`, logger odrzuca QSO poza
+  przedziałem. Pasma, tryby, segmenty contest-free i maksymalna moc są
+  deklarowane w `wag.conf`; moc nadal jest deklaracją, nie pomiarem ani blokadą
+  PTT.
 - WAG liczy mnożniki DXCC/WAE per pasmo i tryb dla stacji niemieckich (z osobnymi wyjątkami `IG9` i `IH9`) oraz pierwszą literę DOK dla stacji spoza Niemiec; `NM` nie jest mnożnikiem. Rozpoznanie obszaru DXCC/WAE zależy od załadowanej bazy CTY.
-- Presety SP DX, CQ WPX, CQ WW i IARU HF obsługują dynamiczne wymiany i punktację/mnożniki właściwe dla tych zawodów. Kontroler sprawdza ich okno UTC, pasma 160/80/40/20/15/10 m, emisje CW/SSB, wybraną kategorię pasma oraz zadeklarowaną moc. WPX nadaje serial `001...`; CQ WW własną strefę CQ; IARU własną strefę ITU lub `STATION_EXCHANGE` dla HQ/official. W SP DX stacja SP ustawia literę województwa w `STATION_EXCHANGE`, a stacja zagraniczna nadaje serial.
+- Presety SP DX, CQ WPX, CQ WW i IARU HF opisują format wymiany, punktację,
+  mnożniki oraz ograniczenia pasma i trybu w plikach definicji. Daty/godziny są
+  opcjonalne i dotyczą konkretnej edycji; nie są wyprowadzane z nazwy zawodów.
 - W punktacji/mnożnikach: WPX używa prefiksów z obsługą portable/no-digit; CQ WW liczy DXCC/WAE i strefy per pasmo, z osobnym `IG9/IH9` oraz `/MM` tylko do strefy; SP DX liczy DXCC lub województwo per pasmo; IARU liczy strefy ITU i exchange HQ/official per pasmo. IARU traktuje drugi kontakt z tą samą stacją na tym samym paśmie jako duplikat niezależnie od emisji.
 - Logger nie mierzy mocy ani nie steruje blokadą PTT. Nie wymusza limitów 10 minut/liczby zmian pasma Multi-Single, liczby nadajników, assisted/unassisted, self-spotting, czasu off-time WPX, lokalizacji 500 m ani kwalifikacji YOTA/Youth/Rookie/Classic. Te reguły i poprawność specjalnych exchange wymagają kontroli operatora; dane DXCC/WAE zależą od CTY.
 - Wymiany HQ/official IARU są walidowane składniowo (alfanumeryczny skrót), nie przez pełny katalog wszystkich aktualnych stacji i skrótów IARU. Błędny, ale poprawnie sformatowany skrót może przejść lokalną walidację; komisja zawodów pozostaje źródłem ostatecznej weryfikacji.
@@ -49,6 +55,38 @@ Uwaga praktyczna:
 - `OPERATOR_CALL` jest używany w działaniach operatora, np. przy logowaniu, CW, QTC i UI.
 - W głównym oknie można zmienić aktywnego operatora szybkim skrótem `Ctrl+O`.
 - Pasek statusu pokazuje bieżący znak operatora w formacie `OP: <znak>`.
+
+#### Reguły pliku definicji
+
+Daty są w formacie UTC `YYYY-MM-DDTHH:MM:SSZ`. Włączenie
+`ENFORCE_TIME_WINDOW=1` wymaga obu granic i odrzuca QSO poza przedziałem.
+Ograniczenia operacyjne to `VALIDATE_OPERATING_RULES=1`, `ALLOWED_MODES` i
+`ALLOWED_BANDS` (listy rozdzielone przecinkami), `MAX_POWER_WATTS` oraz
+powtarzalne `EXCLUDED_SEGMENT=TRYB,LOW_KHZ,HIGH_KHZ`.
+
+`EXCHANGE_SENT` wybiera format nadawanej wymiany; `SERIAL_WIDTH` ustawia
+zerowanie serialu, a `SERIAL_LOCATOR_SEPARATOR=SPACE` oddziela serial od
+lokatora. `EXCHANGE_RECEIVED_TYPE` wybiera walidator, m.in. `CQ_ZONE`,
+`ITU_ZONE_OR_HQ` i `SP_PROVINCE_OR_SERIAL`. `DUPLICATE_MODE_SENSITIVE=0`
+pozwala określić, czy duplikat zależy od emisji.
+
+Punktację opisują uporządkowane, powtarzalne reguły
+`SCORING_RULE=PUNKTY;WARUNEK=wartość;...`; wygrywa pierwsza pasująca reguła.
+Obsługiwane warunki to `SAME_COUNTRY`, `SAME_CONTINENT`, `SAME_ITU_ZONE`,
+`NEW_DXCC`, `NEW_BAND_DXCC`, `BAND_CLASS=LOW|HIGH`, `BAND`, `MODE`,
+`EXCHANGE_CLASS`, `EXCHANGE_VALUE`, `STATION_EXCHANGE_CLASS`, `SOURCE_REGION`,
+`DESTINATION_REGION`, `SOURCE_COUNTRY`, `DESTINATION_COUNTRY`,
+`SOURCE_CONTINENT`, `DESTINATION_CONTINENT`, `SOURCE_PREFIX`,
+`DESTINATION_PREFIX`, `CALL_PREFIX` i `CALL_SUFFIX`. Warunek regionu można
+zanegować przez `!`, np. `DESTINATION_REGION=!SP`. Regiony deklaruje się przez
+`REGION=NAZWA;CONTINENT=...;COUNTRIES=...;PREFIXES=...;EXCHANGES=...`;
+kryteria regionu są alternatywne.
+
+`MULTIPLIER` przyjmuje listę niezależnych rodzin (np.
+`DXCC_PER_BAND,ZONE_PER_BAND`); wynik mnoży ich liczebności. Wyjątki rodziny
+można określić przez `MULTIPLIER1_EXCLUDED_SUFFIXES=/MM,/AM` i
+`MULTIPLIER1_SPECIAL_PREFIXES=IG9,IH9`. Pojedyncze starsze typy mnożników nadal
+są obsługiwane dla zgodności.
 
 ### DXCluster
 

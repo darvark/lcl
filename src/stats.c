@@ -1,11 +1,13 @@
 #include "stats.h"
 
 #include "config.h"
+#include "contest_rules.h"
 #include "cty.h"
 #include "maidenhead.h"
 #include "qtc.h"
 
 #include <ctype.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -68,6 +70,7 @@ static ContestDefinition scoring_def;
  */
 static char mult_list[MAX_QSO * 2][96];
 static int mult_count = 0;
+static int active_multiplier_bucket = 0;
 
 /*
  * Add a DXCC country candidate to the current set.
@@ -148,7 +151,8 @@ static void mult_add(const char *key) {
   if (mult_count >= (int)(sizeof(mult_list) / sizeof(mult_list[0])))
     return;
 
-  snprintf(mult_list[mult_count++], sizeof(mult_list[0]), "%s", key);
+  snprintf(mult_list[mult_count++], sizeof(mult_list[0]), "F%02d|%s",
+           active_multiplier_bucket, key);
 }
 
 static int is_sp_callsign(const char *call) {
@@ -166,6 +170,10 @@ static int station_exchange_is_sp_province(void) {
 }
 
 static int wag_station_is_german(void) {
+  if (scoring_def.station_exchange_region[0])
+    return contest_definition_station_in_region(
+        &scoring_def, scoring_def.station_exchange_region, config.station_call,
+        config.station_exchange);
   if (config.station_exchange[0])
     return 1;
   const CtyEntry *station = cty_lookup(config.station_call);
@@ -337,32 +345,94 @@ static const char *cqww_special_entity(const char *call) {
   return NULL;
 }
 
+static int qso_exchange_zone(const QSO *q) {
+  if (!q)
+    return 0;
+  char *end = NULL;
+  const long zone = strtol(q->exchange_recv, &end, 10);
+  if (q->exchange_recv[0] && end != q->exchange_recv && *end == 0 &&
+      zone >= 1 && zone <= 90)
+    return (int)zone;
+  return q->cq_zone;
+}
+
+static int call_has_configured_suffix(const char *call, const char *suffixes) {
+  if (!call || !suffixes || !suffixes[0])
+    return 0;
+  char copy[96];
+  snprintf(copy, sizeof(copy), "%s", suffixes);
+  char *save = NULL;
+  const size_t call_length = strlen(call);
+  for (char *suffix = strtok_r(copy, ",", &save); suffix;
+       suffix = strtok_r(NULL, ",", &save)) {
+    trim_in_place(suffix);
+    const size_t suffix_length = strlen(suffix);
+    if (suffix_length <= call_length &&
+        strcasecmp(call + call_length - suffix_length, suffix) == 0)
+      return 1;
+  }
+  return 0;
+}
+
+static int configured_multiplier_prefix(const QSO *q, int family, char *out,
+                                       size_t out_size) {
+  if (!q || family < 0 || family >= CONTEST_DEF_MAX_MULTIPLIERS)
+    return 0;
+  const char *prefixes = scoring_def.multiplier_special_prefixes[family];
+  if (!prefixes[0])
+    return 0;
+  char copy[128];
+  snprintf(copy, sizeof(copy), "%s", prefixes);
+  char *save = NULL;
+  for (char *prefix = strtok_r(copy, ",", &save); prefix;
+       prefix = strtok_r(NULL, ",", &save)) {
+    trim_in_place(prefix);
+    if (strncasecmp(q->call, prefix, strlen(prefix)) == 0) {
+      snprintf(out, out_size, "%s", prefix);
+      return 1;
+    }
+  }
+  return 0;
+}
+
 /*
  * Build multiplier key(s) for one QSO according to active contest rules.
  * Keys are appended as candidates and deduplicated after full scan.
  */
-static void maybe_add_multiplier(const QSO *q, int own_is_sp) {
+static void maybe_add_multiplier(const QSO *q, int own_is_sp,
+                                 ContestMultiplierType multiplier_type,
+                                 int family_index) {
   if (!q)
     return;
 
+  if (family_index >= 0 && family_index < CONTEST_DEF_MAX_MULTIPLIERS &&
+      call_has_configured_suffix(
+          q->call, scoring_def.multiplier_excluded_suffixes[family_index]))
+    return;
+
+  active_multiplier_bucket = family_index * 2;
   char key[96] = {0};
-  switch (scoring_def.multiplier_type) {
+  char special_prefix[32] = {0};
+  const int has_special_prefix = configured_multiplier_prefix(
+      q, family_index, special_prefix, sizeof(special_prefix));
+  switch (multiplier_type) {
   case CONTEST_MULT_NONE:
     return;
   case CONTEST_MULT_DXCC_PER_BAND:
     if (!q->country[0] || strcmp(q->country, "UNKNOWN") == 0)
       return;
-    snprintf(key, sizeof(key), "%s|%s", q->band, q->country);
+    snprintf(key, sizeof(key), "%s|%s", q->band,
+             has_special_prefix ? special_prefix : q->country);
     break;
   case CONTEST_MULT_ZONE_PER_BAND:
-    if (q->cq_zone <= 0)
+    if (qso_exchange_zone(q) <= 0)
       return;
-    snprintf(key, sizeof(key), "%s|%d", q->band, q->cq_zone);
+    snprintf(key, sizeof(key), "%s|%d", q->band, qso_exchange_zone(q));
     break;
   case CONTEST_MULT_ZONE:
-    if (q->cq_zone <= 0)
+    if (qso_exchange_zone(q) <= 0)
       return;
-    snprintf(key, sizeof(key), "%d", q->cq_zone);
+    snprintf(key, sizeof(key), "%d", qso_exchange_zone(q));
     break;
   case CONTEST_MULT_PREFIX: {
     char prefix[32] = {0};
@@ -392,22 +462,19 @@ static void maybe_add_multiplier(const QSO *q, int own_is_sp) {
     const int maritime_mobile =
         (call_len >= 3 && strcmp(call_upper + call_len - 3, "/MM") == 0) ||
         (call_len >= 3 && strcmp(call_upper + call_len - 3, "/AM") == 0);
-    const char *special_entity = cqww_special_entity(q->call);
+    const char *special_entity = has_special_prefix
+                     ? special_prefix
+                     : cqww_special_entity(q->call);
     if (!maritime_mobile && q->country[0] &&
         strcmp(q->country, "UNKNOWN") != 0) {
       snprintf(key, sizeof(key), "C|%s|%s", q->band,
                special_entity ? special_entity : q->country);
       mult_add(key);
     }
-    char *zone_end = NULL;
-    const long received_zone = strtol(q->exchange_recv, &zone_end, 10);
-    const int zone = q->exchange_recv[0] && zone_end != q->exchange_recv &&
-                             *zone_end == 0 && received_zone >= 1 &&
-                             received_zone <= 40
-                         ? (int)received_zone
-                         : q->cq_zone;
+    const int zone = qso_exchange_zone(q);
     if (zone > 0) {
       snprintf(key, sizeof(key), "Z|%s|%d", q->band, zone);
+      active_multiplier_bucket = family_index * 2 + 1;
       mult_add(key);
     }
     return;
@@ -457,8 +524,9 @@ static void maybe_add_multiplier(const QSO *q, int own_is_sp) {
       return;
     snprintf(key, sizeof(key), "D|%s|%s", q->band, q->country);
     mult_add(key);
-    if (q->cq_zone > 0) {
-      snprintf(key, sizeof(key), "Z|%s|%d", q->band, q->cq_zone);
+    if (qso_exchange_zone(q) > 0) {
+      snprintf(key, sizeof(key), "Z|%s|%d", q->band, qso_exchange_zone(q));
+      active_multiplier_bucket = family_index * 2 + 1;
       mult_add(key);
     }
     return;
@@ -538,7 +606,8 @@ static void maybe_add_multiplier(const QSO *q, int own_is_sp) {
   default:
     if (!q->country[0] || strcmp(q->country, "UNKNOWN") == 0)
       return;
-    snprintf(key, sizeof(key), "%s", q->country);
+    snprintf(key, sizeof(key), "%s",
+         has_special_prefix ? special_prefix : q->country);
     break;
   }
 
@@ -554,6 +623,7 @@ static void reset_stats(void) {
   memset(&stats, 0, sizeof(stats));
   dxcc_count = 0;
   mult_count = 0;
+  active_multiplier_bucket = 0;
 }
 
 void stats_set_contest_definition(const ContestDefinition *definition) {
@@ -562,6 +632,10 @@ void stats_set_contest_definition(const ContestDefinition *definition) {
     return;
 
   scoring_def = *definition;
+  if (scoring_def.multipliers[0] != scoring_def.multiplier_type) {
+    scoring_def.multipliers[0] = scoring_def.multiplier_type;
+    scoring_def.multiplier_count = 1;
+  }
 }
 
 /*
@@ -571,10 +645,19 @@ void stats_set_contest_definition(const ContestDefinition *definition) {
  */
 void stats_update(void) {
   reset_stats();
-  const int own_is_sp = (scoring_def.multiplier_type == CONTEST_MULT_SPDX)
-                     ? (station_exchange_is_sp_province() ||
-                       is_sp_callsign(config.station_call))
-                            : 0;
+  int has_spdx_multiplier = scoring_def.multiplier_type == CONTEST_MULT_SPDX;
+  for (int i = 0; i < scoring_def.multiplier_count; i++)
+    has_spdx_multiplier |= scoring_def.multipliers[i] == CONTEST_MULT_SPDX;
+  const int own_is_sp = has_spdx_multiplier
+      ? (scoring_def.station_exchange_region[0]
+             ? contest_definition_station_in_region(
+                   &scoring_def, scoring_def.station_exchange_region,
+                   config.station_call, config.station_exchange)
+             : station_exchange_is_sp_province() ||
+                   is_sp_callsign(config.station_call))
+      : 0;
+  const int family_count = scoring_def.multiplier_count > 0
+                               ? scoring_def.multiplier_count : 1;
 
   for (int i = 0; i < qso_count; i++) {
     QSO *q = &logbook[i];
@@ -602,7 +685,11 @@ void stats_update(void) {
 
     stats.contest_qso_points += q->points;
 
-    maybe_add_multiplier(q, own_is_sp);
+    for (int family = 0; family < family_count; family++) {
+      const ContestMultiplierType type = scoring_def.multiplier_count > 0
+          ? scoring_def.multipliers[family] : scoring_def.multiplier_type;
+      maybe_add_multiplier(q, own_is_sp, type, family);
+    }
   }
 
   dxcc_count = unique_sorted_dxcc_count();
@@ -621,12 +708,43 @@ void stats_update(void) {
     stats.qtc_points  = 0;
   }
 
-  if (scoring_def.multiplier_type == CONTEST_MULT_NONE) {
+  int has_multiplier = 0;
+  long long score_multiplier = 1;
+  for (int family = 0; family < family_count; family++) {
+    const ContestMultiplierType type = scoring_def.multiplier_count > 0
+        ? scoring_def.multipliers[family] : scoring_def.multiplier_type;
+    if (type == CONTEST_MULT_NONE)
+      continue;
+    has_multiplier = 1;
+    const int bucket_count = (type == CONTEST_MULT_CQWW ||
+                              type == CONTEST_MULT_DXCC_PLUS_ZONE_PER_BAND)
+                                 ? 2 : 1;
+    for (int offset = 0; offset < bucket_count; offset++) {
+      const int bucket = family * 2 + offset;
+      char prefix[8];
+      snprintf(prefix, sizeof(prefix), "F%02d|", bucket);
+      int unique_count = 0;
+      for (int i = 0; i < mult_count; i++)
+        unique_count += strncmp(mult_list[i], prefix, strlen(prefix)) == 0;
+      if (unique_count > 0) {
+        if (score_multiplier > INT_MAX / unique_count)
+          score_multiplier = INT_MAX;
+        else
+          score_multiplier *= unique_count;
+      }
+    }
+  }
+
+  if (!has_multiplier) {
     stats.contest_score = stats.contest_qso_points + stats.qtc_points +
                           scoring_def.bonus_points;
   } else {
-    const int mult = stats.contest_mults > 0 ? stats.contest_mults : 1;
-    stats.contest_score = (stats.contest_qso_points + stats.qtc_points) * mult +
-                          scoring_def.bonus_points;
+    const long long points =
+      (long long)stats.contest_qso_points + stats.qtc_points;
+    const long long score =
+      points > INT_MAX / score_multiplier
+        ? INT_MAX
+        : points * score_multiplier + scoring_def.bonus_points;
+    stats.contest_score = score > INT_MAX ? INT_MAX : (int)score;
   }
 }

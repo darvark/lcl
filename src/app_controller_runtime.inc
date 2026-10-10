@@ -1127,10 +1127,10 @@ AppControllerEvent app_controller_handle_key(int key) {
             clear_callsign_suggestion();
             return APP_CTRL_EVENT_NONE;
           }
-          if (contest_uses_wag_exchange_template() && contest_station_is_dl() &&
+          if (contest_uses_station_exchange_or_serial() && contest_station_is_dl() &&
               !config.station_exchange[0]) {
             snprintf(status_text, sizeof(status_text),
-                     "Set STATION_EXCHANGE to your DOK or NM");
+                     "Set STATION_EXCHANGE for this station region");
             clear_active_entry_fields();
             clear_callsign_suggestion();
             return APP_CTRL_EVENT_NONE;
@@ -1159,18 +1159,6 @@ AppControllerEvent app_controller_handle_key(int key) {
             clear_callsign_suggestion();
             return APP_CTRL_EVENT_NONE;
           }
-          if (contest_name_contains("WAG")) {
-            char wag_error[128] = {0};
-            if (!wag_rules_validate_qso(wag_rules_now_utc(), qso_freq_khz,
-                                        mode, config.station_tx_power_watts,
-                                        active_contest_def.category_power,
-                                        wag_error, sizeof(wag_error))) {
-              snprintf(status_text, sizeof(status_text), "%s", wag_error);
-              clear_active_entry_fields();
-              clear_callsign_suggestion();
-              return APP_CTRL_EVENT_NONE;
-            }
-          }
           char qso_band[8] = {0};
           detect_band(qso_freq_khz, qso_band);
 
@@ -1197,10 +1185,7 @@ AppControllerEvent app_controller_handle_key(int key) {
           } else {
             build_exchange_sent(exchange_sent, sizeof(exchange_sent));
           }
-          if ((contest_name_contains("CQ WW") ||
-               contest_name_contains("CQ WORLD WIDE") ||
-               contest_name_contains("IARU")) &&
-              strncmp(exchange_sent, "SET ", 4) == 0) {
+          if (strncmp(exchange_sent, "SET ", 4) == 0) {
             snprintf(status_text, sizeof(status_text),
                      "Set STATION_CALL or STATION_EXCHANGE for your contest zone");
             clear_active_entry_fields();
@@ -1223,7 +1208,7 @@ AppControllerEvent app_controller_handle_key(int key) {
           }
 
             const int duplicate_mode_sensitive =
-              !contest_name_contains("IARU");
+              active_contest_def.duplicate_mode_sensitive;
             int idx = qso_add_contest_fields_with_reservation_scope(
               entry_call, qso_freq_khz, qso_rst, mode, qso_comments,
               exchange_sent,

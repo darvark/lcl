@@ -645,8 +645,14 @@ private:
     };
 
     const QString app_dir = QApplication::applicationDirPath();
-    const QStringList roots = {
-        QDir::currentPath(), app_dir, app_dir + "/..", app_dir + "/../.."};
+    QStringList roots;
+    const char *loaded_config_path = config_loaded_path();
+    if (loaded_config_path && loaded_config_path[0]) {
+      const QFileInfo config_info(QString::fromLocal8Bit(loaded_config_path));
+      roots.push_back(config_info.absolutePath());
+    }
+    roots << QDir::currentPath() << app_dir << app_dir + "/.."
+          << app_dir + "/../..";
 
     for (const QString &root : roots) {
       QDir root_dir(root);

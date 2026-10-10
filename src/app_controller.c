@@ -17,7 +17,6 @@
 #include "qtc.h"
 #include "suggestion.h"
 #include "stats.h"
-#include "wag_rules.h"
 
 #include <errno.h>
 #include <pthread.h>

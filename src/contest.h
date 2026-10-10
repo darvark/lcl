@@ -8,6 +8,10 @@ extern "C" {
 #endif
 
 #define CONTEST_DEF_MAX_FIELDS 16
+#define CONTEST_DEF_MAX_SCORE_RULES 64
+#define CONTEST_DEF_MAX_REGIONS 16
+#define CONTEST_DEF_MAX_EXCLUDED_SEGMENTS 32
+#define CONTEST_DEF_MAX_MULTIPLIERS 4
 
 typedef enum {
   CONTEST_TECH_SO1R = 0,
@@ -42,6 +46,43 @@ typedef struct {
 } ContestFieldDef;
 
 typedef struct {
+  int points;
+  char conditions[192];
+} ContestScoreRule;
+
+typedef struct {
+  char name[24];
+  char continent[8];
+  char countries[128];
+  char prefixes[128];
+  char exchanges[128];
+} ContestRegionDef;
+
+typedef struct {
+  char mode[8];
+  int low_khz;
+  int high_khz;
+} ContestExcludedSegment;
+
+typedef struct {
+  const char *call;
+  const char *mode;
+  const char *band;
+  const char *source_country;
+  const char *source_continent;
+  const char *source_prefix;
+  const char *destination_country;
+  const char *destination_continent;
+  const char *destination_prefix;
+  const char *exchange_received;
+  const char *station_exchange;
+  int same_itu_zone;
+  int new_dxcc;
+  int new_band_dxcc;
+  int distance_km;
+} ContestScoreContext;
+
+typedef struct {
   char name[64];
   char cabrillo_name[64];
   char mode[16];
@@ -52,6 +93,25 @@ typedef struct {
   char station_location[32];
   char operators[32];
   char exchange_sent_template[64];
+  char exchange_received_type[32];
+  char station_exchange_region[24];
+  char serial_locator_separator[8];
+  char start_utc[24];
+  char end_utc[24];
+  int enforce_time_window;
+  int distance_scoring;
+  int serial_width;
+  int duplicate_mode_sensitive;
+  int validate_operating_rules;
+  char allowed_modes[96];
+  char allowed_bands[128];
+  int max_power_watts;
+  ContestExcludedSegment excluded_segments[CONTEST_DEF_MAX_EXCLUDED_SEGMENTS];
+  int excluded_segment_count;
+  ContestScoreRule score_rules[CONTEST_DEF_MAX_SCORE_RULES];
+  int score_rule_count;
+  ContestRegionDef regions[CONTEST_DEF_MAX_REGIONS];
+  int region_count;
   int points_per_qso;
   int points_cw;
   int points_phone;
@@ -62,6 +122,10 @@ typedef struct {
   int points_same_band_dxcc;
   int points_configured;
   ContestMultiplierType multiplier_type;
+  ContestMultiplierType multipliers[CONTEST_DEF_MAX_MULTIPLIERS];
+  int multiplier_count;
+  char multiplier_excluded_suffixes[CONTEST_DEF_MAX_MULTIPLIERS][64];
+  char multiplier_special_prefixes[CONTEST_DEF_MAX_MULTIPLIERS][96];
   char custom_mult_list[256];
   char mult3_type[32];
   char mult3_field[32];
@@ -105,6 +169,10 @@ void contest_definition_init_defaults(ContestDefinition *out);
  */
 int contest_definition_load(const char *path, ContestDefinition *out,
                            char *error_text, size_t error_size);
+
+int contest_definition_score_qso(const ContestDefinition *definition,
+                                 const ContestScoreContext *context,
+                                 int *out_points);
 
 /*
  * Parse a textual operating technique (SO1R, SO2V, SO2R).

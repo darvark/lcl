@@ -18,7 +18,6 @@
 #include "qtc.h"
 #include "suggestion.h"
 #include "stats.h"
-#include "wag_rules.h"
 
 #include <errno.h>
 #include <math.h>
@@ -598,7 +597,7 @@ static void test_controller_incremental_exchange_generation(const char *tmp_dir)
       "CABRILLO_NAME=WAG\n"
       "MODE=CW\n"
       "CATEGORY_POWER=HIGH\n"
-      "EXCHANGE_SENT=#\n"
+      "EXCHANGE_SENT=WAG_EXCHANGE\n"
       "FIELD=EXCHANGE,Rcv Exch,required\n";
   expect_int_eq(write_text_file(contest_path, contest_text), 0,
                 "write incremental exchange contest definition");
@@ -617,12 +616,6 @@ static void test_controller_incremental_exchange_generation(const char *tmp_dir)
   expect_int_eq(chdir(case_dir), 0,
                 "chdir to incremental exchange test directory");
 
-  struct tm wag_start_tm = {0};
-  wag_start_tm.tm_year = 2026 - 1900;
-  wag_start_tm.tm_mon = 9;
-  wag_start_tm.tm_mday = 17;
-  wag_start_tm.tm_hour = 16;
-  wag_rules_set_test_time(timegm(&wag_start_tm));
   app_controller_init();
   app_controller_set_active_frequency_khz(14050);
   app_controller_handle_key(APP_KEY_F2);
@@ -631,6 +624,7 @@ static void test_controller_incremental_exchange_generation(const char *tmp_dir)
   char expected_sent[16];
   char expected_next_sent[16];
   char expected_third_sent[16];
+  char expected_fourth_sent[16];
   app_controller_get_render_state(&state);
 
   expect_true(state.contest_entry_mode,
@@ -652,18 +646,20 @@ static void test_controller_incremental_exchange_generation(const char *tmp_dir)
            base_qso_count + 2);
   snprintf(expected_third_sent, sizeof(expected_third_sent), "%d",
            base_qso_count + 3);
+  snprintf(expected_fourth_sent, sizeof(expected_fourth_sent), "%d",
+           base_qso_count + 4);
 
   send_controller_chars("SP9SER");
   app_controller_handle_key(APP_KEY_SPACE);
-  send_controller_chars("DOK12");
+  send_controller_chars("B12");
   app_controller_handle_key(APP_KEY_ENTER);
 
   expect_int_eq(qso_count, base_qso_count + 1,
-                "WAG QSO with an alphanumeric received exchange should save");
+                "WAG QSO with a DOK exchange should save");
   expect_str_eq(logbook[base_qso_count].exchange_sent, expected_sent,
                 "WAG should send the next serial number");
-  expect_str_eq(logbook[base_qso_count].exchange_recv, "DOK12",
-                "WAG should save the received DOK exchange");
+  expect_str_eq(logbook[base_qso_count].exchange_recv, "B12",
+                "WAG should save a received B12 exchange");
 
   app_controller_get_render_state(&state);
   expect_true(state.contest_exchange_sent != NULL,
@@ -674,15 +670,15 @@ static void test_controller_incremental_exchange_generation(const char *tmp_dir)
 
   send_controller_chars("SP9SEQ");
   app_controller_handle_key(APP_KEY_SPACE);
-  send_controller_chars("102");
+  send_controller_chars("NM");
   app_controller_handle_key(APP_KEY_ENTER);
 
   expect_int_eq(qso_count, base_qso_count + 2,
-                "second QSO should be saved in incremental exchange test");
+                "WAG QSO with an NM exchange should save");
   expect_str_eq(logbook[base_qso_count + 1].exchange_sent, expected_next_sent,
                 "second incremental TX exchange should be serial 2");
-  expect_str_eq(logbook[base_qso_count + 1].exchange_recv, "102",
-                "second incremental RX exchange should be saved");
+  expect_str_eq(logbook[base_qso_count + 1].exchange_recv, "NM",
+                "WAG should save a received NM exchange");
 
   app_controller_get_render_state(&state);
   expect_true(state.contest_exchange_sent != NULL,
@@ -691,8 +687,26 @@ static void test_controller_incremental_exchange_generation(const char *tmp_dir)
     expect_str_eq(state.contest_exchange_sent, expected_third_sent,
                   "next incremental TX exchange should advance to serial 3");
 
+  send_controller_chars("SP9NUM");
+  app_controller_handle_key(APP_KEY_SPACE);
+  send_controller_chars("102");
+  app_controller_handle_key(APP_KEY_ENTER);
+
+  expect_int_eq(qso_count, base_qso_count + 3,
+                "WAG QSO with a numeric serial exchange should save");
+  expect_str_eq(logbook[base_qso_count + 2].exchange_sent, expected_third_sent,
+                "third WAG TX exchange should be serial 3");
+  expect_str_eq(logbook[base_qso_count + 2].exchange_recv, "102",
+                "WAG should save a received numeric serial exchange");
+
+  app_controller_get_render_state(&state);
+  expect_true(state.contest_exchange_sent != NULL,
+              "WAG TX exchange should remain present after three QSO");
+  if (state.contest_exchange_sent)
+    expect_str_eq(state.contest_exchange_sent, expected_fourth_sent,
+                  "next WAG TX exchange should advance to serial 4");
+
   app_controller_shutdown();
-  wag_rules_set_test_time((time_t)-1);
   expect_int_eq(chdir(old_cwd), 0,
                 "restore cwd after incremental exchange test");
 }
@@ -731,12 +745,6 @@ static void test_controller_wag_station_exchange(const char *tmp_dir) {
   expect_int_eq(chdir(case_dir), 0,
                 "chdir to WAG station exchange test directory");
 
-  struct tm wag_start_tm = {0};
-  wag_start_tm.tm_year = 2026 - 1900;
-  wag_start_tm.tm_mon = 9;
-  wag_start_tm.tm_mday = 17;
-  wag_start_tm.tm_hour = 16;
-  wag_rules_set_test_time(timegm(&wag_start_tm));
   app_controller_init();
   app_controller_set_active_frequency_khz(14050);
   const int base_qso_count = qso_count;
@@ -767,7 +775,6 @@ static void test_controller_wag_station_exchange(const char *tmp_dir) {
   }
 
   app_controller_shutdown();
-  wag_rules_set_test_time((time_t)-1);
   expect_int_eq(chdir(old_cwd), 0,
                 "restore cwd after WAG station exchange test");
 }
@@ -4781,6 +4788,11 @@ static void test_contest_definition_and_cabrillo(const char *tmp_dir) {
       "POINTS_NEW_BAND_DXCC=6\n"
       "POINTS_SAME_BAND_DXCC=2\n"
       "EXCHANGE_SENT=#\n"
+      "EXCHANGE_RECEIVED_TYPE=SERIAL\n"
+      "SERIAL_WIDTH=3\n"
+      "SCORING_RULE=7;SAME_COUNTRY=1\n"
+      "SCORING_RULE=2\n"
+      "MULTIPLIER=DXCC_PER_BAND,ZONE_PER_BAND\n"
       "FIELD=SERIAL,Serial Number,required\n";
 
   expect_int_eq(write_text_file(contest_path, contest_text), 0,
@@ -4800,6 +4812,51 @@ static void test_contest_definition_and_cabrillo(const char *tmp_dir) {
                 "POINTS_NEW_BAND_DXCC parsed");
   expect_int_eq(def.points_same_band_dxcc, 2,
                 "POINTS_SAME_BAND_DXCC parsed");
+    expect_str_eq(def.exchange_received_type, "SERIAL",
+          "exchange validation type parsed");
+    expect_int_eq(def.serial_width, 3, "serial width parsed");
+    expect_int_eq(def.score_rule_count, 2, "ordered scoring rules parsed");
+    expect_int_eq(def.multiplier_count, 2, "multiple multiplier families parsed");
+
+    ContestScoreContext score_context = {
+      .source_country = "Poland",
+      .destination_country = "Poland",
+      .source_continent = "EU",
+      .destination_continent = "EU"};
+    int calculated_points = 0;
+    expect_true(contest_definition_score_qso(&def, &score_context,
+                         &calculated_points),
+          "declarative scoring should match a QSO context");
+    expect_int_eq(calculated_points, 7,
+          "first matching scoring rule should determine points");
+
+    struct tm window_start_tm = {0};
+    window_start_tm.tm_year = 2026 - 1900;
+    window_start_tm.tm_mon = 0;
+    window_start_tm.tm_mday = 1;
+    const time_t window_start = timegm(&window_start_tm);
+    char timed_path[512];
+    snprintf(timed_path, sizeof(timed_path), "%s/timed_contest.conf", tmp_dir);
+    expect_int_eq(write_text_file(timed_path,
+        "NAME=UNRELATED-NAME\n"
+        "START_UTC=2026-01-01T00:00:00Z\n"
+        "END_UTC=2026-01-01T01:00:00Z\n"
+        "ENFORCE_TIME_WINDOW=1\n"),
+        0, "write UTC window definition");
+    ContestDefinition timed_definition;
+    expect_int_eq(contest_definition_load(timed_path, &timed_definition, err,
+                                          sizeof(err)),
+                  0, "load UTC window definition");
+    expect_true(timed_definition.enforce_time_window,
+                "UTC time-window enforcement parsed");
+    expect_true(contest_rules_validate_target_qso(
+                    &timed_definition, "unrelated-name", window_start, 14020, "CW", 75,
+            err, sizeof(err)),
+          "configured contest accepts the exact UTC window start");
+    expect_true(!contest_rules_validate_target_qso(
+                    &timed_definition, "unrelated-name", window_start - 1, 14020, "CW", 75,
+            err, sizeof(err)),
+          "configured contest rejects QSO before the UTC window");
 
   expect_int_eq((int)contest_multiplier_from_text("DXCC"),
                 (int)CONTEST_MULT_DXCC,
@@ -4967,8 +5024,10 @@ static void test_dxlog_definition_compatibility(const char *tmp_dir) {
   expect_str_eq(def.exchange_sent_template, "CQZONE",
                 "DXLog CQWW should map TX exchange to CQZONE");
   expect_int_eq((int)def.multiplier_type,
-                (int)CONTEST_MULT_DXCC_PLUS_ZONE_PER_BAND,
-                "DXLog CQWW should map to combined DXCC+ZONE per band multiplier");
+                (int)CONTEST_MULT_DXCC_PER_BAND,
+                "DXLog CQWW should retain its first explicit multiplier family");
+  expect_int_eq(def.multiplier_count, 2,
+                "DXLog CQWW should preserve both DXCC and zone families");
 
   expect_int_eq(write_text_file(path_spdx,
       "CONTESTNAME=SP DX Contest\n"
@@ -4997,8 +5056,8 @@ static void test_dxlog_definition_compatibility(const char *tmp_dir) {
                 "DXLog QSO_NUMBER_CATEGORY should enable serial TX exchange");
   expect_str_eq(def.fields[0].name, "ITUZONE",
                 "DXLog ITUZONE should map to ITUZONE exchange field");
-  expect_true(def.points_configured,
-              "DXLog POINTS_TYPE should mark explicit points configuration");
+  expect_int_eq(def.points_configured, 0,
+                "DXLog POINTS_TYPE alone should not override point rules");
 
   expect_int_eq(write_text_file(path_iaru_vhf,
       "CONTESTNAME=IARU VHF\n"
@@ -5090,8 +5149,9 @@ static void test_dxlog_importer_generates_local_conf(const char *tmp_dir) {
   if (imported) {
     expect_true(strstr(imported, "NAME=CQ World Wide") != NULL,
                 "imported config should keep contest name");
-    expect_true(strstr(imported, "MULTIPLIER=DXCC_PLUS_ZONE_PER_BAND") != NULL,
-                "imported config should normalize combined CQWW multipliers");
+    expect_true(strstr(imported,
+               "MULTIPLIER=DXCC_PER_BAND,ZONE_PER_BAND") != NULL,
+          "imported config should preserve independent CQWW multipliers");
     expect_true(strstr(imported, "POINTS_PER_QSO=") == NULL,
           "imported config should not override contest-specific points without parsed point rules");
     expect_true(strstr(imported, "FIELD=CQZONE,CQ Zone,required") != NULL,
@@ -5141,6 +5201,7 @@ static void test_controller_vhf_locator_exchange_and_distance_points(const char 
       "NAME=VHF-LOCATOR\n"
       "CABRILLO_NAME=VHF-LOCATOR\n"
       "MODE=MIXED\n"
+      "DISTANCE_SCORING=1\n"
       "EXCHANGE_SENT=LOCATOR\n"
       "FIELD=GRID,Grid,required\n";
   expect_int_eq(write_text_file(contest_path, contest_text), 0,
@@ -5925,8 +5986,14 @@ static void send_controller_chars(const char *text) {
       "CABRILLO_NAME=CQ-WW-CW\n"
       "MODE=CW\n"
       "EXCHANGE_SENT=CQZONE\n"
+      "EXCHANGE_RECEIVED_TYPE=CQ_ZONE\n"
       "MULTIPLIER=CQWW\n"
-      "FIELD=ZONE,CQ Zone,required\n";
+      "FIELD=ZONE,CQ Zone,required\n"
+      "SCORING_RULE=0;CALL_SUFFIX=/MM,/AM\n"
+      "SCORING_RULE=0;SAME_COUNTRY=1;CALL_PREFIX=!IG9,!IH9\n"
+      "SCORING_RULE=2;SOURCE_CONTINENT=NA;DESTINATION_CONTINENT=NA\n"
+      "SCORING_RULE=1;SAME_CONTINENT=1\n"
+      "SCORING_RULE=3\n";
     run_target_contest_entry_case(tmp_dir, "cqww_dx_points_case", cqww,
                                   "SP9HOME", "", "K1AAA", "5", "15", 14020, 3, -1);
     run_target_contest_entry_case(tmp_dir, "cqww_same_country_case", cqww,
@@ -5937,8 +6004,16 @@ static void send_controller_chars(const char *text) {
       "CABRILLO_NAME=CQ-WPX-CW\n"
       "MODE=CW\n"
       "EXCHANGE_SENT=#\n"
+      "SERIAL_WIDTH=3\n"
       "MULTIPLIER=PREFIX\n"
-      "FIELD=SERIAL,Serial Number,required\n";
+      "FIELD=SERIAL,Serial Number,required\n"
+      "SCORING_RULE=1;SAME_COUNTRY=1\n"
+      "SCORING_RULE=4;SOURCE_CONTINENT=NA;DESTINATION_CONTINENT=NA;BAND_CLASS=LOW\n"
+      "SCORING_RULE=2;SOURCE_CONTINENT=NA;DESTINATION_CONTINENT=NA\n"
+      "SCORING_RULE=2;SAME_CONTINENT=1;BAND_CLASS=LOW\n"
+      "SCORING_RULE=1;SAME_CONTINENT=1\n"
+      "SCORING_RULE=6;BAND_CLASS=LOW\n"
+      "SCORING_RULE=3\n";
     run_target_contest_entry_case(tmp_dir, "wpx_points_case", wpx,
                                   "SP9HOME", "", "G3ABC", "001", "001", 14020, 1, -1);
     run_target_contest_entry_case(tmp_dir, "wpx_low_band_points_case", wpx,
@@ -5949,8 +6024,16 @@ static void send_controller_chars(const char *text) {
       "CABRILLO_NAME=SP-DX\n"
       "MODE=MIXED\n"
       "EXCHANGE_SENT=SPDX_EXCHANGE\n"
+      "EXCHANGE_RECEIVED_TYPE=SP_PROVINCE_OR_SERIAL\n"
+      "SERIAL_WIDTH=3\n"
       "MULTIPLIER=SPDX\n"
-      "FIELD=EXCHANGE,Province or Serial,required\n";
+      "FIELD=EXCHANGE,Province or Serial,required\n"
+      "REGION=SP;COUNTRIES=Poland;EXCHANGES=B,C,D,F,G,J,K,L,M,O,P,R,S,U,W,Z\n"
+      "SCORING_RULE=0;SOURCE_REGION=SP;DESTINATION_REGION=SP\n"
+      "SCORING_RULE=3;SOURCE_REGION=!SP;DESTINATION_REGION=SP\n"
+      "SCORING_RULE=1;SOURCE_REGION=SP;DESTINATION_REGION=!SP;DESTINATION_CONTINENT=EU\n"
+      "SCORING_RULE=3;SOURCE_REGION=SP;DESTINATION_REGION=!SP\n"
+      "SCORING_RULE=0\n";
     run_target_contest_entry_case(tmp_dir, "spdx_sp_points_case", spdx,
                                   "SP9HOME", "B", "K1AAA", "001", "B", 14020, 3, -1);
     run_target_contest_entry_case(tmp_dir, "spdx_dx_points_case", spdx,
@@ -5964,8 +6047,16 @@ static void send_controller_chars(const char *text) {
       "CABRILLO_NAME=IARU-HF\n"
       "MODE=MIXED\n"
       "EXCHANGE_SENT=IARU_EXCHANGE\n"
+      "EXCHANGE_RECEIVED_TYPE=ITU_ZONE_OR_HQ\n"
+      "DUPLICATE_MODE_SENSITIVE=0\n"
       "MULTIPLIER=IARU\n"
-      "FIELD=EXCHANGE,ITU Zone, HQ Society or Official,required\n";
+      "FIELD=EXCHANGE,ITU Zone, HQ Society or Official,required\n"
+      "SCORING_RULE=1;EXCHANGE_CLASS=ALPHA\n"
+      "SCORING_RULE=1;EXCHANGE_VALUE=AC,R1,R2,R3\n"
+      "SCORING_RULE=1;STATION_EXCHANGE_CLASS=ALPHA\n"
+      "SCORING_RULE=1;SAME_ITU_ZONE=1\n"
+      "SCORING_RULE=3;SAME_CONTINENT=1\n"
+      "SCORING_RULE=5\n";
     run_target_contest_entry_case(tmp_dir, "iaru_zone_points_case", iaru,
                                   "SP9HOME", "", "K1AAA", "8", "28", 14020, 5, -1);
     run_target_contest_entry_case(tmp_dir, "iaru_same_zone_other_continent_case",
@@ -6152,13 +6243,14 @@ static void test_target_contest_presets(const char *tmp_dir) {
   const struct {
     const char *path;
     ContestMultiplierType multiplier;
+      int multiplier_count;
   } cases[] = {
-      {"contest_defs/sp_dx.conf", CONTEST_MULT_SPDX},
-      {"contest_defs/cq_wpx_cw.conf", CONTEST_MULT_PREFIX},
-      {"contest_defs/cq_wpx_ssb.conf", CONTEST_MULT_PREFIX},
-      {"contest_defs/cq_ww_cw.conf", CONTEST_MULT_CQWW},
-      {"contest_defs/cq_ww_ssb.conf", CONTEST_MULT_CQWW},
-      {"contest_defs/iaru_hf_championship.conf", CONTEST_MULT_IARU},
+      {"contest_defs/sp_dx.conf", CONTEST_MULT_SPDX, 1},
+      {"contest_defs/cq_wpx_cw.conf", CONTEST_MULT_PREFIX, 1},
+      {"contest_defs/cq_wpx_ssb.conf", CONTEST_MULT_PREFIX, 1},
+      {"contest_defs/cq_ww_cw.conf", CONTEST_MULT_DXCC_PER_BAND, 2},
+      {"contest_defs/cq_ww_ssb.conf", CONTEST_MULT_DXCC_PER_BAND, 2},
+      {"contest_defs/iaru_hf_championship.conf", CONTEST_MULT_IARU, 1},
   };
   for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
     ContestDefinition definition;
@@ -6171,8 +6263,10 @@ static void test_target_contest_presets(const char *tmp_dir) {
                   0, "target contest preset should load");
     expect_int_eq((int)definition.multiplier_type, (int)cases[i].multiplier,
                   "target contest preset should select official multiplier mode");
-    expect_int_eq(definition.points_configured, 0,
-                  "target preset should leave contest-specific scoring enabled");
+    expect_int_eq(definition.multiplier_count, cases[i].multiplier_count,
+            "target contest preset should declare all multiplier families");
+    expect_true(definition.score_rule_count > 0,
+          "target preset should declare contest-specific scoring rules");
   }
 }
 
@@ -7239,6 +7333,32 @@ static void test_stats_target_contest_multipliers(void) {
   expect_int_eq(stats.contest_mults, 6,
                 "CQWW should split IG9/IH9, count zones per band, and exclude /MM country");
 
+  def.multiplier_type = CONTEST_MULT_DXCC_PER_BAND;
+  def.multiplier_count = 2;
+  def.multipliers[0] = CONTEST_MULT_DXCC_PER_BAND;
+  def.multipliers[1] = CONTEST_MULT_ZONE_PER_BAND;
+  snprintf(def.multiplier_excluded_suffixes[0],
+           sizeof(def.multiplier_excluded_suffixes[0]), "%s", "/MM,/AM");
+  snprintf(def.multiplier_special_prefixes[0],
+           sizeof(def.multiplier_special_prefixes[0]), "%s", "IG9,IH9");
+  stats_set_contest_definition(&def);
+  stats_update();
+  expect_int_eq(stats.contest_mults, 6,
+                "configured DXCC and zone families should retain CQWW exceptions");
+  expect_int_eq(stats.contest_score, 108,
+                "configured CQWW families should multiply independently");
+
+  def.multiplier_type = CONTEST_MULT_DXCC_PER_BAND;
+  def.multiplier_count = 2;
+  def.multipliers[0] = CONTEST_MULT_DXCC_PER_BAND;
+  def.multipliers[1] = CONTEST_MULT_ZONE_PER_BAND;
+  stats_set_contest_definition(&def);
+  stats_update();
+  expect_int_eq(stats.contest_mults, 6,
+                "independent DXCC and zone families should be counted separately");
+  expect_int_eq(stats.contest_score, 108,
+                "contest score should multiply family counts, not add them");
+
   def.multiplier_type = CONTEST_MULT_IARU;
   stats_set_contest_definition(&def);
   qso_count = 4;
@@ -7320,24 +7440,49 @@ static time_t wag_test_utc(int year, int month, int day, int hour, int minute,
 static void expect_wag_rules(int expected, time_t when, int freq_khz,
                              const char *mode, int power_watts,
                              const char *category, const char *message) {
+  (void)when;
+  ContestDefinition definition;
+  contest_definition_init_defaults(&definition);
+  definition.validate_operating_rules = 1;
+  snprintf(definition.allowed_modes, sizeof(definition.allowed_modes),
+           "%s", "CW,SSB");
+  snprintf(definition.allowed_bands, sizeof(definition.allowed_bands),
+           "%s", "80M,40M,20M,15M,10M");
+  snprintf(definition.category_power, sizeof(definition.category_power),
+           "%s", category);
+  definition.max_power_watts = 1500;
+  const struct {
+    const char *mode;
+    int low;
+    int high;
+  } excluded[] = {
+      {"CW", 3560, 3800}, {"CW", 7040, 7200}, {"CW", 14060, 14350},
+      {"SSB", 3650, 3700}, {"SSB", 7080, 7130}, {"SSB", 14100, 14125},
+      {"SSB", 14280, 14350}, {"SSB", 21350, 21450}, {"SSB", 28225, 28400}};
+  for (size_t i = 0; i < sizeof(excluded) / sizeof(excluded[0]); i++) {
+    ContestExcludedSegment *segment =
+        &definition.excluded_segments[definition.excluded_segment_count++];
+    snprintf(segment->mode, sizeof(segment->mode), "%s", excluded[i].mode);
+    segment->low_khz = excluded[i].low;
+    segment->high_khz = excluded[i].high;
+  }
   char error[128] = {0};
-  const int actual = wag_rules_validate_qso(when, freq_khz, mode, power_watts,
-                                           category, error, sizeof(error));
+  const int actual = contest_rules_validate_target_qso(
+      &definition, "not-a-contest-name", when, freq_khz, mode, power_watts,
+      error, sizeof(error));
   expect_int_eq(actual, expected, message);
 }
 
 static void test_wag_operating_rules(void) {
   const time_t start = wag_test_utc(2026, 10, 17, 15, 0, 0);
-  expect_wag_rules(0, wag_test_utc(2026, 10, 17, 14, 59, 59), 7020, "CW",
-                   150, "HIGH", "WAG rejects before Saturday start");
+  expect_wag_rules(1, wag_test_utc(2026, 10, 9, 14, 59, 59), 7020, "CW",
+                   150, "HIGH", "WAG accepts QSO before contest weekend");
   expect_wag_rules(1, start, 7020, "CW", 150, "HIGH",
-                   "WAG accepts exact Saturday start");
+                   "WAG accepts QSO at scheduled start");
   expect_wag_rules(1, wag_test_utc(2026, 10, 18, 14, 59, 59), 7020, "CW",
-                   150, "HIGH", "WAG accepts through Sunday 14:59 UTC");
-  expect_wag_rules(0, wag_test_utc(2026, 10, 18, 15, 0, 0), 7020, "CW",
-                   150, "HIGH", "WAG rejects at Sunday 15:00 UTC");
-  expect_wag_rules(0, wag_test_utc(2026, 10, 24, 16, 0, 0), 7020, "CW",
-                   150, "HIGH", "WAG rejects the following weekend");
+                   150, "HIGH", "WAG accepts QSO through scheduled end");
+  expect_wag_rules(1, wag_test_utc(2026, 10, 24, 16, 0, 0), 7020, "CW",
+                   150, "HIGH", "WAG accepts QSO after contest weekend");
 
   expect_wag_rules(1, start, 3559, "CW", 150, "HIGH",
                    "WAG accepts frequency before 80m excluded segment");
@@ -7394,6 +7539,13 @@ static void expect_target_contest_rule(int expected, const char *contest_name,
            "ALL");
   snprintf(definition.category_power, sizeof(definition.category_power), "%s",
            category_power);
+  if (strstr(contest_name, "IARU-VHF") == NULL) {
+    definition.validate_operating_rules = 1;
+    snprintf(definition.allowed_modes, sizeof(definition.allowed_modes),
+             "%s", "CW,SSB");
+    snprintf(definition.allowed_bands, sizeof(definition.allowed_bands),
+             "%s", "160M,80M,40M,20M,15M,10M");
+  }
   char error[128] = {0};
   const int actual = contest_rules_validate_target_qso(
       &definition, contest_name, when, frequency_khz, mode, power_watts,
@@ -7405,35 +7557,35 @@ static void test_target_contest_schedule_band_mode_and_power(void) {
   const time_t spdx_start = wag_test_utc(2026, 4, 4, 15, 0, 0);
   expect_target_contest_rule(1, "SP-DX", "MIXED", spdx_start, 7020, "CW",
                              75, "LOW", "SP DX accepts official start");
-  expect_target_contest_rule(0, "SP-DX", "MIXED",
+  expect_target_contest_rule(1, "SP-DX", "MIXED",
                              wag_test_utc(2026, 4, 4, 14, 59, 59), 7020,
-                             "CW", 75, "LOW", "SP DX rejects before start");
+                             "CW", 75, "LOW", "SP DX accepts outside contest period");
   expect_target_contest_rule(0, "SP-DX", "MIXED", spdx_start, 10120, "CW",
                              75, "LOW", "SP DX rejects 30 m");
 
   expect_target_contest_rule(1, "CQ-WPX-CW", "CW",
-                             wag_test_utc(2026, 5, 30, 0, 0, 0), 7020, "CW",
-                             5, "QRP", "WPX accepts QRP at contest start");
+                             wag_test_utc(2026, 10, 9, 0, 0, 0), 7020, "CW",
+                             5, "QRP", "WPX accepts QSO outside contest period");
   expect_target_contest_rule(0, "CQ-WPX-CW", "CW",
-                             wag_test_utc(2026, 5, 30, 0, 0, 0), 7020, "CW",
+                             wag_test_utc(2026, 10, 9, 0, 0, 0), 7020, "CW",
                              6, "QRP", "WPX enforces the QRP power limit");
   expect_target_contest_rule(0, "CQ-WPX-CW", "CW",
-                             wag_test_utc(2026, 5, 30, 0, 0, 0), 7020, "CW",
+                             wag_test_utc(2026, 10, 9, 0, 0, 0), 7020, "CW",
                              75, "UNKNOWN", "Contest gate rejects unknown power category");
   expect_target_contest_rule(0, "CQ-WPX-CW", "CW",
-                             wag_test_utc(2026, 5, 30, 0, 0, 0), 10120, "CW",
+                             wag_test_utc(2026, 10, 9, 0, 0, 0), 10120, "CW",
                              75, "LOW", "WPX rejects 30 m");
 
   expect_target_contest_rule(1, "CQ-WW-SSB", "SSB",
-                             wag_test_utc(2026, 10, 24, 0, 0, 0), 14150, "SSB",
-                             75, "LOW", "CQ WW accepts the 2026 SSB start");
+                             wag_test_utc(2026, 10, 9, 0, 0, 0), 14150, "SSB",
+                             75, "LOW", "CQ WW accepts QSO outside contest period");
   expect_target_contest_rule(0, "CQ-WW-SSB", "SSB",
-                             wag_test_utc(2026, 10, 24, 0, 0, 0), 14150, "CW",
-                             75, "LOW", "CQ WW SSB category rejects CW");
+                             wag_test_utc(2026, 10, 9, 0, 0, 0), 14150, "RTTY",
+                             75, "LOW", "CQ WW rejects non-CW/SSB modes");
 
   expect_target_contest_rule(1, "IARU-HF-CHAMPIONSHIP", "MIXED",
-                             wag_test_utc(2026, 7, 11, 12, 0, 0), 14020, "CW",
-                             75, "LOW", "IARU accepts the official start");
+                             wag_test_utc(2026, 10, 9, 0, 0, 0), 14020, "CW",
+                             75, "LOW", "IARU accepts QSO outside contest period");
   expect_target_contest_rule(1, "IARU-VHF", "MIXED",
                              wag_test_utc(2026, 7, 11, 12, 0, 0), 144300, "SSB",
                              75, "LOW", "IARU HF gate leaves VHF contests alone");

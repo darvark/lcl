@@ -45,6 +45,131 @@ static int parse_truthy_flag(const char *value) {
          strcmp(upper, "ENABLED") == 0;
 }
 
+static void parse_score_rule(const char *value, ContestDefinition *out) {
+  if (!value || !out || out->score_rule_count >= CONTEST_DEF_MAX_SCORE_RULES)
+    return;
+
+  char buffer[256];
+  snprintf(buffer, sizeof(buffer), "%s", value);
+  char *points_text = strtok(buffer, ";");
+  if (!points_text)
+    return;
+
+  trim_in_place(points_text);
+  char *end = NULL;
+  const long points = strtol(points_text, &end, 10);
+  if (end == points_text || *end != 0 || points < 0 || points > 1000000)
+    return;
+
+  ContestScoreRule *rule = &out->score_rules[out->score_rule_count++];
+  rule->points = (int)points;
+  size_t used = 0;
+  for (char *condition = strtok(NULL, ";"); condition;
+       condition = strtok(NULL, ";")) {
+    trim_in_place(condition);
+    if (!condition[0] || !strchr(condition, '='))
+      continue;
+    const int written = snprintf(rule->conditions + used,
+                                 sizeof(rule->conditions) - used,
+                                 "%s%s", used ? ";" : "", condition);
+    if (written < 0 || (size_t)written >= sizeof(rule->conditions) - used)
+      break;
+    used += (size_t)written;
+  }
+  out->points_configured = 1;
+}
+
+static void parse_region(const char *value, ContestDefinition *out) {
+  if (!value || !out || out->region_count >= CONTEST_DEF_MAX_REGIONS)
+    return;
+
+  char buffer[384];
+  snprintf(buffer, sizeof(buffer), "%s", value);
+  char *save = NULL;
+  char *name = strtok_r(buffer, ";", &save);
+  if (!name)
+    return;
+  trim_in_place(name);
+  if (!name[0])
+    return;
+
+  ContestRegionDef *region = &out->regions[out->region_count];
+  memset(region, 0, sizeof(*region));
+  snprintf(region->name, sizeof(region->name), "%s", name);
+  uppercase_in_place(region->name);
+
+  for (char *attribute = strtok_r(NULL, ";", &save); attribute;
+       attribute = strtok_r(NULL, ";", &save)) {
+    trim_in_place(attribute);
+    char *separator = strchr(attribute, '=');
+    if (!separator)
+      continue;
+    *separator++ = 0;
+    trim_in_place(attribute);
+    trim_in_place(separator);
+    uppercase_in_place(attribute);
+    if (strcmp(attribute, "CONTINENT") == 0) {
+      snprintf(region->continent, sizeof(region->continent), "%s", separator);
+      uppercase_in_place(region->continent);
+    } else if (strcmp(attribute, "COUNTRIES") == 0) {
+      snprintf(region->countries, sizeof(region->countries), "%s", separator);
+      uppercase_in_place(region->countries);
+    } else if (strcmp(attribute, "PREFIXES") == 0) {
+      snprintf(region->prefixes, sizeof(region->prefixes), "%s", separator);
+      uppercase_in_place(region->prefixes);
+    } else if (strcmp(attribute, "EXCHANGES") == 0) {
+      snprintf(region->exchanges, sizeof(region->exchanges), "%s", separator);
+      uppercase_in_place(region->exchanges);
+    }
+  }
+  out->region_count++;
+}
+
+static void parse_excluded_segment(const char *value, ContestDefinition *out) {
+  if (!value || !out ||
+      out->excluded_segment_count >= CONTEST_DEF_MAX_EXCLUDED_SEGMENTS)
+    return;
+  char buffer[96];
+  snprintf(buffer, sizeof(buffer), "%s", value);
+  char *save = NULL;
+  char *mode = strtok_r(buffer, ",", &save);
+  char *low = strtok_r(NULL, ",", &save);
+  char *high = strtok_r(NULL, ",", &save);
+  if (!mode || !low || !high)
+    return;
+  const int low_khz = atoi(low);
+  const int high_khz = atoi(high);
+  if (low_khz <= 0 || high_khz < low_khz)
+    return;
+  ContestExcludedSegment *segment =
+      &out->excluded_segments[out->excluded_segment_count++];
+  snprintf(segment->mode, sizeof(segment->mode), "%s", mode);
+  uppercase_in_place(segment->mode);
+  segment->low_khz = low_khz;
+  segment->high_khz = high_khz;
+}
+
+static void set_multiplier_list(ContestDefinition *out, const char *value) {
+  if (!out || !value)
+    return;
+  out->multiplier_count = 0;
+  char copy[128];
+  snprintf(copy, sizeof(copy), "%s", value);
+  char *save = NULL;
+  for (char *item = strtok_r(copy, ",", &save); item;
+       item = strtok_r(NULL, ",", &save)) {
+    trim_in_place(item);
+    if (!item[0] || out->multiplier_count >= CONTEST_DEF_MAX_MULTIPLIERS)
+      continue;
+    out->multipliers[out->multiplier_count++] = contest_multiplier_from_text(item);
+  }
+  if (out->multiplier_count == 0) {
+    out->multipliers[0] = contest_multiplier_from_text(value);
+    out->multiplier_count = 1;
+  }
+  out->multiplier_type = out->multipliers[0];
+}
+
 static void set_error(char *error_text, size_t error_size, const char *text) {
   if (!error_text || error_size < 2)
     return;
@@ -147,6 +272,8 @@ static void apply_dxlog_received_field_type(const char *value,
              "Serial + Grid");
     out->fields[0].required = 1;
     out->field_count = 1;
+    snprintf(out->exchange_received_type,
+         sizeof(out->exchange_received_type), "%s", "SERIAL_LOCATOR");
     return;
   }
 
@@ -159,6 +286,8 @@ static void apply_dxlog_received_field_type(const char *value,
              "Serial");
     out->fields[0].required = 1;
     out->field_count = 1;
+    snprintf(out->exchange_received_type,
+         sizeof(out->exchange_received_type), "%s", "SERIAL");
     return;
   }
 
@@ -169,6 +298,8 @@ static void apply_dxlog_received_field_type(const char *value,
              "CQ Zone");
     out->fields[0].required = 1;
     out->field_count = 1;
+    snprintf(out->exchange_received_type,
+         sizeof(out->exchange_received_type), "%s", "CQ_ZONE");
     return;
   }
 
@@ -180,6 +311,8 @@ static void apply_dxlog_received_field_type(const char *value,
              "ITU Zone");
     out->fields[0].required = 1;
     out->field_count = 1;
+    snprintf(out->exchange_received_type,
+         sizeof(out->exchange_received_type), "%s", "ITU_ZONE_OR_HQ");
     return;
   }
 
@@ -190,6 +323,8 @@ static void apply_dxlog_received_field_type(const char *value,
              "Grid");
     out->fields[0].required = 1;
     out->field_count = 1;
+    snprintf(out->exchange_received_type,
+             sizeof(out->exchange_received_type), "%s", "LOCATOR");
   }
 }
 
@@ -361,6 +496,15 @@ void contest_definition_init_defaults(ContestDefinition *out) {
   snprintf(out->operators, sizeof(out->operators), "%s", "");
   snprintf(out->exchange_sent_template, sizeof(out->exchange_sent_template),
            "%s", "#");
+  out->exchange_received_type[0] = 0;
+  out->station_exchange_region[0] = 0;
+  out->serial_locator_separator[0] = 0;
+  out->start_utc[0] = 0;
+  out->end_utc[0] = 0;
+  out->enforce_time_window = 0;
+  out->distance_scoring = 0;
+  out->serial_width = 0;
+  out->duplicate_mode_sensitive = 1;
   out->points_per_qso = 1;
   out->points_cw = 0;
   out->points_phone = 0;
@@ -371,6 +515,8 @@ void contest_definition_init_defaults(ContestDefinition *out) {
   out->points_same_band_dxcc = 0;
   out->points_configured = 0;
   out->multiplier_type = CONTEST_MULT_DXCC;
+  out->multipliers[0] = CONTEST_MULT_DXCC;
+  out->multiplier_count = 1;
   out->custom_mult_list[0] = 0;
   out->mult3_type[0] = 0;
   out->mult3_field[0] = 0;
@@ -543,6 +689,36 @@ int contest_definition_import_dxlog(const char *source_path,
   fprintf(f, "CATEGORY_BAND=%s\n", def.category_band[0] ? def.category_band : "ALL");
   fprintf(f, "CATEGORY_POWER=%s\n", def.category_power[0] ? def.category_power : "LOW");
   fprintf(f, "EXCHANGE_SENT=%s\n", def.exchange_sent_template[0] ? def.exchange_sent_template : "#");
+  if (def.exchange_received_type[0])
+    fprintf(f, "EXCHANGE_RECEIVED_TYPE=%s\n", def.exchange_received_type);
+  if (def.station_exchange_region[0])
+    fprintf(f, "STATION_EXCHANGE_REGION=%s\n", def.station_exchange_region);
+  if (def.serial_width > 0)
+    fprintf(f, "SERIAL_WIDTH=%d\n", def.serial_width);
+  if (def.serial_locator_separator[0])
+    fprintf(f, "SERIAL_LOCATOR_SEPARATOR=%s\n", def.serial_locator_separator);
+  if (!def.duplicate_mode_sensitive)
+    fprintf(f, "DUPLICATE_MODE_SENSITIVE=0\n");
+  if (def.validate_operating_rules)
+    fprintf(f, "VALIDATE_OPERATING_RULES=1\n");
+  if (def.allowed_modes[0])
+    fprintf(f, "ALLOWED_MODES=%s\n", def.allowed_modes);
+  if (def.allowed_bands[0])
+    fprintf(f, "ALLOWED_BANDS=%s\n", def.allowed_bands);
+  if (def.max_power_watts > 0)
+    fprintf(f, "MAX_POWER_WATTS=%d\n", def.max_power_watts);
+  if (def.distance_scoring)
+    fprintf(f, "DISTANCE_SCORING=1\n");
+  for (int i = 0; i < def.excluded_segment_count; i++)
+    fprintf(f, "EXCLUDED_SEGMENT=%s,%d,%d\n",
+            def.excluded_segments[i].mode, def.excluded_segments[i].low_khz,
+            def.excluded_segments[i].high_khz);
+  if (def.start_utc[0])
+    fprintf(f, "START_UTC=%s\n", def.start_utc);
+  if (def.end_utc[0])
+    fprintf(f, "END_UTC=%s\n", def.end_utc);
+  if (def.enforce_time_window)
+    fprintf(f, "ENFORCE_TIME_WINDOW=1\n");
   if (def.points_configured) {
     fprintf(f, "POINTS_PER_QSO=%d\n", def.points_per_qso > 0 ? def.points_per_qso : 1);
     fprintf(f, "POINTS_CW=%d\n", def.points_cw);
@@ -553,7 +729,35 @@ int contest_definition_import_dxlog(const char *source_path,
     fprintf(f, "POINTS_NEW_BAND_DXCC=%d\n", def.points_new_band_dxcc);
     fprintf(f, "POINTS_SAME_BAND_DXCC=%d\n", def.points_same_band_dxcc);
   }
-  fprintf(f, "MULTIPLIER=%s\n", contest_multiplier_to_text(def.multiplier_type));
+  for (int i = 0; i < def.score_rule_count; i++)
+    fprintf(f, "SCORING_RULE=%d;%s\n", def.score_rules[i].points,
+            def.score_rules[i].conditions);
+  for (int i = 0; i < def.multiplier_count; i++) {
+    if (def.multiplier_excluded_suffixes[i][0])
+      fprintf(f, "MULTIPLIER%d_EXCLUDED_SUFFIXES=%s\n", i + 1,
+              def.multiplier_excluded_suffixes[i]);
+    if (def.multiplier_special_prefixes[i][0])
+      fprintf(f, "MULTIPLIER%d_SPECIAL_PREFIXES=%s\n", i + 1,
+              def.multiplier_special_prefixes[i]);
+  }
+  for (int i = 0; i < def.region_count; i++) {
+    const ContestRegionDef *region = &def.regions[i];
+    fprintf(f, "REGION=%s", region->name);
+    if (region->continent[0])
+      fprintf(f, ";CONTINENT=%s", region->continent);
+    if (region->countries[0])
+      fprintf(f, ";COUNTRIES=%s", region->countries);
+    if (region->prefixes[0])
+      fprintf(f, ";PREFIXES=%s", region->prefixes);
+    if (region->exchanges[0])
+      fprintf(f, ";EXCHANGES=%s", region->exchanges);
+    fputc('\n', f);
+  }
+  fprintf(f, "MULTIPLIER=");
+  for (int i = 0; i < def.multiplier_count; i++)
+    fprintf(f, "%s%s", i ? "," : "",
+            contest_multiplier_to_text(def.multipliers[i]));
+  fputc('\n', f);
   if (def.custom_mult_list[0])
     fprintf(f, "CUSTOM_MULT_LIST=%s\n", def.custom_mult_list);
   if (def.mult3_type[0])
@@ -722,6 +926,50 @@ int contest_definition_load(const char *path, ContestDefinition *out,
     } else if (strcmp(key, "EXCHANGE_SENT") == 0) {
       snprintf(out->exchange_sent_template,
                sizeof(out->exchange_sent_template), "%s", value);
+    } else if (strcmp(key, "EXCHANGE_RECEIVED_TYPE") == 0) {
+      snprintf(out->exchange_received_type,
+               sizeof(out->exchange_received_type), "%s", value);
+      uppercase_in_place(out->exchange_received_type);
+    } else if (strcmp(key, "STATION_EXCHANGE_REGION") == 0) {
+      snprintf(out->station_exchange_region,
+               sizeof(out->station_exchange_region), "%s", value);
+      uppercase_in_place(out->station_exchange_region);
+    } else if (strcmp(key, "SERIAL_WIDTH") == 0) {
+      out->serial_width = atoi(value);
+      if (out->serial_width < 0 || out->serial_width > 8)
+        out->serial_width = 0;
+    } else if (strcmp(key, "SERIAL_LOCATOR_SEPARATOR") == 0) {
+      snprintf(out->serial_locator_separator,
+               sizeof(out->serial_locator_separator), "%s", value);
+      uppercase_in_place(out->serial_locator_separator);
+    } else if (strcmp(key, "DUPLICATE_MODE_SENSITIVE") == 0) {
+      out->duplicate_mode_sensitive = parse_truthy_flag(value);
+    } else if (strcmp(key, "VALIDATE_OPERATING_RULES") == 0) {
+      out->validate_operating_rules = parse_truthy_flag(value);
+    } else if (strcmp(key, "ALLOWED_MODES") == 0) {
+      snprintf(out->allowed_modes, sizeof(out->allowed_modes), "%s", value);
+      uppercase_in_place(out->allowed_modes);
+    } else if (strcmp(key, "ALLOWED_BANDS") == 0) {
+      snprintf(out->allowed_bands, sizeof(out->allowed_bands), "%s", value);
+      uppercase_in_place(out->allowed_bands);
+    } else if (strcmp(key, "MAX_POWER_WATTS") == 0) {
+      out->max_power_watts = atoi(value);
+      if (out->max_power_watts < 0)
+        out->max_power_watts = 0;
+    } else if (strcmp(key, "EXCLUDED_SEGMENT") == 0) {
+      parse_excluded_segment(value, out);
+    } else if (strcmp(key, "START_UTC") == 0) {
+      snprintf(out->start_utc, sizeof(out->start_utc), "%s", value);
+    } else if (strcmp(key, "END_UTC") == 0) {
+      snprintf(out->end_utc, sizeof(out->end_utc), "%s", value);
+    } else if (strcmp(key, "ENFORCE_TIME_WINDOW") == 0) {
+      out->enforce_time_window = parse_truthy_flag(value);
+    } else if (strcmp(key, "DISTANCE_SCORING") == 0) {
+      out->distance_scoring = parse_truthy_flag(value);
+    } else if (strcmp(key, "SCORING_RULE") == 0) {
+      parse_score_rule(value, out);
+    } else if (strcmp(key, "REGION") == 0) {
+      parse_region(value, out);
     } else if (strcmp(key, "POINTS_PER_QSO") == 0) {
       out->points_per_qso = atoi(value);
       if (out->points_per_qso <= 0)
@@ -763,9 +1011,24 @@ int contest_definition_load(const char *path, ContestDefinition *out,
         out->points_same_band_dxcc = 0;
       out->points_configured = 1;
     } else if (strcmp(key, "POINTS_TYPE") == 0) {
-      out->points_configured = 1;
+      /* The DXLog type alone does not define point values in this logger. */
     } else if (strcmp(key, "MULTIPLIER") == 0) {
-      out->multiplier_type = contest_multiplier_from_text(value);
+      set_multiplier_list(out, value);
+    } else if (strncmp(key, "MULTIPLIER", 10) == 0 &&
+               isdigit((unsigned char)key[10])) {
+      const int family = atoi(key + 10) - 1;
+      if (family >= 0 && family < CONTEST_DEF_MAX_MULTIPLIERS) {
+        char *attribute = strchr(key + 10, '_');
+        if (attribute && strcmp(attribute, "_EXCLUDED_SUFFIXES") == 0) {
+          snprintf(out->multiplier_excluded_suffixes[family],
+                   sizeof(out->multiplier_excluded_suffixes[family]), "%s", value);
+          uppercase_in_place(out->multiplier_excluded_suffixes[family]);
+        } else if (attribute && strcmp(attribute, "_SPECIAL_PREFIXES") == 0) {
+          snprintf(out->multiplier_special_prefixes[family],
+                   sizeof(out->multiplier_special_prefixes[family]), "%s", value);
+          uppercase_in_place(out->multiplier_special_prefixes[family]);
+        }
+      }
     } else if (strcmp(key, "CUSTOM_MULT_LIST") == 0) {
       snprintf(out->custom_mult_list, sizeof(out->custom_mult_list), "%s", value);
     } else if (strcmp(key, "MULT3_TYPE") == 0) {
@@ -837,6 +1100,7 @@ int contest_definition_load(const char *path, ContestDefinition *out,
     if (str_contains_upper(out->name, "CQ WPX")) {
       snprintf(out->exchange_sent_template, sizeof(out->exchange_sent_template), "%s", "#");
       out->multiplier_type = CONTEST_MULT_PREFIX;
+      out->serial_width = 3;
       if (!dxlog_field_set) {
         out->field_count = 1;
         snprintf(out->fields[0].name, sizeof(out->fields[0].name), "%s", "SERIAL");
@@ -846,7 +1110,9 @@ int contest_definition_load(const char *path, ContestDefinition *out,
     } else if (str_contains_upper(out->name, "CQ WORLD WIDE") ||
                str_contains_upper(out->name, "CQ WW")) {
       snprintf(out->exchange_sent_template, sizeof(out->exchange_sent_template), "%s", "CQZONE");
-      out->multiplier_type = CONTEST_MULT_DXCC_PLUS_ZONE_PER_BAND;
+      out->exchange_received_type[0] = 0;
+      snprintf(out->exchange_received_type,
+           sizeof(out->exchange_received_type), "%s", "CQ_ZONE");
       if (!dxlog_field_set) {
         out->field_count = 1;
         snprintf(out->fields[0].name, sizeof(out->fields[0].name), "%s", "CQZONE");
@@ -856,6 +1122,10 @@ int contest_definition_load(const char *path, ContestDefinition *out,
     } else if (str_contains_upper(out->name, "SP DX")) {
       snprintf(out->exchange_sent_template, sizeof(out->exchange_sent_template), "%s", "#");
       out->multiplier_type = CONTEST_MULT_SPDX;
+      snprintf(out->exchange_received_type,
+           sizeof(out->exchange_received_type), "%s",
+           "SP_PROVINCE_OR_SERIAL");
+      out->serial_width = 3;
       if (!dxlog_field_set) {
         out->field_count = 1;
         snprintf(out->fields[0].name, sizeof(out->fields[0].name), "%s", "EXCHANGE");
@@ -863,12 +1133,33 @@ int contest_definition_load(const char *path, ContestDefinition *out,
         out->fields[0].required = 1;
       }
     } else if (dxlog_mult1_type[0]) {
-      out->multiplier_type = map_dxlog_multiplier(dxlog_mult1_type, dxlog_mult1_count);
+      out->multipliers[0] = map_dxlog_multiplier(dxlog_mult1_type,
+                                                 dxlog_mult1_count);
+      out->multiplier_count = 1;
       if (dxlog_mult2_type[0] &&
-          map_dxlog_multiplier(dxlog_mult1_type, dxlog_mult1_count) == CONTEST_MULT_DXCC_PER_BAND &&
-          map_dxlog_multiplier(dxlog_mult2_type, dxlog_mult2_count) == CONTEST_MULT_ZONE_PER_BAND) {
-        out->multiplier_type = CONTEST_MULT_DXCC_PLUS_ZONE_PER_BAND;
-      }
+          out->multiplier_count < CONTEST_DEF_MAX_MULTIPLIERS)
+        out->multipliers[out->multiplier_count++] =
+            map_dxlog_multiplier(dxlog_mult2_type, dxlog_mult2_count);
+      out->multiplier_type = out->multipliers[0];
+    }
+  }
+
+  if (saw_dxlog_name) {
+    if (str_contains_upper(out->name, "CQ WORLD WIDE") ||
+        str_contains_upper(out->name, "CQ WW")) {
+      out->multipliers[0] = CONTEST_MULT_DXCC_PER_BAND;
+      out->multipliers[1] = CONTEST_MULT_ZONE_PER_BAND;
+      out->multiplier_count = 2;
+      out->multiplier_type = out->multipliers[0];
+      snprintf(out->exchange_received_type,
+               sizeof(out->exchange_received_type), "%s", "CQ_ZONE");
+      snprintf(out->multiplier_excluded_suffixes[0],
+               sizeof(out->multiplier_excluded_suffixes[0]), "%s", "/MM,/AM");
+      snprintf(out->multiplier_special_prefixes[0],
+               sizeof(out->multiplier_special_prefixes[0]), "%s", "IG9,IH9");
+    } else if (out->multiplier_count <= 1) {
+      out->multipliers[0] = out->multiplier_type;
+      out->multiplier_count = 1;
     }
   }
 

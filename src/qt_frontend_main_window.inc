@@ -1839,6 +1839,7 @@ private:
                 const QByteArray pb = selected_path.toLocal8Bit();
                 if (contest_definition_load(pb.constData(), &loaded,
                                             load_err2, sizeof(load_err2)) == 0) {
+                  def = loaded;
                   name_edit->setText(QString::fromLatin1(loaded.name));
                   cabrillo_name_edit->setText(
                       QString::fromLatin1(loaded.cabrillo_name));
@@ -1888,6 +1889,13 @@ private:
           new QLineEdit(QString::fromLatin1(def.exchange_sent_template), &dialog);
       form->addRow("Wymiana nadawana (szablon):", exchange_template_edit);
 
+        auto *exchange_validator_edit = new QLineEdit(
+          QString::fromLatin1(def.exchange_received_type), &dialog);
+        form->addRow("Walidacja wymiany odebranej:", exchange_validator_edit);
+        auto *station_region_edit = new QLineEdit(
+          QString::fromLatin1(def.station_exchange_region), &dialog);
+        form->addRow("Region własnej wymiany:", station_region_edit);
+
       connect(preset_combo, QOverload<int>::of(&QComboBox::currentIndexChanged),
               &dialog, [&](int /*idx*/) {
                 const QString selected_path =
@@ -1901,6 +1909,7 @@ private:
                 const QByteArray path_bytes = selected_path.toLocal8Bit();
                 if (contest_definition_load(path_bytes.constData(), &loaded,
                                             load_err, sizeof(load_err)) == 0) {
+                  def = loaded;
                   const ContestFieldDef *field =
                       loaded.field_count > 0 ? &loaded.fields[0] : nullptr;
                   exchange_received_type_edit->setText(
@@ -1910,6 +1919,10 @@ private:
                             : QString::fromLatin1("Rcv Exch"));
                   exchange_template_edit->setText(
                       QString::fromLatin1(loaded.exchange_sent_template));
+                    exchange_validator_edit->setText(
+                      QString::fromLatin1(loaded.exchange_received_type));
+                    station_region_edit->setText(
+                      QString::fromLatin1(loaded.station_exchange_region));
                 }
               });
 
@@ -1955,6 +1968,12 @@ private:
       copy_field(def.station_location, sizeof(def.station_location),
                  station_location_edit->text(), true);
       copy_field(def.operators, sizeof(def.operators), operators_edit->text(), true);
+      copy_field(def.exchange_received_type,
+             sizeof(def.exchange_received_type),
+             exchange_validator_edit->text(), true);
+      copy_field(def.station_exchange_region,
+             sizeof(def.station_exchange_region), station_region_edit->text(),
+             true);
       const QString received_type = exchange_received_type_edit->text().trimmed();
       if (received_type.isEmpty()) {
         if (def.field_count > 0) {
